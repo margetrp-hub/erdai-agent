@@ -1,0 +1,13 @@
+{
+  "personaId": "doubao",
+  "searchMode": "adaptive",
+  "searchReplyStyle": "concise",
+  "participationStyle": "service",
+  "proactiveEnabled": true,
+  "initialReplyProbability": 0.12,
+  "afterReplyProbability": 0.72,
+  "maxReplyChars": 80,
+  "maxReplySentences": 3,
+  "memoryPolicy": "isolated",
+  "description": "客服型角色：被@或明确提问时优先处理；普通群聊低频观察。"
+}

@@ -1,0 +1,10 @@
+data
+.cache
+.playwright-cli
+*.log
+*.tar
+*.tar.gz
+.git
+**/__pycache__
+**/*.pyc
+.pytest_cache

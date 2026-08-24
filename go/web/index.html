@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>二呆智能体 · 控制台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button id="sidebar-toggle" class="icon-button icon-panel-left sidebar-toggle" type="button" title="切换导航" aria-label="切换导航" aria-expanded="false" hidden></button>
+      <div class="brand" aria-label="二呆智能体">
+        <span class="brand-mark"><img src="/favicon.svg" alt=""></span>
+        <span class="brand-copy"><strong>二呆智能体</strong><small>v0.9.3</small></span>
+      </div>
+      <div class="instance-picker">
+        <button id="role-switch" class="instance-switch" type="button" aria-haspopup="menu" aria-expanded="false" hidden>
+          <span class="instance-label">当前角色</span>
+          <span class="instance-value"><i class="status-dot ok"></i><strong id="current-role">未选择</strong><small>智能体</small></span>
+          <span class="nav-icon icon-chevron-down" aria-hidden="true"></span>
+        </button>
+        <div id="role-menu" class="role-menu" role="menu" hidden></div>
+      </div>
+      <div class="top-actions">
+        <span id="health" class="status"><i class="status-dot"></i><span>正在连接 Core</span></span>
+        <span id="last-updated" class="last-updated" hidden>尚未刷新</span>
+        <button id="refresh" class="icon-button icon-refresh-cw" type="button" title="刷新当前数据" aria-label="刷新当前数据" hidden></button>
+        <button id="logout" class="icon-button icon-log-out" type="button" title="退出登录" aria-label="退出登录" hidden></button>
+      </div>
+    </div>
+  </header>
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head"><span id="domain-label">工作台</span><small>CONTROL PLANE</small></div>
+      <nav class="tabs" aria-label="二呆智能体控制台" hidden>
+        <div class="nav-cluster" data-domain="workbench">
+          <span class="nav-group"><span class="nav-icon icon-layout-dashboard"></span>工作台</span>
+          <button class="tab active" data-view="overview" data-icon="layout-dashboard"><span class="nav-icon"></span>总览</button>
+          <button class="tab" data-view="operations" data-icon="list-checks"><span class="nav-icon"></span>任务与审计</button>
+        </div>
+        <div class="nav-cluster" data-domain="runtime">
+          <span class="nav-group"><span class="nav-icon icon-activity"></span>运行中心</span>
+          <button class="tab" data-view="runtime" data-icon="activity"><span class="nav-icon"></span>运行实例</button>
+        </div>
+        <div class="nav-cluster" data-domain="agents">
+          <span class="nav-group"><span class="nav-icon icon-bot"></span>智能体</span>
+          <button class="tab" data-view="roles" data-icon="bot"><span class="nav-icon"></span>角色库</button>
+          <button class="tab" data-view="memories" data-icon="database"><span class="nav-icon"></span>记忆与关系</button>
+          <button class="tab" data-view="worldbook" data-icon="book-open"><span class="nav-icon"></span>世界书</button>
+          <button class="tab" data-view="samples" data-icon="messages-square"><span class="nav-icon"></span>人格内核</button>
+        </div>
+        <div class="nav-cluster" data-domain="capabilities">
+          <span class="nav-group"><span class="nav-icon icon-sparkles"></span>能力中心</span>
+          <button class="tab" data-view="knowledge" data-icon="library-big"><span class="nav-icon"></span>知识与学习</button>
+          <button class="tab" data-view="skills" data-icon="sparkles"><span class="nav-icon"></span>技能</button>
+          <button class="tab" data-view="tools" data-icon="wrench"><span class="nav-icon"></span>工具与 MCP</button>
+        </div>
+        <div class="nav-cluster" data-domain="infrastructure">
+          <span class="nav-group"><span class="nav-icon icon-cpu"></span>基础设施</span>
+          <button class="tab" data-view="integrations" data-icon="cable"><span class="nav-icon"></span>平台与接入</button>
+          <button class="tab" data-view="models" data-icon="cpu"><span class="nav-icon"></span>模型与供应商</button>
+          <button class="tab" data-view="routing" data-icon="route"><span class="nav-icon"></span>模型路由</button>
+          <button class="tab" data-view="devices" data-icon="monitor-cog"><span class="nav-icon"></span>设备与桌面</button>
+        </div>
+        <div class="nav-cluster" data-domain="governance">
+          <span class="nav-group"><span class="nav-icon icon-shield-check"></span>治理</span>
+          <button class="tab" data-view="security" data-icon="shield-check"><span class="nav-icon"></span>安全边界</button>
+          <button class="tab" data-view="system" data-icon="settings"><span class="nav-icon"></span>系统设置</button>
+        </div>
+      </nav>
+      <div class="sidebar-foot"><span class="status-dot ok"></span><span>Core 配置源</span></div>
+    </aside>
+    <section class="workspace-content">
+      <div class="content-context"><span id="breadcrumb">工作台 / 总览</span></div>
+      <section id="app" aria-live="polite"><p class="muted">正在连接二呆智能体 Core...</p></section>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

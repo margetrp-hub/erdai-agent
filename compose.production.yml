@@ -1,0 +1,134 @@
+﻿name: erdai-agent
+
+services:
+  erdai-agent:
+    image: ${ERDAI_RELEASE_IMAGE:?ERDAI_RELEASE_IMAGE is required}
+    platform: linux/amd64
+    container_name: erdai-agent
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6280:6280"
+      # Existing Tailscale/SSH admin tunnels still target 6282 during cutover.
+      - "127.0.0.1:6282:6282"
+      # OneBot sidecars connect over the private network only; never expose this publicly.
+      - "${ERDAI_ONEBOT_BIND_IP:-127.0.0.1}:6209:6209"
+    networks:
+      erdai-agent:
+        aliases:
+          - erdai-core
+          - erdai-agent-core
+      grok-egress: {}
+    env_file:
+      - path: ${ERDAI_RUNTIME_ENV_FILE:-./runtime.env}
+        required: false
+    volumes:
+      - /opt/erdai-agent/data:/app/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: Asia/Shanghai
+      ERDAI_CORE_LISTEN: 0.0.0.0:6280
+      ERDAI_ADMIN_LISTEN: 0.0.0.0:6282
+      ERDAI_CONFIG_DATABASE: /app/data/erdai-agent-core.sqlite3
+      ERDAI_RUNTIME_DATABASE: /app/data/erdai-agent-core.sqlite3
+      ERDAI_LEGACY_RUNTIME_DATABASE: /app/data/erdai-runtime.sqlite3
+      ERDAI_MEDIA_DIR: /app/data/media
+      ERDAI_ADMIN_TOKEN: ${ERDAI_ADMIN_TOKEN:?ERDAI_ADMIN_TOKEN is required}
+      ERDAI_RUNTIME_TOKEN: ${ERDAI_RUNTIME_TOKEN:?ERDAI_RUNTIME_TOKEN is required}
+      ERDAI_RUN_ENCRYPTION_KEY: ${ERDAI_RUN_ENCRYPTION_KEY:?ERDAI_RUN_ENCRYPTION_KEY is required}
+      ERDAI_MODEL_API_KEY: ${ERDAI_MODEL_API_KEY:?ERDAI_MODEL_API_KEY is required}
+      ERDAI_GROK_API_KEY: ${ERDAI_GROK_API_KEY:-}
+      ERDAI_GROK_PAID_API_KEY: ${ERDAI_GROK_PAID_API_KEY:-}
+      ERDAI_LOCAL_SEMANTIC_KEY: ${ERDAI_LOCAL_SEMANTIC_KEY:?ERDAI_LOCAL_SEMANTIC_KEY is required}
+      ERDAI_MCP_STDIO_ALLOWLIST: /app/erdai-agent
+      ERDAI_IMAGE_API_KEY: ${ERDAI_IMAGE_API_KEY:-}
+      ERDAI_OPS_TOKEN: ${ERDAI_OPS_TOKEN:-}
+      ERDAI_SEARCH_BASE_URL: ${ERDAI_SEARCH_BASE_URL:-https://www.bing.com/search?format=rss}
+      ERDAI_MODEL_TIMEOUT_SECONDS: ${ERDAI_MODEL_TIMEOUT_SECONDS:-120}
+      ERDAI_RUNTIME_IDENTITY_SECRET: ${ERDAI_RUNTIME_IDENTITY_SECRET:?ERDAI_RUNTIME_IDENTITY_SECRET is required}
+      ERDAI_QQ_SECRET: ${ERDAI_QQ_SECRET:-}
+      ERDAI_QQ_ADMIN_OPENIDS: ${ERDAI_QQ_ADMIN_OPENIDS:-}
+      GOMAXPROCS: ${ERDAI_GOMAXPROCS:-1}
+      GOMEMLIMIT: ${ERDAI_GOMEMLIMIT:-384MiB}
+    cpus: ${ERDAI_CPU_LIMIT:-1.5}
+    mem_limit: ${ERDAI_MEMORY_LIMIT:-512m}
+    memswap_limit: ${ERDAI_MEMORY_SWAP_LIMIT:-768m}
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - /app/erdai-agent
+        - --health-check
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+
+  erdai-embedding:
+    image: ${ERDAI_EMBEDDING_IMAGE:-ghcr.io/ggml-org/llama.cpp@sha256:046ad33efae5c4ec3e19be344778a80c2bb402d3f10b464514c5fe99eab94d19}
+    platform: linux/amd64
+    container_name: erdai-embedding
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/bge-small-zh-v1.5-q4_k_m.gguf
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --embedding
+      - --pooling
+      - last
+      - --ctx-size
+      - "2048"
+      - --parallel
+      - "1"
+      - --batch-size
+      - "2048"
+      - --ubatch-size
+      - "2048"
+      - --threads
+      - "2"
+      - --no-warmup
+      - --api-key
+      - ${ERDAI_LOCAL_SEMANTIC_KEY:?ERDAI_LOCAL_SEMANTIC_KEY is required}
+    networks:
+      erdai-agent:
+        aliases:
+          - erdai-embedding
+    volumes:
+      - /opt/erdai-agent/models:/models:ro
+    environment:
+      TZ: Asia/Shanghai
+      ERDAI_LOCAL_SEMANTIC_KEY: ${ERDAI_LOCAL_SEMANTIC_KEY:?ERDAI_LOCAL_SEMANTIC_KEY is required}
+    cpus: 1.0
+    mem_limit: ${ERDAI_EMBEDDING_MEMORY_LIMIT:-448m}
+    memswap_limit: ${ERDAI_EMBEDDING_MEMORY_SWAP_LIMIT:-640m}
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+networks:
+  erdai-agent:
+    external: true
+    name: erdai-agent-internal
+  grok-egress:
+    external: true
+    name: grok-egress

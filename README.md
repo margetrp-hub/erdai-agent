@@ -1,0 +1,146 @@
+# 二呆智能体
+
+二呆智能体的群内昵称是“豆包”。项目统一提供渠道接入、扩展运行、持久状态、能力发现、可解释路由、角色与知识资产、模型与工具执行，以及生产观测；只有一套后台和配置源。
+
+完整的中文系统说明、配置入口、API、运行链路、测试口径和未完成边界见 [`SYSTEM_GUIDE.md`](./SYSTEM_GUIDE.md)。
+
+## Architecture
+
+- One `erdai-agent` image and container owns the complete production application.
+- One Go process owns the control plane, agent loop, durable state, platform connections, Outbox delivery and WebUI.
+- All 18 AstrBot 4.26.8 platform types have native Go connectors for authentication, inbound normalization, Core ownership, Outbox delivery, media and health state. The production Go runtime does not require a Python or AstrBot process.
+- Two listeners in the same Go process: runtime/API on `6280`, authenticated local management UI on `6282`.
+- SQLite WAL with FTS5 trigram search, durable runs, media quota accounting and Outbox delivery state.
+- Provider credentials are read from environment variables only and are never stored in SQLite or returned by management APIs.
+- Provider connections own their protocol, API base, credential reference, timeout and active health samples. Model endpoints bind to a connection, so chat, task, group-decision and media routes can fail over across real suppliers without sharing one global URL or key.
+- Runs persist routing choice, model calls and stage timing from event intake through connector ACK. The management UI exposes provider tests, health history and run timelines without returning credentials.
+
+## Included
+
+- Schema for execution endpoints and health, personas and worldbook entries, knowledge documents and FTS, tools, MCP servers, runs, deliveries and audit events.
+- A capability catalog plus persisted, editable routing lane profiles.
+- Endpoint execution kinds (`llm`, `tool`, `media`) and adapter references keep model switching separate from tool invocation and media jobs.
+- Deterministic routing: hard capability, health freshness, context, latency and cost filters followed by a visible quality/reliability/latency/cost/priority score. Automatic mode returns ordered fallbacks; manual mode strictly enforces lane locks.
+- Clean-room SillyTavern Character Card V2 conversion. Only known text and worldbook fields are selected; unknown extensions are discarded and never executed.
+- Namespace-scoped persona, worldbook and knowledge CRUD, content-hash deduplication, and Chinese retrieval previews through FTS5 trigram. Enabled worldbook entries participate in live context through constant, primary-key and selective secondary-key matching.
+- Health observation and routing-control APIs used by the cockpit.
+- Privacy-minimized shadow routing records for comparing compatibility behavior with Core decisions without storing message text or platform identifiers.
+- A same-origin responsive cockpit for overview, endpoint metadata, health, automatic/manual routing, editable lane profiles, decision explanations, capabilities, Persona/runtime policy editing, administrator directives, knowledge/RAG management and reviewed learning candidates.
+- Four persistent WebUI themes shared by the login screen and authenticated cockpit: native, standard, anime and wasteland industrial. Theme assets are embedded in the Core image and do not require an external CDN.
+- Secret-redacted management payloads. Unknown fields, including credential fields, are rejected.
+- Unified secret-redacted settings for the 18-platform catalog, provider policy and message behavior. Every catalog type resolves to a native Go connector; secrets remain server-side and connector health errors are redacted.
+- Runtime-owned conversation style settings for concise but complete replies, approximate length guidance and repeated-opener avoidance. These settings are editable in the Go console and compiled above the Persona.
+- An explicit configuration-layer contract for new operators: `public_config` and `public_policy` define Core-wide limits and defaults; `role_config` and `role_policy` define a character; `instance_config` and `instance_policy` isolate one account/channel. Read the live contract from `GET /api/v1/config/layers` or start with [`examples/README.md`](./examples/README.md).
+- A privacy-minimized channel contract with idempotent event intake, durable delivery leasing, acknowledgement, retry and cancellation. Transient text, display names and signed attachment URLs are validated but never persisted.
+- A Core-owned Agent loop for model calls, Grok search, image/video jobs, OPS, memory and allow-listed Streamable HTTP MCP tools. Progress and terminal messages are written to Outbox before the Go connector manager delivers them.
+- A scheduled Grok learning worker turns configured topics into source-linked, reviewable knowledge candidates. It never promotes candidates or edits Persona/rules without administrator review.
+- Configurable per-user daily image/video quotas with administrator overrides and auditable usage.
+- A configurable Core content boundary classifies explicit sexual requests, real-world harm, severe abuse and ordinary provocation before model execution. Each category can use model/persona handling, refusal, a short non-escalating counter or silent ignore; ignored messages do not enter conversation context.
+
+## Run
+
+```powershell
+# Run from a clean checkout. The script builds and tests locally, then emits
+# an import-only bundle for a linux/amd64 VPS.
+sh ./scripts/build-release.sh <release> <schema> <output-dir>
+```
+
+For source tests, run `go test ./...` and `go vet ./...` from `go/`. The scratch-based container listens on `6280` and `6282` and stores all state under `/opt/erdai-agent/data`.
+
+Production uses two distinct service tokens of at least 32 characters. `ERDAI_ADMIN_TOKEN` protects the management listener: browser login exchanges it for an eight-hour HttpOnly, SameSite session, while deployment scripts use `X-Erdai-Admin-Token`. Session-authenticated writes also require a same-origin request. `ERDAI_RUNTIME_TOKEN` is accepted as `Authorization: Bearer ...` only for runtime preparation, shadow observations, model-health observations, and transport event/delivery/cancellation calls. Tokens are read from the process environment and are never stored in the Core database or served to the cockpit. Releases are built and verified locally; the VPS only verifies a signed-by-checksum bundle, loads its images and runs Compose with `--no-build`.
+
+The cockpit is served from `/` by the same process, so the browser and API remain same-origin.
+
+## API
+
+```text
+GET  /healthz
+GET  /
+GET  /api/v1/overview
+GET  /api/v1/config/layers
+GET  /api/v1/capabilities
+GET  /api/v1/model-endpoints
+PUT  /api/v1/model-endpoints/:id
+DELETE /api/v1/model-endpoints/:id
+GET  /api/v1/provider-connections
+PUT  /api/v1/provider-connections/:id
+DELETE /api/v1/provider-connections/:id
+POST /api/v1/provider-connections/:id/test
+POST /api/v1/provider-connections/:id/pricing-sync
+GET  /api/v1/model-health/:id/history
+GET  /api/v1/runs/:id
+GET  /api/v1/integrations
+GET/PUT /api/v1/integrations/:id
+GET  /api/v1/model-health
+PUT  /api/v1/model-health/:id
+GET  /api/v1/routing/control
+PUT  /api/v1/routing/control
+POST /api/v1/routing/simulate
+GET/POST       /api/v1/personas
+GET/PUT/DELETE /api/v1/personas/:id
+GET/POST       /api/v1/personas/:id/worldbook
+GET/PUT/DELETE /api/v1/personas/:id/worldbook/:entryId
+GET/POST       /api/v1/knowledge/documents
+GET/PUT/DELETE /api/v1/knowledge/documents/:id
+POST           /api/v1/knowledge/search-preview
+GET/PUT        /api/v1/routing/lanes
+GET/PUT        /api/v1/runtime/config
+GET/POST       /api/v1/runtime/directives
+GET/PUT/DELETE /api/v1/runtime/directives/:id
+GET/POST       /api/v1/runtime/knowledge-candidates
+GET/PUT/DELETE /api/v1/runtime/knowledge-candidates/:id
+POST           /api/v1/runtime/knowledge-candidates/:id/review
+POST           /api/v1/runtime/prepare
+GET/PUT/DELETE /api/v1/runtime/media-quotas
+POST           /api/v1/mcp/servers/:id/discover
+POST           /api/v1/mcp/servers/:id/call
+POST           /api/v1/transport/events
+POST           /api/v1/transport/deliveries/lease
+POST           /api/v1/transport/deliveries/:id/ack
+POST           /api/v1/transport/deliveries/:id/fail
+POST           /api/v1/runs/:id/cancel
+GET  /api/v1/shadow/interactions
+POST /api/v1/shadow/interactions
+```
+
+Example simulation body:
+
+```json
+{
+  "lane": "tools",
+  "requiredCapabilities": ["vision"],
+  "preferredCapabilities": ["reasoning"],
+  "minimumContextTokens": 32000,
+  "maximumLatencyMs": 5000,
+  "maximumBlendedCostPerMillion": 20,
+  "maxHealthAgeMs": 300000
+}
+```
+
+Simulation does not create a run or mutate health. With `maxHealthAgeMs`, recorded health older than the limit is rejected with an explicit reason. Endpoints with no health record remain eligible at a lower score. Provider credentials are intentionally absent from the schema; later phases should store only references to an external secret store.
+
+## Boundaries
+
+Core is the source of truth for Persona, protected rules, administrator directives, RAG, memory, routing, platform metadata, provider policy, message policy, quotas and channel policy. It does not store provider credentials or raw platform administrator IDs. Ordinary group members cannot mutate configuration or promote learned material; automatic learning only creates reviewable candidates.
+
+The Go Runtime owns event acceptance, the model/tool loop and connector delivery. It only returns `owned` when the channel policy permits it, persists the Run and outbound progress/terminal deliveries, then leases and acknowledges them through the connector manager. `off` rejects takeover and `shadow` observes without owning the message. Streamable HTTP MCP execution enforces enablement, allow-lists, sender authority, approval mode, timeout, private-network blocking, bounded responses and audit logging. SSE and stdio execution remain disabled.
+
+The legacy Node runtime has been retired from the active checkout, final image and production process set. The final image explicitly removes the Node.js toolchain inherited from the upstream channel base. Legacy source is retained only in the release archive outside this repository. Production upgrades still require a database backup, real QQ `@豆包` canary, restart/redelivery check and rollback verification.
+
+Each release must pass the applicable Go suite, `go vet`, protocol checks, migration checks and the protected `off -> shadow -> active` production rollout on the designated ErDai host. QQ Official requires the group-message intent and reconnect check; real-account canaries for other platforms remain separate acceptance gates. The release bundle records its image digest, source revision and schema in a manifest, and the VPS only imports and switches that bundle. 豆包是用于跑通通用多角色流程的首张角色卡，不是 Core 中写死的唯一角色。
+
+## Clean-room design references
+
+The project studies external agent and role-play systems without treating them as drop-in runtimes:
+
+- `pi-rp` (MIT): tool lifecycle, prompt slots and observable state.
+- `talk` (MIT): group participation signals and evidence-backed structured memory.
+- `Luker` (AGPL-3.0): worldbook and durable generation-job concepts only; no source is copied.
+- `Liyuan` (PolyForm Noncommercial): context retention and MCP permission concepts only; no source is copied.
+- `SleepTavernHome` (unclear AFPL-derived terms): role-state and context-plan concepts only; no source or role content is copied.
+- `DeterminFlow` (AGPL-3.0): immutable workflow snapshots, checkpoints, node-level tool permissions, attempt history and token/cost ledgers are useful future reliability patterns. No source or dependency is copied into this project.
+
+The implemented clean-room slices include group participation policy, evidence-linked memory, durable task/Outbox delivery and MCP execution. Future additions must remain Core-owned, configurable, audited and default-deny for group members.
+## Migration
+
+活动镜像只包含 Go 可执行文件、CA 证书和浏览器静态资源，不包含 Node、Python 或 AstrBot 运行时。旧兼容源码不参与构建；角色、知识、模型、工具和 MCP 默认资产由 Go Schema 直接建立。迁移与生产验证见 [`GO_MIGRATION.md`](./GO_MIGRATION.md)。

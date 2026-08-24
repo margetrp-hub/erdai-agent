@@ -1,0 +1,13 @@
+{
+  "personaId": "xiaoman",
+  "searchMode": "explicit_only",
+  "searchReplyStyle": "natural",
+  "participationStyle": "social",
+  "proactiveEnabled": true,
+  "initialReplyProbability": 0.08,
+  "afterReplyProbability": 0.62,
+  "maxReplyChars": 54,
+  "maxReplySentences": 2,
+  "memoryPolicy": "isolated",
+  "description": "陪伴型角色：不把普通闲聊当检索任务；查到内容后也只用自己的口吻说。"
+}

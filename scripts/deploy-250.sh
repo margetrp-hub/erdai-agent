@@ -129,6 +129,7 @@ tar -xzf "$package_dir/app.tar.gz" -C "$stage"
 test -f "$stage/compose.production.yml"
 test -x "$stage/scripts/verify-production.sh"
 chmod 755 "$stage"
+chown root:root "$stage"
 ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" docker compose --env-file "$env_file" -f "$stage/compose.production.yml" config -q
 
 if [ "$mode" = --dry-run ]; then

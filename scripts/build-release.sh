@@ -66,7 +66,7 @@ chmod 755 "$bundle/app/scripts/"*.sh
 docker image inspect -f '{{.Id}}' "$image" > "$bundle/core-image-id"
 docker image inspect -f '{{.Id}}' "$embedding_image" > "$bundle/embedding-image-id"
 docker save --output "$bundle/images.tar" "$image" "$embedding_image"
-tar -czf "$bundle/app.tar.gz" -C "$bundle/app" .
+tar -czf "$bundle/app.tar.gz" --owner=0 --group=0 --numeric-owner -C "$bundle/app" .
 rm -rf "$bundle/app"
 
 cat > "$bundle/manifest.env" <<EOF

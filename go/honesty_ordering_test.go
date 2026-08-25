@@ -107,6 +107,7 @@ func TestClassifyProviderFailureMapping(t *testing.T) {
 	}{
 		{&providerHTTPError{StatusCode: 401}, failureClassCredential},
 		{&providerHTTPError{StatusCode: 403}, failureClassCredential},
+		{&providerHTTPError{StatusCode: 429, Message: "{\"error\":\"subscription:free-usage-exhausted\"}"}, failureClassQuota},
 		{&providerHTTPError{StatusCode: 429}, failureClassRateLimit},
 		{&providerHTTPError{StatusCode: 400}, failureClassContent},
 		{&providerHTTPError{StatusCode: 502}, failureClassUpstreamDown},

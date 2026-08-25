@@ -518,6 +518,7 @@ func hasRuntimeTool(tools []map[string]any, name string) bool {
 
 type providerHTTPError struct {
 	StatusCode int
+	Message    string
 }
 
 const (
@@ -733,6 +734,7 @@ func providerAuthorizationError(err error) bool {
 
 const (
 	failureClassCredential   = "credential"
+	failureClassQuota        = "quota_exhausted"
 	failureClassRateLimit    = "rate_limit"
 	failureClassTimeout      = "timeout"
 	failureClassContent      = "content"
@@ -740,7 +742,7 @@ const (
 	failureClassUnknown      = "unknown"
 )
 
-// classifyProviderFailure maps a provider error onto one of five operational
+// classifyProviderFailure maps a provider error onto one of six operational
 // classes. Each class carries its own fallback policy and user phrasing, and
 // the class is persisted per run for aggregated statistics.
 func classifyProviderFailure(err error) string {
@@ -752,6 +754,13 @@ func classifyProviderFailure(err error) string {
 	}
 	var responseError *providerHTTPError
 	if errors.As(err, &responseError) {
+		message := strings.ToLower(strings.TrimSpace(responseError.Message))
+		if strings.Contains(message, "subscription:free-usage-exhausted") ||
+			strings.Contains(message, "free usage quota exceeded") ||
+			strings.Contains(message, "usage quota exceeded") ||
+			strings.Contains(message, "quota exhausted") {
+			return failureClassQuota
+		}
 		switch {
 		case responseError.StatusCode == http.StatusUnauthorized || responseError.StatusCode == http.StatusForbidden:
 			return failureClassCredential
@@ -1050,8 +1059,8 @@ func plainChatProviderBudgetApplies(message string, hasAttachments bool) bool {
 }
 
 const (
-	plainChatProviderBudget        = 12 * time.Second
-	plainChatProviderAttemptBudget = 8
+	plainChatProviderBudget        = 20 * time.Second
+	plainChatProviderAttemptBudget = 15
 	plainChatProviderTargetLimit   = 3
 	// nonChatModelStepBudget bounds a single agent-loop model call (with all
 	// its provider fallbacks) outside the plain-chat lane. Tool and media
@@ -2550,8 +2559,8 @@ func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key strin
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return &providerHTTPError{StatusCode: response.StatusCode}
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
+		return &providerHTTPError{StatusCode: response.StatusCode, Message: string(body)}
 	}
 	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
 		switch value := target.(type) {

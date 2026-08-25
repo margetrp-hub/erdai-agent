@@ -64,7 +64,7 @@ var stableMemoryPatterns = []struct {
 	{regexp.MustCompile(`(?:^|[，。！？\s])我习惯([^，。！？\n]{1,40})`), "habit", 0.72},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我最近在做([^，。！？\n]{1,50})`), "project", 0.68},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我叫([^，。！？\n]{1,20})`), "address", 0.9},
-	{regexp.MustCompile(`(?:以后|下次)(?:就)?叫我([^，。！？\n]{1,20})`), "address", 0.9},
+	{regexp.MustCompile(`(?:以后|下次)(?:你)?(?:就|请)?叫我([^，。！？\n]{1,20})`), "address", 0.9},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我是([^，。！？\n]{1,30})`), "identity", 0.65},
 }
 
@@ -331,6 +331,13 @@ func extractStableMemories(message string) []stableMemoryCandidate {
 				continue
 			}
 			content := strings.TrimSpace(strings.Trim(match[0], "，。！？ \t\r\n"))
+			if pattern.kind == "address" {
+				address := strings.TrimSpace(match[1])
+				if address == "" || isAddressQuestion(address) {
+					continue
+				}
+				content = "用户希望被称为" + address
+			}
 			if content == "" || len([]rune(content)) > 80 || containsSensitiveMemory(content) {
 				continue
 			}
@@ -344,6 +351,36 @@ func extractStableMemories(message string) []stableMemoryCandidate {
 		}
 	}
 	return result
+}
+
+func isAddressQuestion(address string) bool {
+	address = strings.TrimSpace(address)
+	for _, prefix := range []string{"什么", "啥", "谁", "哪个", "哪一个", "哪种", "怎么"} {
+		if strings.HasPrefix(address, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func addressRecallAnswerHint(query string, memories []RecalledMemory) string {
+	hasAddress := false
+	for _, memory := range memories {
+		if memory.Kind == "address" && strings.TrimSpace(memory.UntrustedContent) != "" {
+			hasAddress = true
+			break
+		}
+	}
+	if !hasAddress {
+		return ""
+	}
+	query = strings.TrimSpace(query)
+	for _, marker := range []string{"叫我什么", "怎么称呼我", "如何称呼我", "我的称呼"} {
+		if strings.Contains(query, marker) {
+			return "Core 回答要求：这是称呼回忆问题。直接说出已记录的称呼，不重复首次设置时的确认或接受话术。"
+		}
+	}
+	return ""
 }
 
 func marshalRecentMessages(values []string) json.RawMessage {

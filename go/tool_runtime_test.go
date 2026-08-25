@@ -58,8 +58,9 @@ func TestPlainChatBoundsProviderFallbacks(t *testing.T) {
 	if len(bounded) != 3 {
 		t.Fatalf("bounded target count = %d", len(bounded))
 	}
-	for _, target := range bounded {
-		if target.TimeoutSeconds != 8 || target.ProviderRetries != 0 {
+	for index, target := range bounded {
+		expectedTimeout := []int{plainChatProviderAttemptBudget, plainChatProviderAttemptBudget, 10}[index]
+		if target.TimeoutSeconds != expectedTimeout || target.ProviderRetries != 0 {
 			t.Fatalf("unbounded target = %+v", target)
 		}
 	}

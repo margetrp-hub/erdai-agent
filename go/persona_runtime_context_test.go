@@ -18,12 +18,36 @@ func TestStableMemoryExtractionIsConservative(t *testing.T) {
 	if !kinds["address"] || !kinds["preference"] {
 		t.Fatalf("stable memory kinds = %+v", values)
 	}
+	for _, value := range values {
+		if value.Kind == "address" && value.Content != "用户希望被称为老王" {
+			t.Fatalf("address memory = %q", value.Content)
+		}
+	}
+	values = extractStableMemories("以后你叫我主人")
+	if len(values) != 1 || values[0].Content != "用户希望被称为主人" {
+		t.Fatalf("natural address memory = %+v", values)
+	}
+	for _, question := range []string{"我让你以后叫我什么", "下次你叫我啥来着", "以后请叫我什么名字"} {
+		if values := extractStableMemories(question); len(values) != 0 {
+			t.Fatalf("address question was captured: %q -> %+v", question, values)
+		}
+	}
 	if values := extractStableMemories("可能明天会喝茶吧"); len(values) != 0 {
 		t.Fatalf("temporary statement was captured: %+v", values)
 	}
 	values = extractStableMemories("我平时喝无糖美式，我最近在做群聊整理")
 	if len(values) != 2 {
 		t.Fatalf("natural stable statements were not captured: %+v", values)
+	}
+}
+
+func TestAddressRecallAnswerHint(t *testing.T) {
+	memories := []RecalledMemory{{Kind: "address", UntrustedContent: "用户希望被称为主人"}}
+	if hint := addressRecallAnswerHint("我让你以后叫我什么", memories); !strings.Contains(hint, "直接说出已记录的称呼") {
+		t.Fatalf("missing address recall hint: %q", hint)
+	}
+	if hint := addressRecallAnswerHint("我喜欢喝什么", memories); hint != "" {
+		t.Fatalf("unrelated query got address hint: %q", hint)
 	}
 }
 

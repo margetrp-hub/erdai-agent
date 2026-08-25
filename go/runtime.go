@@ -2431,6 +2431,7 @@ func (a *AgentRuntime) untrustedConversationContext(ctx context.Context, run run
 		memories = append(memories, "热点记忆："+strings.TrimSpace(memory.UntrustedContent))
 	}
 	sections = append(sections, contextBudgetSection{Priority: 2, Items: memories})
+	addressHint := addressRecallAnswerHint(query, userMemories)
 	episodeLines := make([]string, 0, len(episodes))
 	for _, episode := range episodes {
 		episodeLines = append(episodeLines, "情节摘要："+truncateRunes(episode.Summary, 800))
@@ -2458,7 +2459,7 @@ func (a *AgentRuntime) untrustedConversationContext(ctx context.Context, run run
 	selected := assembleContextWithinBudget(sections, contextPolicy.ContextTokenBudget)
 	dialogueHint := inferDialogueProtocolHint(recent, run.EventID, query)
 	reasoningHint := dialogueReasoningHint(recent, run.EventID, query)
-	if len(selected) == 0 && dialogueHint == "" && reasoningHint == "" {
+	if len(selected) == 0 && dialogueHint == "" && reasoningHint == "" && addressHint == "" {
 		return ""
 	}
 	var content strings.Builder
@@ -2479,6 +2480,10 @@ func (a *AgentRuntime) untrustedConversationContext(ctx context.Context, run run
 		content.WriteByte('\n')
 	}
 	content.WriteString("</untrusted_conversation_context>")
+	if addressHint != "" {
+		content.WriteByte('\n')
+		content.WriteString(addressHint)
+	}
 	return content.String()
 }
 

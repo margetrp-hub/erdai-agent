@@ -108,8 +108,8 @@ case "$schema:$memory_total" in *[!0-9:]*|:*) fail "invalid numeric manifest fie
 [ "$platform" = linux/amd64 ] || fail "only linux/amd64 release bundles are accepted"
 [ "$memory_total" -le 1073741824 ] || fail "release memory budget exceeds the 1.6-GiB VPS safety limit"
 
-install -d -m 700 /run/lock "$root"
-exec 9>/run/lock/erdai-agent-release.lock
+install -d -m 700 "$root"
+exec 9>"$root/.erdai-agent-release.lock"
 flock -n 9 || fail "another ErDai release is already running"
 docker info >/dev/null
 [ "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "$platform" ] || fail "Docker architecture mismatch"

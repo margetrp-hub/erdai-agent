@@ -11,9 +11,11 @@
 - All 18 AstrBot 4.26.8 platform types have native Go connectors for authentication, inbound normalization, Core ownership, Outbox delivery, media and health state. The production Go runtime does not require a Python or AstrBot process.
 - Two listeners in the same Go process: runtime/API on `6280`, authenticated local management UI on `6282`.
 - SQLite WAL with FTS5 trigram search, durable runs, media quota accounting and Outbox delivery state.
-- Provider credentials are read from environment variables only and are never stored in SQLite or returned by management APIs.
+- Provider credentials are read from environment variables or the data-volume managed credential file; they are never stored in SQLite or returned by management APIs.
 - Provider connections own their protocol, API base, credential reference, timeout and active health samples. Model endpoints bind to a connection, so chat, task, group-decision and media routes can fail over across real suppliers without sharing one global URL or key.
 - Runs persist routing choice, model calls and stage timing from event intake through connector ACK. The management UI exposes provider tests, health history and run timelines without returning credentials.
+- Media availability is based on real task outcomes and generated artifacts, not endpoint probes alone. Knowledge retrieval, embedding queries and memory recall emit count-only observability events without storing raw user queries.
+- Automatic learning remains review-gated and accepts a candidate only when at least two independent, topic-relevant web sources pass the URL quality gate.
 
 ## Included
 
@@ -45,11 +47,13 @@
 sh ./scripts/build-release.sh <release> <schema> <output-dir>
 ```
 
-For source tests, run `go test ./...` and `go vet ./...` from `go/`. The scratch-based container listens on `6280` and `6282` and stores all state under `/opt/erdai-agent/data`.
+For source tests, run `go test ./...` and `go vet ./...` from `go/`. The Compose example listens on `6280` and `6282`; persistent state is mounted at the operator-selected data directory.
 
-Production uses two distinct service tokens of at least 32 characters. `ERDAI_ADMIN_TOKEN` protects the management listener: browser login exchanges it for an eight-hour HttpOnly, SameSite session, while deployment scripts use `X-Erdai-Admin-Token`. Session-authenticated writes also require a same-origin request. `ERDAI_RUNTIME_TOKEN` is accepted as `Authorization: Bearer ...` only for runtime preparation, shadow observations, model-health observations, and transport event/delivery/cancellation calls. Tokens are read from the process environment and are never stored in the Core database or served to the cockpit. Releases are built and verified locally; the VPS only verifies a signed-by-checksum bundle, loads its images and runs Compose with `--no-build`.
+An active production instance uses two distinct service tokens of at least 32 characters. `ERDAI_ADMIN_TOKEN` protects the management listener and remains the automation fallback; human login can additionally use the single `ERDAI_ADMIN_USERNAME` plus `ERDAI_ADMIN_PASSWORD` (or its SHA-256 form). Browser login exchanges valid credentials for an eight-hour HttpOnly, SameSite session, while automation uses `X-Erdai-Admin-Token`. Session-authenticated writes also require a same-origin request. `ERDAI_RUNTIME_TOKEN` is accepted as `Authorization: Bearer ...` only for runtime preparation, shadow observations, model-health observations, and transport event/delivery/cancellation calls. A fresh install may leave `ERDAI_RUNTIME_TOKEN` and `ERDAI_MODEL_API_KEY` empty: the authenticated cockpit starts in `setup_required`, rejects runtime bearer requests, and lets the operator fill the business credentials before activation. Tokens and passwords are read from the process environment or the managed data-volume file and are never stored in the Core database or served to the cockpit. The cockpit reports configuration readiness and checks GitHub Releases for Stable versions; upgrade execution remains a host-side operation with backup and health-gated rollback.
 
-The cockpit is served from `/` by the same process, so the browser and API remain same-origin.
+The cockpit is served from `/` by the same process, so the browser and API remain same-origin. The Integrations → Credentials tab writes only the allow-listed provider/platform references to the data-volume `managed-credentials.env` and keeps one `.bak` before replacement. Database encryption roots, administrator tokens and listener/database paths remain host-only and cannot be changed from the UI.
+
+Stable upgrades use a host-side executor. `scripts/build-release.sh` emits `erdai-agent-stable-<release>.tar.gz`; the Stable tag workflow runs the full verify target and uploads that archive to GitHub Releases. Run the bundled `install-update-agent.sh` once on the host. The cockpit only selects a Stable asset, writes an authenticated request into the data volume, and displays the executor state. The host agent validates the repository-specific GitHub URL, request freshness, asset size/digest, archive paths, embedded `SHA256SUMS`, and delegates to the existing backup/health-gated `deploy-250.sh` rollback path.
 
 ## API
 
@@ -57,6 +61,13 @@ The cockpit is served from `/` by the same process, so the browser and API remai
 GET  /healthz
 GET  /
 GET  /api/v1/overview
+GET  /api/v1/observability
+GET  /api/v1/installation/status
+GET  /api/v1/update/check
+GET  /api/v1/update/status
+POST /api/v1/update/request
+GET  /api/v1/credentials
+PUT/DELETE /api/v1/credentials/:name
 GET  /api/v1/config/layers
 GET  /api/v1/capabilities
 GET  /api/v1/model-endpoints
@@ -127,7 +138,7 @@ The Go Runtime owns event acceptance, the model/tool loop and connector delivery
 
 The legacy Node runtime has been retired from the active checkout, final image and production process set. The final image explicitly removes the Node.js toolchain inherited from the upstream channel base. Legacy source is retained only in the release archive outside this repository. Production upgrades still require a database backup, real QQ `@豆包` canary, restart/redelivery check and rollback verification.
 
-Each release must pass the applicable Go suite, `go vet`, protocol checks, migration checks and the protected `off -> shadow -> active` production rollout on the designated ErDai host. QQ Official requires the group-message intent and reconnect check; real-account canaries for other platforms remain separate acceptance gates. The release bundle records its image digest, source revision and schema in a manifest, and the VPS only imports and switches that bundle. 豆包是用于跑通通用多角色流程的首张角色卡，不是 Core 中写死的唯一角色。
+Each release must pass the applicable Go suite, `go vet`, protocol checks, migration checks and a health-gated active rollout. The production verifier also checks the management credential path with a temporary allow-listed secret, confirms no value is returned, and removes the temporary record even on failure. QQ Official requires the group-message intent and reconnect check; real-account canaries for other platforms remain separate acceptance gates. The release bundle records its source revision and schema in a public manifest; private operator records retain deployment evidence. 豆包是用于跑通通用多角色流程的首张角色卡，不是 Core 中写死的唯一角色。
 
 ## Clean-room design references
 

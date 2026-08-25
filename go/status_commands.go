@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -276,15 +277,19 @@ func validOPSStatusURL(statusURL *url.URL) bool {
 	if statusURL.Scheme != "http" {
 		return false
 	}
-	// The v2 monitor lives on the private/Tailscale network. Allowing HTTP is
-	// intentional here because that network is encrypted; public HTTP URLs are
-	// rejected so a policy typo cannot send the OPS token in cleartext.
-	switch statusURL.Hostname() {
-	case "100.116.21.100", "100.127.224.127", "40.160.241.38":
-		return true
-	default:
+	// Private HTTP is accepted for an operator-owned internal monitor. Public
+	// HTTP is rejected so a policy typo cannot send the OPS token in cleartext.
+	ip := net.ParseIP(statusURL.Hostname())
+	if ip == nil {
 		return false
 	}
+	if ip.IsPrivate() || ip.IsLoopback() {
+		return true
+	}
+	if ipv4 := ip.To4(); ipv4 != nil && ipv4[0] == 100 && ipv4[1] >= 64 && ipv4[1] <= 127 {
+		return true
+	}
+	return false
 }
 
 func (a *AgentRuntime) startOPSStatusWorker(ctx context.Context) {

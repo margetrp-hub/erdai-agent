@@ -179,7 +179,7 @@ func insertHonestyTestRun(t *testing.T, runtime *AgentRuntime, id, conversation,
 // A conversation runs serially: while one run is 'running', a sibling queued
 // run in the same conversation is not claimable, but another conversation is.
 func TestProcessNextSerializesConversation(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	now := time.Now().UTC()
 	insertHonestyTestRun(t, runtime, "busy-run", "group-serial", "sender-a", "group", "running", now.Add(-2*time.Second))

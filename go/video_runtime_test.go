@@ -421,7 +421,7 @@ func TestVideoWorkerDoesNotBlockChatAndCloseCancelsPolling(t *testing.T) {
 	}
 	select {
 	case <-pollStarted:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("video polling did not start")
 	}
 

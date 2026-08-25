@@ -44,6 +44,18 @@ func TestDecodeJSONBodyRejectsTrailingAndOversizedInput(t *testing.T) {
 	}
 }
 
+func TestAuthorizedRejectsMissingRuntimeToken(t *testing.T) {
+	runtime := &AgentRuntime{}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/runtime/prepare", nil)
+	if runtime.authorized(request) {
+		t.Fatal("missing runtime token authorized an empty bearer value")
+	}
+	request.Header.Set("Authorization", "Bearer ")
+	if runtime.authorized(request) {
+		t.Fatal("missing runtime token authorized an explicit empty bearer value")
+	}
+}
+
 func TestNativeLaneRecognizesShortMediaCommands(t *testing.T) {
 	for message, expected := range map[string]string{
 		"生图 一只猫":                      "image",
@@ -333,6 +345,7 @@ func TestRuntimeOwnsWakeCallsModelAndDeliversThroughOutbox(t *testing.T) {
 	if bytes.Contains(rawDatabase, []byte(imageURL)) {
 		t.Fatal("database contains transient QQ image URL")
 	}
+	time.Sleep(segmentPacingDelay + 100*time.Millisecond)
 
 	lease := runtimeRequest(t, runtime, "/api/v1/transport/deliveries/lease", map[string]any{
 		"consumerId": "erdai-runtime", "limit": 10, "leaseSeconds": 30,

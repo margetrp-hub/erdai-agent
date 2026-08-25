@@ -46,7 +46,9 @@ func (a *AgentRuntime) handleNativeManagement(w http.ResponseWriter, r *http.Req
 
 func isNativeManagementPath(path string) bool {
 	for _, exact := range []string{
-		"/api/v1/overview", "/api/v1/audit", "/api/v1/shadow/interactions",
+		"/api/v1/overview", "/api/v1/observability", "/api/v1/audit", "/api/v1/shadow/interactions",
+		"/api/v1/installation/status", "/api/v1/update/check", "/api/v1/update/status", "/api/v1/update/request",
+		"/api/v1/credentials",
 		"/api/v1/config/layers",
 		"/api/v1/integrations", "/api/v1/model-endpoints", "/api/v1/model-health",
 		"/api/v1/agent-policy-templates", "/api/v1/agent-instances", "/api/v1/agent-instance-routes", "/api/v1/agent-instance-capabilities",
@@ -69,6 +71,7 @@ func isNativeManagementPath(path string) bool {
 	}
 	for _, prefix := range []string{
 		"/api/v1/integrations/", "/api/v1/model-endpoints/", "/api/v1/model-health/",
+		"/api/v1/credentials/",
 		"/api/v1/agent-policy-templates/", "/api/v1/agent-instances/", "/api/v1/agent-instance-routes/", "/api/v1/agent-instance-capabilities/",
 		"/api/v1/provider-connections/", "/api/v1/runs/",
 		"/api/v1/tools/", "/api/v1/skills/", "/api/v1/platforms/",
@@ -89,8 +92,20 @@ func isNativeManagementPath(path string) bool {
 
 func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.ResponseWriter, r *http.Request, path string) error {
 	switch {
+	case path == "/api/v1/installation/status":
+		return a.handleManagementInstallation(w, r)
+	case path == "/api/v1/update/check":
+		return a.handleManagementUpdateCheck(w, r)
+	case path == "/api/v1/update/status":
+		return a.handleManagementUpdateStatus(w, r)
+	case path == "/api/v1/update/request":
+		return a.handleManagementUpdateRequest(w, r)
+	case path == "/api/v1/credentials" || strings.HasPrefix(path, "/api/v1/credentials/"):
+		return a.handleManagedCredentials(w, r, path)
 	case path == "/api/v1/overview":
 		return s.handleManagementOverview(w, r)
+	case path == "/api/v1/observability":
+		return a.handleManagementObservability(w, r)
 	case path == "/api/v1/config/layers":
 		return s.handleConfigLayers(w, r)
 	case path == "/api/v1/audit":

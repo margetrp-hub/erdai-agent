@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 73
+const nativeCoreSchemaVersion = 74
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -1907,6 +1907,15 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 			}
 		}
 	}
+	if previousVersion < 74 {
+		if _, err := tx.Exec(`UPDATE personas
+			SET visual_description = visual_description || ' 不得读取或复用豆包的头像、主参考图、视觉描述或构图习惯。',
+				character_version = '1.3.1', source_version = 'go-schema-74', updated_at = ` + now + `
+			WHERE id = 'xiaoman' AND source_version = 'go-schema-64' AND character_version = '1.3.0'
+				AND instr(visual_description, '不得读取或复用豆包') = 0`); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(`
 		INSERT OR IGNORE INTO tools (
 			id, name, description, capabilities_json, risk_level, enabled,
@@ -2378,7 +2387,7 @@ const nativeDocumentPolicyDefaults = `{
 }`
 
 const nativeOpsPolicyDefaults = `{
-  "enabled":true,"statusUrl":"http://100.116.21.100:18089/api/ohlao/group-status",
+  "enabled":true,"statusUrl":"https://ops.example.invalid/group-status",
   "statusTitle":"渠道监控","credentialRef":"ERDAI_OPS_TOKEN","requestTimeoutSeconds":10,
   "commandAliases":["/渠道","/ops","/分组","/线路","/ops状态"],"timelinePoints":3,
   "evaluationWindowMinutes":15,"evaluationPollSeconds":60,

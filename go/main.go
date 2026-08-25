@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	pathpkg "path"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,12 +47,14 @@ var allowedMethods = map[string]bool{
 }
 
 type Gateway struct {
-	static        http.Handler
-	assetETag     string
-	adminToken    string
-	runtime       *AgentRuntime
-	sessionMu     sync.Mutex
-	adminSessions map[string]time.Time
+	static            http.Handler
+	assetETag         string
+	adminToken        string
+	adminUsername     string
+	adminPasswordHash string
+	runtime           *AgentRuntime
+	sessionMu         sync.Mutex
+	adminSessions     map[string]time.Time
 }
 
 func main() {
@@ -62,6 +68,9 @@ func main() {
 	adminListen := envOr("ERDAI_ADMIN_LISTEN", defaultAdminListenAddr)
 	if coreListen == adminListen {
 		log.Fatal("ERDAI_CORE_LISTEN and ERDAI_ADMIN_LISTEN must be different")
+	}
+	if err := loadManagedCredentialsFile(managedCredentialPath()); err != nil {
+		log.Printf("managed credentials unavailable: %v", err)
 	}
 	adminToken := strings.TrimSpace(os.Getenv("ERDAI_ADMIN_TOKEN"))
 	if len(adminToken) < 32 {
@@ -81,10 +90,17 @@ func main() {
 		EncryptionKey:             os.Getenv("ERDAI_RUN_ENCRYPTION_KEY"),
 		IdentitySecret:            os.Getenv("ERDAI_RUNTIME_IDENTITY_SECRET"),
 		MediaDir:                  envOr("ERDAI_MEDIA_DIR", "/data/media"),
+		UpdateRepository:          envOr("ERDAI_UPDATE_REPOSITORY", "margetrp-hub/erdai-agent"),
+		UpdateAPIBaseURL:          envOr("ERDAI_UPDATE_API_BASE_URL", "https://api.github.com"),
 		ModelTimeout:              parseDurationSeconds(os.Getenv("ERDAI_MODEL_TIMEOUT_SECONDS"), 120),
 	})
 	if err != nil {
 		log.Fatal(err)
+	}
+	adminUsername := strings.TrimSpace(os.Getenv("ERDAI_ADMIN_USERNAME"))
+	adminPasswordHash := strings.TrimSpace(os.Getenv("ERDAI_ADMIN_PASSWORD_SHA256"))
+	if adminPasswordHash == "" {
+		adminPasswordHash = hashAdminPassword(os.Getenv("ERDAI_ADMIN_PASSWORD"))
 	}
 	defer runtime.Close()
 	if err = runtime.StartPlatformConnectors(context.Background()); err != nil {
@@ -96,7 +112,7 @@ func main() {
 	}
 	coreGateway := NewGatewayFromRoot("", webRoot)
 	coreGateway.runtime = runtime
-	adminGateway := NewGatewayFromRoot(adminToken, webRoot)
+	adminGateway := NewGatewayFromRootWithCredentials(adminToken, adminUsername, adminPasswordHash, webRoot)
 	adminGateway.runtime = runtime
 	servers := []*http.Server{
 		{Addr: coreListen, Handler: coreGateway, ReadHeaderTimeout: 10 * time.Second},
@@ -194,7 +210,13 @@ func NewGateway(adminToken string) *Gateway {
 }
 
 func NewGatewayFromRoot(adminToken, root string) *Gateway {
+	return NewGatewayFromRootWithCredentials(adminToken, "", "", root)
+}
+
+func NewGatewayFromRootWithCredentials(adminToken, adminUsername, adminPasswordHash, root string) *Gateway {
 	adminToken = strings.TrimSpace(adminToken)
+	adminUsername = strings.TrimSpace(adminUsername)
+	adminPasswordHash = strings.TrimSpace(adminPasswordHash)
 	staticFS, err := fs.Sub(webFiles, root)
 	if err != nil {
 		staticFS, _ = fs.Sub(webFiles, "web")
@@ -209,8 +231,8 @@ func NewGatewayFromRoot(adminToken, root string) *Gateway {
 			etag = `"erdai-webui-modern"`
 		}
 	}
-	gateway := &Gateway{static: http.FileServer(http.FS(staticFS)), assetETag: etag, adminToken: adminToken}
-	if adminToken != "" {
+	gateway := &Gateway{static: http.FileServer(http.FS(staticFS)), assetETag: etag, adminToken: adminToken, adminUsername: adminUsername, adminPasswordHash: adminPasswordHash}
+	if adminToken != "" || (adminUsername != "" && adminPasswordHash != "") {
 		gateway.adminSessions = map[string]time.Time{}
 	}
 	return gateway
@@ -225,7 +247,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	if g.adminToken != "" && strings.HasPrefix(r.URL.Path, "/auth/") {
+	if (g.adminToken != "" || (g.adminUsername != "" && g.adminPasswordHash != "")) && strings.HasPrefix(r.URL.Path, "/auth/") {
 		g.handleAdminAuth(w, r)
 		return
 	}
@@ -312,11 +334,13 @@ func (g *Gateway) handleAdminAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var payload struct {
-			Token string `json:"token"`
+			Token    string `json:"token"`
+			Username string `json:"username"`
+			Password string `json:"password"`
 		}
 		decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&payload); err != nil || !tokenMatches(payload.Token, g.adminToken) {
+		if err := decoder.Decode(&payload); err != nil || !g.adminCredentialsMatch(payload.Token, payload.Username, payload.Password) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error": map[string]string{"code": "unauthorized", "message": "administrator login failed"},
 			})
@@ -346,6 +370,80 @@ func (g *Gateway) handleAdminAuth(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not found"})
 	}
+}
+
+func (g *Gateway) adminCredentialsMatch(token, username, password string) bool {
+	if tokenMatches(token, g.adminToken) {
+		return true
+	}
+	return tokenMatches(username, g.adminUsername) && passwordHashMatches(password, g.adminPasswordHash)
+}
+
+func hashAdminPassword(password string) string {
+	password = strings.TrimSpace(password)
+	if password == "" {
+		return ""
+	}
+	const iterations = 120000
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return ""
+	}
+	derived := derivePasswordKey(password, salt, iterations)
+	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", iterations,
+		base64.RawURLEncoding.EncodeToString(salt), base64.RawURLEncoding.EncodeToString(derived))
+}
+
+func passwordHashMatches(password, expectedHash string) bool {
+	expectedHash = strings.TrimSpace(expectedHash)
+	if expectedHash == "" {
+		return false
+	}
+	parts := strings.Split(expectedHash, "$")
+	if len(parts) == 4 && parts[0] == "pbkdf2-sha256" {
+		iterations, err := strconv.Atoi(parts[1])
+		if err != nil || iterations < 100000 || iterations > 1000000 {
+			return false
+		}
+		salt, err := base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil || len(salt) < 16 {
+			return false
+		}
+		stored, err := base64.RawURLEncoding.DecodeString(parts[3])
+		if err != nil || len(stored) != sha256.Size {
+			return false
+		}
+		derived := derivePasswordKey(strings.TrimSpace(password), salt, iterations)
+		return subtle.ConstantTimeCompare(derived, stored) == 1
+	}
+	return tokenMatches(legacyPasswordHash(password), strings.ToLower(expectedHash))
+}
+
+func derivePasswordKey(password string, salt []byte, iterations int) []byte {
+	const keyLength = sha256.Size
+	result := make([]byte, 0, keyLength)
+	for block := uint32(1); len(result) < keyLength; block++ {
+		mac := hmac.New(sha256.New, []byte(password))
+		_, _ = mac.Write(salt)
+		_, _ = mac.Write([]byte{byte(block >> 24), byte(block >> 16), byte(block >> 8), byte(block)})
+		u := mac.Sum(nil)
+		accumulator := append([]byte(nil), u...)
+		for index := 1; index < iterations; index++ {
+			mac = hmac.New(sha256.New, []byte(password))
+			_, _ = mac.Write(u)
+			u = mac.Sum(nil)
+			for offset := range accumulator {
+				accumulator[offset] ^= u[offset]
+			}
+		}
+		result = append(result, accumulator...)
+	}
+	return result[:keyLength]
+}
+
+func legacyPasswordHash(password string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(password)))
+	return hex.EncodeToString(digest[:])
 }
 
 func (g *Gateway) createAdminSession() (string, error) {

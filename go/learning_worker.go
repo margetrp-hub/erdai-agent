@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -16,7 +19,11 @@ const (
 	minimumLearningPoll = time.Minute
 	maximumLearningPoll = time.Hour
 	maxLearningTopics   = 8
+	minLearningSources  = 2
+	maxLearningSources  = 5
 )
+
+var learningTopicSplit = regexp.MustCompile(`[\s,，、;；/|+]+`)
 
 type grokLearningPolicy struct {
 	Enabled               bool `json:"enabled"`
@@ -105,38 +112,144 @@ func (a *AgentRuntime) collectLearningCandidates(ctx context.Context, now time.T
 	}
 	candidates := make([]learningCandidate, 0, len(topics))
 	var collectionErrors []error
+	successfulResearch := 0
 	cycle := now.Unix() / int64(interval/time.Second)
 	for _, topic := range topics {
 		topic = strings.TrimSpace(topic)
 		if topic == "" {
 			continue
 		}
-		query := fmt.Sprintf("截至 %s，检索并整理与“%s”相关的近期变化。只保留来源能支持的事实，标明不确定性和日期，给出来源 URL。", now.Format("2006-01-02"), topic)
+		query := fmt.Sprintf("截至 %s，检索并整理与“%s”相关的近期变化。至少使用两个彼此独立且标题或摘要与主题直接相关的来源；只保留来源能支持的事实，标明不确定性和日期并给出来源 URL。找不到合格来源时明确返回无结果。", now.Format("2006-01-02"), topic)
 		content, sources, researchErr := a.grokResearch(ctx, query)
 		if researchErr != nil {
 			collectionErrors = append(collectionErrors, fmt.Errorf("%s: %w", topic, researchErr))
 			continue
 		}
+		successfulResearch++
+		credibleSources := credibleLearningSources(topic, sources)
+		if len([]rune(strings.TrimSpace(content))) < 80 || len(credibleSources) < minLearningSources {
+			collectionErrors = append(collectionErrors, fmt.Errorf("%s: source quality gate rejected the result", topic))
+			continue
+		}
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|%d", topic, cycle)))
-		sourceURI := ""
-		if len(sources) > 0 {
-			sourceURI = sources[0].URL
+		sourceURIs := make([]string, len(credibleSources))
+		for index := range credibleSources {
+			sourceURIs[index] = credibleSources[index].URL
 		}
 		candidates = append(candidates, learningCandidate{
 			ID:        "grok-learning-" + hex.EncodeToString(digest[:12]),
 			Title:     fmt.Sprintf("自动学习：%s（%s）", topic, now.Format("2006-01-02")),
 			Content:   truncateRunes(content, 20000),
-			SourceURI: sourceURI,
-			Tags:      []string{"auto-learning", "grok", topic},
+			SourceURI: strings.Join(sourceURIs, "; "),
+			Tags:      []string{"auto-learning", "grok", topic, fmt.Sprintf("sources:%d", len(credibleSources))},
 		})
 	}
 	if len(candidates) == 0 {
+		if successfulResearch > 0 {
+			if err = a.configStore.storeLearningCandidates(nil, now); err != nil {
+				return 0, err
+			}
+		}
 		return 0, errors.Join(collectionErrors...)
 	}
 	if err = a.configStore.storeLearningCandidates(candidates, now); err != nil {
 		return 0, err
 	}
 	return len(candidates), errors.Join(collectionErrors...)
+}
+
+func credibleLearningSources(topic string, sources []searchSource) []searchSource {
+	terms := learningTopicTerms(topic)
+	uniqueHosts := map[string]bool{}
+	credible := make([]searchSource, 0, len(sources))
+	for _, source := range sources {
+		parsed, err := url.Parse(strings.TrimSpace(source.URL))
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			continue
+		}
+		host := strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+		if uniqueHosts[host] || isGenericLearningSource(parsed) {
+			continue
+		}
+		haystack := normalizeLearningText(strings.Join([]string{source.Title, source.Snippet, source.Content, parsed.Path}, " "))
+		relevant := false
+		for _, term := range terms {
+			if strings.Contains(haystack, term) {
+				relevant = true
+				break
+			}
+		}
+		if !relevant {
+			continue
+		}
+		uniqueHosts[host] = true
+		credible = append(credible, source)
+		if len(credible) == maxLearningSources {
+			break
+		}
+	}
+	return credible
+}
+
+func learningTopicTerms(topic string) []string {
+	normalized := normalizeLearningText(topic)
+	values := learningTopicSplit.Split(strings.ToLower(strings.TrimSpace(topic)), -1)
+	values = append(values, normalized)
+	for _, generic := range []string{"近期变化", "相关", "动态", "基础", "排查"} {
+		trimmed := strings.ReplaceAll(normalized, generic, "")
+		if len([]rune(trimmed)) >= 2 {
+			values = append(values, trimmed)
+		}
+	}
+	for _, marker := range []string{"中文", "互联网", "口语", "梗", "暗语", "ai", "计算机", "网络", "故障", "事实", "核验"} {
+		if strings.Contains(normalized, marker) {
+			values = append(values, marker)
+		}
+	}
+	seen := map[string]bool{}
+	terms := []string{}
+	for _, value := range values {
+		value = normalizeLearningText(value)
+		if len([]rune(value)) < 2 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		terms = append(terms, value)
+	}
+	sort.SliceStable(terms, func(i, j int) bool { return len([]rune(terms[i])) > len([]rune(terms[j])) })
+	return terms
+}
+
+func normalizeLearningText(value string) string {
+	value = strings.ToLower(value)
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (r >= '\u4e00' && r <= '\u9fff') {
+			return r
+		}
+		return -1
+	}, value)
+}
+
+func isGenericLearningSource(value *url.URL) bool {
+	host := strings.ToLower(strings.TrimPrefix(value.Hostname(), "www."))
+	path := strings.ToLower(strings.Trim(value.Path, "/"))
+	for _, blocked := range []string{
+		"maps.google.", "photos.google.", "messenger.com", "web.webex.com", "chase.com",
+		"amazon.com", "apps.apple.com", "waimai.meituan.com", "rei.com",
+	} {
+		if strings.Contains(host, blocked) {
+			return true
+		}
+	}
+	if path == "" {
+		return true
+	}
+	for _, prefix := range []string{"login", "signin", "stores/", "gp/help/", "maps/", "search"} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *coreConfigStore) storeLearningCandidates(candidates []learningCandidate, collectedAt time.Time) error {

@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,5 +44,31 @@ func TestHandleCLIRejectsUnknownArguments(t *testing.T) {
 	handled, err := handleCLI([]string{"--unknown"})
 	if !handled || err == nil {
 		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+}
+
+func TestGatewayAdminUsernamePasswordLogin(t *testing.T) {
+	gateway := NewGatewayFromRootWithCredentials("legacy-admin-token-that-is-at-least-32-bytes", "admin", hashAdminPassword("correct horse"), "web")
+	server := httptest.NewServer(gateway)
+	defer server.Close()
+	payload, _ := json.Marshal(map[string]string{"username": "admin", "password": "correct horse"})
+	response, err := http.Post(server.URL+"/auth/login", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("password login = %d", response.StatusCode)
+	}
+	cookies := response.Cookies()
+	if len(cookies) != 1 || strings.TrimSpace(cookies[0].Value) == "" {
+		t.Fatalf("password login did not create a session cookie: %#v", cookies)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	request.AddCookie(cookies[0])
+	recorder := httptest.NewRecorder()
+	gateway.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"authenticated":true`) {
+		t.Fatalf("password session = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }

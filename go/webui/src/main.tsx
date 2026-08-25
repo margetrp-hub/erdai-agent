@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { KeyRound, LoaderCircle, LockKeyhole, TriangleAlert } from 'lucide-react';
+import { KeyRound, LoaderCircle, LockKeyhole, TriangleAlert, UserRound } from 'lucide-react';
 import { AppShell, type ViewId } from './components/AppShell';
 import { Button } from './components/ui';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
@@ -124,6 +124,8 @@ function App() {
 
 function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
   const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -142,7 +144,10 @@ function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
             setSubmitting(true);
             setError('');
             try {
-              await login(token);
+              if (!token.trim() && (!username.trim() || !password)) {
+                throw new Error('请输入管理员账号和密码，或输入兼容服务令牌');
+              }
+              await login(token.trim() ? { token } : { username, password });
               onSuccess();
             } catch (cause) {
               setError(cause instanceof Error ? cause.message : '登录失败');
@@ -152,16 +157,41 @@ function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           }}
         >
           <label className="input-field">
-            <span>管理员口令</span>
+            <span>管理员账号</span>
+            <span className="input-wrap">
+              <UserRound size={15} />
+              <input
+                type="text"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                autoComplete="username"
+                placeholder="ERDAI_ADMIN_USERNAME"
+              />
+            </span>
+          </label>
+          <label className="input-field">
+            <span>管理员密码</span>
             <span className="input-wrap">
               <KeyRound size={15} />
               <input
                 type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                placeholder="管理员密码"
+              />
+            </span>
+          </label>
+          <label className="input-field">
+            <span>兼容服务令牌</span>
+            <span className="input-wrap">
+              <LockKeyhole size={15} />
+              <input
+                type="password"
                 value={token}
                 onChange={(event) => setToken(event.target.value)}
-                autoComplete="current-password"
-                placeholder="输入 ERDAI_ADMIN_TOKEN"
-                required
+                autoComplete="off"
+                placeholder="ERDAI_ADMIN_TOKEN（可选）"
               />
             </span>
           </label>
@@ -170,7 +200,7 @@ function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
             {submitting ? '正在验证' : '登录控制面'}
           </Button>
         </form>
-        <small className="auth-footnote">ERDAI CORE · SAME-ORIGIN ADMIN SESSION</small>
+        <small className="auth-footnote">ERDAI CORE · SAME-ORIGIN ADMIN SESSION · TOKEN FALLBACK</small>
       </section>
     </main>
   );

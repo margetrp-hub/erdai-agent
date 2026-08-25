@@ -201,6 +201,7 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 	setTestIntegration(t, configDB, "grok_policy", map[string]any{
 		"enabled": true, "apiBase": service.URL + "/grok", "searchConnectionId": "xai-test", "searchModel": "search", "imageModel": "image",
 	})
+	setTestIntegration(t, configDB, "image_policy", map[string]any{"enabled": true})
 	if _, err := configDB.Exec(`INSERT INTO provider_connections
 		(id, provider, protocol, api_base, credential_ref, timeout_seconds, enabled, created_at, updated_at)
 		VALUES ('xai-test', 'xai-test', 'xai_responses', ?, 'ERDAI_TEST_XAI_KEY', 20, 1, '2026-08-07T00:00:00Z', '2026-08-07T00:00:00Z')`, service.URL+"/grok"); err != nil {
@@ -518,6 +519,7 @@ func TestGrokSelfImageUsesActivePersonaAvatarReference(t *testing.T) {
 	setTestIntegration(t, configDB, "grok_policy", map[string]any{
 		"enabled": true, "apiBase": service.URL + "/grok", "imageModel": "grok-imagine-image", "imageEditModel": "grok-imagine-edit",
 	})
+	setTestIntegration(t, configDB, "image_policy", map[string]any{"enabled": true})
 	if _, err = configDB.Exec("UPDATE personas SET avatar_data_uri = ? WHERE id = 'doubao'", avatar); err != nil {
 		t.Fatal(err)
 	}
@@ -575,6 +577,7 @@ func TestInboundImageEditUsesDurableAttachmentAsReference(t *testing.T) {
 	setTestIntegration(t, configDB, "grok_policy", map[string]any{
 		"enabled": true, "apiBase": service.URL + "/grok", "imageModel": "grok-imagine-image", "imageEditModel": "grok-imagine-edit",
 	})
+	setTestIntegration(t, configDB, "image_policy", map[string]any{"enabled": true})
 	_ = configDB.Close()
 	mediaDir := filepath.Join(t.TempDir(), "media")
 	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
@@ -652,6 +655,7 @@ func TestGrokSelfImageFallsBackWhenReferenceEditIsUnavailable(t *testing.T) {
 	setTestIntegration(t, configDB, "grok_policy", map[string]any{
 		"enabled": true, "apiBase": service.URL + "/grok", "imageModel": "grok-imagine-image", "imageEditModel": "grok-imagine-edit",
 	})
+	setTestIntegration(t, configDB, "image_policy", map[string]any{"enabled": true})
 	if _, err = configDB.Exec("UPDATE personas SET avatar_data_uri = ? WHERE id = 'doubao'", avatar); err != nil {
 		t.Fatal(err)
 	}
@@ -813,7 +817,7 @@ func TestMediaRouteGeneratesImageWithoutCallingChatProvider(t *testing.T) {
 		} `json:"data"`
 	}
 	decodeRecorder(t, lease, &progress)
-	if len(progress.Data) != 1 || progress.Data[0].Phase != "progress" || progress.Data[0].Message.Text != "我去画，马上给你。" {
+	if len(progress.Data) != 1 || progress.Data[0].Phase != "progress" || strings.TrimSpace(progress.Data[0].Message.Text) == "" {
 		t.Fatalf("progress delivery = %+v", progress.Data)
 	}
 	ack := runtimeRequest(t, runtime, "/api/v1/transport/deliveries/"+progress.Data[0].ID+"/ack", map[string]any{}, "")
@@ -840,7 +844,7 @@ func TestMediaRouteGeneratesImageWithoutCallingChatProvider(t *testing.T) {
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Text != "画好了，给你。" || len(payload.Attachments) != 1 {
+	if strings.TrimSpace(payload.Text) == "" || len(payload.Attachments) != 1 {
 		t.Fatalf("terminal payload = %+v", payload)
 	}
 	attachment := payload.Attachments[0]

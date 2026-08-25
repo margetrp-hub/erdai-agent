@@ -8,7 +8,6 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:6280:6280"
-      # Existing Tailscale/SSH admin tunnels still target 6282 during cutover.
       - "127.0.0.1:6282:6282"
       # OneBot sidecars connect over the private network only; never expose this publicly.
       - "${ERDAI_ONEBOT_BIND_IP:-127.0.0.1}:6209:6209"
@@ -22,7 +21,8 @@ services:
       - path: ${ERDAI_RUNTIME_ENV_FILE:-./runtime.env}
         required: false
     volumes:
-      - /opt/erdai-agent/data:/app/data
+      - ${ERDAI_DATA_DIR:-./data}:/app/data
+      - ${ERDAI_UPDATE_STATUS_DIR:-./update-status}:/app/update-status:ro
       - /etc/localtime:/etc/localtime:ro
     environment:
       TZ: Asia/Shanghai
@@ -32,10 +32,13 @@ services:
       ERDAI_RUNTIME_DATABASE: /app/data/erdai-agent-core.sqlite3
       ERDAI_LEGACY_RUNTIME_DATABASE: /app/data/erdai-runtime.sqlite3
       ERDAI_MEDIA_DIR: /app/data/media
+      ERDAI_MANAGED_CREDENTIALS_FILE: /app/data/managed-credentials.env
+      ERDAI_UPDATE_REQUEST_FILE: /app/data/update-request.json
+      ERDAI_UPDATE_STATUS_FILE: /app/update-status/update-status.json
       ERDAI_ADMIN_TOKEN: ${ERDAI_ADMIN_TOKEN:?ERDAI_ADMIN_TOKEN is required}
-      ERDAI_RUNTIME_TOKEN: ${ERDAI_RUNTIME_TOKEN:?ERDAI_RUNTIME_TOKEN is required}
+      ERDAI_RUNTIME_TOKEN: ${ERDAI_RUNTIME_TOKEN:-}
       ERDAI_RUN_ENCRYPTION_KEY: ${ERDAI_RUN_ENCRYPTION_KEY:?ERDAI_RUN_ENCRYPTION_KEY is required}
-      ERDAI_MODEL_API_KEY: ${ERDAI_MODEL_API_KEY:?ERDAI_MODEL_API_KEY is required}
+      ERDAI_MODEL_API_KEY: ${ERDAI_MODEL_API_KEY:-}
       ERDAI_GROK_API_KEY: ${ERDAI_GROK_API_KEY:-}
       ERDAI_GROK_PAID_API_KEY: ${ERDAI_GROK_PAID_API_KEY:-}
       ERDAI_LOCAL_SEMANTIC_KEY: ${ERDAI_LOCAL_SEMANTIC_KEY:?ERDAI_LOCAL_SEMANTIC_KEY is required}
@@ -108,7 +111,7 @@ services:
         aliases:
           - erdai-embedding
     volumes:
-      - /opt/erdai-agent/models:/models:ro
+      - ${ERDAI_MODEL_DIR:-./models}:/models:ro
     environment:
       TZ: Asia/Shanghai
       ERDAI_LOCAL_SEMANTIC_KEY: ${ERDAI_LOCAL_SEMANTIC_KEY:?ERDAI_LOCAL_SEMANTIC_KEY is required}

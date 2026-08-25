@@ -22,7 +22,7 @@ else
   web_asset=/app.js
 fi
 web_js=$(curl -fsS "http://127.0.0.1:6282$web_asset")
-for marker in /api/v1/runtime/media-quotas /api/v1/mcp/servers /api/v1/skills /api/v1/integrations/content_boundary_policy /api/v1/agent-instances '/api/v1/usage/stats?hours=24'; do
+for marker in /api/v1/runtime/media-quotas /api/v1/mcp/servers /api/v1/skills /api/v1/integrations/content_boundary_policy /api/v1/agent-instances /api/v1/credentials /api/v1/update/status /api/v1/update/request '/api/v1/usage/stats?hours=24'; do
   case "$web_js" in
     *"$marker"*) ;;
     *) echo "WebUI marker missing: $marker" >&2; exit 1 ;;
@@ -33,6 +33,9 @@ runtime_token=$(sed -n 's/^ERDAI_RUNTIME_TOKEN=//p' "$env_file" | tail -n 1)
 admin_token=$(sed -n 's/^ERDAI_ADMIN_TOKEN=//p' "$env_file" | tail -n 1)
 test "${#runtime_token}" -ge 32
 test "${#admin_token}" -ge 32
+stamp=$(date -u +%Y%m%d-%H%M%S)
+credential_check_name=ERDAI_VERIFY_TOKEN
+credential_check_value=erdai-release-credential-check-$stamp-$$
 
 prepare_output=$(mktemp /tmp/erdai-prepare.XXXXXX)
 anonymous_output=$(mktemp /tmp/erdai-anonymous.XXXXXX)
@@ -41,11 +44,19 @@ read_output=$(mktemp /tmp/erdai-read.XXXXXX)
 delete_output=$(mktemp /tmp/erdai-delete.XXXXXX)
 channel_config_output=$(mktemp /tmp/erdai-channel-config.XXXXXX)
 platform_status_output=$(mktemp /tmp/erdai-platform-status.XXXXXX)
+credentials_output=$(mktemp /tmp/erdai-credentials.XXXXXX)
+credential_put_output=$(mktemp /tmp/erdai-credential-put.XXXXXX)
 cleanup_outputs() {
   rm -f "$prepare_output" "$anonymous_output" "$create_output" "$read_output" \
-    "$delete_output" "$channel_config_output" "$platform_status_output"
+    "$delete_output" "$channel_config_output" "$platform_status_output" \
+    "$credentials_output" "$credential_put_output"
 }
-trap cleanup_outputs EXIT INT TERM
+cleanup_credential_check() {
+  curl -sS -o /dev/null -X DELETE \
+    -H "X-Erdai-Admin-Token: $admin_token" \
+    "http://127.0.0.1:6282/api/v1/credentials/$credential_check_name" || true
+}
+trap 'cleanup_credential_check; cleanup_outputs' EXIT INT TERM
 
 channel_config_status=$(curl -sS -o "$channel_config_output" -w '%{http_code}' \
   -H "X-Erdai-Admin-Token: $admin_token" \
@@ -59,6 +70,43 @@ channel = json.load(open(sys.argv[1], encoding="utf-8"))["data"]["config"]
 assert channel["mode"] == sys.argv[2]
 assert set(channel) == {"mode", "captureUnaddressedGroups", "deliveryPollSeconds"}
 PY
+
+credentials_status=$(curl -sS -o "$credentials_output" -w '%{http_code}' \
+  -H "X-Erdai-Admin-Token: $admin_token" \
+  http://127.0.0.1:6282/api/v1/credentials)
+test "$credentials_status" = 200
+test -z "$(grep -F "$runtime_token" "$credentials_output" || true)"
+credential_put_status=$(curl -sS -o "$credential_put_output" -w '%{http_code}' \
+  -X PUT http://127.0.0.1:6282/api/v1/credentials/$credential_check_name \
+  -H 'content-type: application/json' \
+  -H "X-Erdai-Admin-Token: $admin_token" \
+  --data "{\"value\":\"$credential_check_value\"}")
+test "$credential_put_status" = 200
+grep -q '"persisted":true' "$credential_put_output"
+test -z "$(grep -F "$credential_check_value" "$credential_put_output" || true)"
+credentials_status=$(curl -sS -o "$credentials_output" -w '%{http_code}' \
+  -H "X-Erdai-Admin-Token: $admin_token" \
+  http://127.0.0.1:6282/api/v1/credentials)
+test "$credentials_status" = 200
+test -z "$(grep -F "$credential_check_value" "$credentials_output" || true)"
+python3 - "$credentials_output" "$credential_check_name" <<'PY'
+import json
+import sys
+
+items = json.load(open(sys.argv[1], encoding="utf-8"))["data"]["items"]
+item = next(item for item in items if item["name"] == sys.argv[2])
+assert item["configured"] is True
+assert item["persisted"] is True
+PY
+credential_delete_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X DELETE http://127.0.0.1:6282/api/v1/credentials/$credential_check_name \
+  -H "X-Erdai-Admin-Token: $admin_token")
+test "$credential_delete_status" = 200
+credentials_status=$(curl -sS -o "$credentials_output" -w '%{http_code}' \
+  -H "X-Erdai-Admin-Token: $admin_token" \
+  http://127.0.0.1:6282/api/v1/credentials)
+test "$credentials_status" = 200
+test -z "$(grep -F "$credential_check_name" "$credentials_output" | grep -F '"configured":true' || true)"
 
 prepare_payload='{"transport":"verification","conversationRef":"release-check","senderRef":"release-check","message":"ping","hasImage":false,"hasAudio":false,"isAdmin":true,"legacyModel":""}'
 runtime_prepare_status=$(curl -sS -o "$prepare_output" -w '%{http_code}' \
@@ -74,14 +122,13 @@ anonymous_status=$(curl -sS -o "$anonymous_output" -w '%{http_code}' \
   -H 'content-type: application/json' --data '{}')
 test "$anonymous_status" = 404
 
-stamp=$(date -u +%Y%m%d-%H%M%S)
 write_check_id=release-write-check-$stamp-$$
 cleanup_write_check() {
   curl -sS -o /dev/null -X DELETE \
     -H "X-Erdai-Admin-Token: $admin_token" \
     "http://127.0.0.1:6282/api/v1/tools/$write_check_id" || true
 }
-trap 'cleanup_write_check; cleanup_outputs' EXIT INT TERM
+trap 'cleanup_write_check; cleanup_credential_check; cleanup_outputs' EXIT INT TERM
 created_status=$(curl -sS -o "$create_output" -w '%{http_code}' \
   -X POST http://127.0.0.1:6282/api/v1/tools \
   -H 'content-type: application/json' \

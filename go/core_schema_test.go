@@ -1062,3 +1062,31 @@ func TestCoreConfigSchemaV51MigratesOnlyLegacyMemoryCopy(t *testing.T) {
 		t.Fatalf("memory skill instructions = %q", instructions)
 	}
 }
+
+func TestCoreConfigSchemaV74RestoresXiaomanVisualIsolation(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	if _, err := db.Exec(`UPDATE personas SET
+		visual_description = 'schema 64 visual card', character_version = '1.3.0', source_version = 'go-schema-64'
+		WHERE id = 'xiaoman';
+		PRAGMA user_version = 73;`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	persona, found, err := store.persona("default", "xiaoman")
+	if err != nil || !found {
+		t.Fatalf("xiaoman persona missing: found=%v err=%v", found, err)
+	}
+	if persona.CharacterVersion != "1.3.1" || persona.SourceVersion != "go-schema-74" ||
+		!strings.Contains(persona.VisualDescription, "不得读取或复用豆包") {
+		t.Fatalf("xiaoman v74 visual isolation = %+v", persona)
+	}
+}

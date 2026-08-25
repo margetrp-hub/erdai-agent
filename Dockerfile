@@ -12,10 +12,15 @@ RUN /usr/local/go/bin/go mod download
 COPY go/ ./
 
 FROM source AS verify
-RUN /usr/local/go/bin/go test -p=1 -timeout 20m ./... && /usr/local/go/bin/go vet -p=1 ./...
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=tmpfs,target=/tmp \
+    /usr/local/go/bin/go test -p=1 -timeout 20m ./... \
+    && /usr/local/go/bin/go vet -p=1 ./...
 
 FROM source AS build
-RUN CGO_ENABLED=0 GOOS=linux /usr/local/go/bin/go build -p=1 -trimpath -ldflags="-s -w" -o /out/root/app/erdai-agent . \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=tmpfs,target=/tmp \
+    CGO_ENABLED=0 GOOS=linux /usr/local/go/bin/go build -p=1 -trimpath -ldflags="-s -w" -o /out/root/app/erdai-agent . \
     && mkdir -p /out/root/app/data/media /out/root/etc/ssl/certs \
     && cp /etc/ssl/certs/ca-certificates.crt /out/root/etc/ssl/certs/ca-certificates.crt \
     && ln -s /app/data/media /out/root/erdai-media \

@@ -23,12 +23,12 @@ func TestXiaomanIsARealSecondPersonaWithoutDoubaoPrompt(t *testing.T) {
 	if persona.Name != "小满" || strings.Contains(persona.SystemPrompt, "群高级管家") || strings.Contains(persona.SystemPrompt, "豆包") {
 		t.Fatalf("xiaoman is still coupled to doubao: %+v", persona)
 	}
-	for _, expected := range []string{"会撒娇", "脾气来得快", "不是客服、百科", "不露骨", "坦率说"} {
+	for _, expected := range []string{"会撒娇", "脾气来得快", "不是客服、百科", "不裸露", "坦率说"} {
 		if !strings.Contains(persona.SystemPrompt, expected) {
 			t.Fatalf("xiaoman prompt missing %q: %s", expected, persona.SystemPrompt)
 		}
 	}
-	if persona.CharacterVersion != "1.2.0" || !strings.Contains(persona.VisualDescription, "明确成年") ||
+	if persona.CharacterVersion != "1.3.1" || !strings.Contains(persona.VisualDescription, "明确成年") ||
 		!strings.Contains(persona.VisualDescription, "不得读取或复用豆包") || !strings.Contains(persona.VisualDescription, "场景、机位、动作") {
 		t.Fatalf("xiaoman visual boundary = %s", persona.VisualDescription)
 	}

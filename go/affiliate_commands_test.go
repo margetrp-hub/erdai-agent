@@ -57,15 +57,15 @@ func TestQQAffiliateTransport(t *testing.T) {
 func TestValidOPSStatusURL(t *testing.T) {
 	for _, value := range []string{
 		"https://ohlaoo.com/ops-bot/group-status",
-		"http://100.116.21.100:18089/api/ohlao/group-status",
-		"http://100.127.224.127/ops-bot/group-status",
+		"http://100.64.0.1:18089/api/ops/group-status",
+		"http://192.168.0.10/ops-bot/group-status",
 	} {
 		parsed, err := url.Parse(value)
 		if err != nil || !validOPSStatusURL(parsed) {
 			t.Fatalf("validOPSStatusURL(%q) = false", value)
 		}
 	}
-	for _, value := range []string{"http://ohlaoo.com/ops-bot/group-status", "ftp://100.116.21.100/status"} {
+	for _, value := range []string{"http://ohlaoo.com/ops-bot/group-status", "ftp://192.0.2.1/status"} {
 		parsed, err := url.Parse(value)
 		if err != nil || validOPSStatusURL(parsed) {
 			t.Fatalf("validOPSStatusURL(%q) = true", value)

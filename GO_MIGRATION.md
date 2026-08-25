@@ -1,10 +1,10 @@
 # 二呆智能体 Go 迁移与运行边界
 
-> 当前源码与线上口径以 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md) 为唯一机器可读事实源(2026-08-24 核实:`erdai-agent:themes-20260824-r13`,runtime `0.11.1`,Schema v73,OVH Tailscale `100.116.21.100`)。下文历史段落中的 `0.9.4-runtime-instances-r2`、`Schema v59` 为 2026-08-11 时点记录,已过时。2026-08-11 已完成真实 QQ @、实例路由、Outbox 投递与 ACK canary;旧 250 不再是二呆完整计算主节点。
+> 当前源码与公开发布口径以 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md) 为唯一机器可读事实源。生产主机、网络地址、备份路径和真实账号验收记录不写入公开仓库，保存在私有运维记录中。下文历史段落中的 `0.9.4-runtime-instances-r2`、`Schema v59` 仅用于迁移背景，不代表当前发布版本。
 
 ## 2026-08-24 二呆四主题 UI
 
-- **VERIFIED-CURRENT / 发布范围。** r13 只更新现代 WebUI 展示层与静态主题资源，Core API、SQLite schema v73、角色卡、模型、连接器和渠道业务逻辑未改动。主题选择器提供四个独立风格：`native` 原生、`standard` 标准、`anime` 二次元、`industrial` 废土工业；选择结果写入浏览器本地存储并在登录页与控制面保持一致。
+- **VERIFIED-CURRENT / 发布范围。** 现代 WebUI 提供四个独立风格：`native` 原生、`standard` 标准、`anime` 二次元、`industrial` 废土工业；选择结果写入浏览器本地存储并在登录页与控制面保持一致。当前 Core 使用 SQLite schema v74；v74 仅为未被管理员改写的小满 1.3.0 视觉卡补回与豆包身份隔离约束，并升级为角色卡 1.3.1。
 - **VERIFIED-CURRENT / 视觉与适配。** 原生沿用当前深色控制面；标准为中性浅色工作台；二次元使用星际中继背景和导航角色；废土工业使用工业废墟背景、操作员图像、锈橙信号色和深色高对比面板。主题图标、背景和角色图均随 Core 镜像同源嵌入，不依赖外部 CDN。
 - **VERIFIED-CURRENT / 验收。** 本地 Vite 构建与聚焦 Go 嵌入资源测试通过；生产部署脚本完成 `off -> 健康/Schema/API/临时写读删/QQ connector -> active` 闭环。真实管理员会话中四主题均可切换并生成截图；`390px` 移动端回读 `scrollWidth=390`，无横向溢出。生产容器 `healthy`、重启 `0`、`OOMKilled=false`、用户 `1000:1000`、只读根文件系统为 `true`。
 - **BOUNDARY.** 完整 Go 回归本轮未运行，未发送真实 QQ 测试消息；主题默认值仍由每位浏览器本地选择决定，未强制覆盖现有管理员偏好。

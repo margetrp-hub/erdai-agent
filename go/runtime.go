@@ -49,6 +49,8 @@ type RuntimeConfig struct {
 	EncryptionKey                 string
 	IdentitySecret                string
 	MediaDir                      string
+	UpdateRepository              string
+	UpdateAPIBaseURL              string
 	ModelTimeout                  time.Duration
 	VideoPollInterval             time.Duration
 	VideoPollMaxTransientFailures int
@@ -66,6 +68,8 @@ type AgentRuntime struct {
 	imageAPIKey                   string
 	opsToken                      string
 	mediaDir                      string
+	updateRepository              string
+	updateAPIBaseURL              string
 	aead                          cipher.AEAD
 	identitySecret                []byte
 	client                        *http.Client
@@ -226,11 +230,12 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 	if strings.TrimSpace(config.ConfigDatabasePath) == "" {
 		return nil, errors.New("ERDAI_CONFIG_DATABASE is required")
 	}
-	if len(strings.TrimSpace(config.RuntimeToken)) < 32 {
+	// A fresh private installation may not have business credentials yet. Keep
+	// the authenticated management plane available so the operator can fill
+	// them in; runtime authorization and model calls remain unavailable until
+	// the corresponding credentials are configured.
+	if token := strings.TrimSpace(config.RuntimeToken); token != "" && len(token) < 32 {
 		return nil, errors.New("ERDAI_RUNTIME_TOKEN must contain at least 32 characters")
-	}
-	if strings.TrimSpace(config.ModelAPIKey) == "" {
-		return nil, errors.New("ERDAI_MODEL_API_KEY is required")
 	}
 	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(config.EncryptionKey))
 	if err != nil || len(key) != 32 {
@@ -369,6 +374,18 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 			mime_type TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			UNIQUE(step_id, local_path)
+		);
+		CREATE TABLE IF NOT EXISTS media_task_health (
+			media_kind TEXT PRIMARY KEY CHECK(media_kind IN ('image', 'video')),
+			success_count INTEGER NOT NULL DEFAULT 0 CHECK(success_count >= 0),
+			failure_count INTEGER NOT NULL DEFAULT 0 CHECK(failure_count >= 0),
+			consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures >= 0),
+			last_started_at TEXT NOT NULL,
+			last_success_at TEXT,
+			last_failure_at TEXT,
+			last_failure_class TEXT NOT NULL DEFAULT '',
+			last_endpoint_id TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS agent_media_gc_runs (
 			id TEXT PRIMARY KEY,
@@ -614,15 +631,17 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runtime := &AgentRuntime{
 		db: db, configStore: configStore,
-		adminToken:    strings.TrimSpace(config.AdminToken),
-		runtimeToken:  strings.TrimSpace(config.RuntimeToken),
-		modelAPIKey:   strings.TrimSpace(config.ModelAPIKey),
-		grokAPIKey:    strings.TrimSpace(config.GrokAPIKey),
-		searchBaseURL: searchBaseURL,
-		imageAPIKey:   strings.TrimSpace(config.ImageAPIKey),
-		opsToken:      strings.TrimSpace(config.OpsToken),
-		mediaDir:      strings.TrimSpace(config.MediaDir),
-		aead:          aead, client: client, wake: make(chan struct{}, runtimeWorkerCount),
+		adminToken:       strings.TrimSpace(config.AdminToken),
+		runtimeToken:     strings.TrimSpace(config.RuntimeToken),
+		modelAPIKey:      strings.TrimSpace(config.ModelAPIKey),
+		grokAPIKey:       strings.TrimSpace(config.GrokAPIKey),
+		searchBaseURL:    searchBaseURL,
+		imageAPIKey:      strings.TrimSpace(config.ImageAPIKey),
+		opsToken:         strings.TrimSpace(config.OpsToken),
+		mediaDir:         strings.TrimSpace(config.MediaDir),
+		updateRepository: strings.TrimSpace(config.UpdateRepository),
+		updateAPIBaseURL: strings.TrimRight(strings.TrimSpace(config.UpdateAPIBaseURL), "/"),
+		aead:             aead, client: client, wake: make(chan struct{}, runtimeWorkerCount),
 		lifecycle:                     ctx,
 		cancel:                        cancel,
 		videoPollInterval:             config.VideoPollInterval,
@@ -773,8 +792,11 @@ func (a *AgentRuntime) Close() error {
 		} else if a.realtime != nil {
 			a.closeErr = errors.Join(a.closeErr, a.realtime.Close())
 		}
-		a.workers.Wait()
+		// Closing the runtime database before waiting interrupts workers that
+		// are blocked on a saturated connection pool while shutdown is in
+		// progress. Active SQL operations still finish according to database/sql.
 		a.closeErr = errors.Join(a.closeErr, a.db.Close())
+		a.workers.Wait()
 		if a.configStore != nil {
 			a.closeErr = errors.Join(a.closeErr, a.configStore.Close())
 		}
@@ -841,6 +863,9 @@ func isRuntimeTransportPath(path string) bool {
 }
 
 func (a *AgentRuntime) authorized(r *http.Request) bool {
+	if strings.TrimSpace(a.runtimeToken) == "" {
+		return false
+	}
 	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	left := sha256.Sum256([]byte(raw))
 	right := sha256.Sum256([]byte(a.runtimeToken))
@@ -1965,7 +1990,7 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	}
 	if config, configErr := a.configStore.runtimeConfig(); configErr == nil &&
 		config.KnowledgeInjectionEnabled && strings.TrimSpace(message) != "" {
-		if items, ragErr := a.searchRuntimeKnowledge(ctx, config.KnowledgeNamespace, message); ragErr == nil {
+		if items, ragErr := a.searchRuntimeKnowledgeForRun(ctx, run.ID, config.KnowledgeNamespace, message); ragErr == nil {
 			prepared.Data.RAGContext.Items = items
 		}
 	}
@@ -2371,6 +2396,7 @@ func (a *AgentRuntime) untrustedConversationContext(ctx context.Context, run run
 	if !policy.Enabled {
 		return ""
 	}
+	started := time.Now()
 	scope := runtimeScopeFromRun(run)
 	memoryConversation := scope.memoryConversationRef()
 	limit := policy.RetrievalLimit
@@ -2390,6 +2416,12 @@ func (a *AgentRuntime) untrustedConversationContext(ctx context.Context, run run
 			contextPolicy.ColdRecallScanMessages, contextPolicy.ColdRecallMaxMessages,
 		)
 	}
+	_ = a.recordRunStage(run.ID, "memory_recall", started, map[string]any{
+		"source": "context_injection", "userMatches": len(userMemories),
+		"groupMatches": len(groupMemories), "recentEvents": len(recent),
+		"episodes": len(episodes), "coldEvents": len(cold),
+		"returned": len(userMemories) + len(groupMemories), "success": true,
+	})
 	if len(userMemories) == 0 && len(groupMemories) == 0 && len(recent) == 0 && len(cold) == 0 {
 		return ""
 	}

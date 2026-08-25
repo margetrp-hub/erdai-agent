@@ -339,6 +339,147 @@ button:disabled {
   background: #25343c;
 }
 
+.ui-button-text {
+  width: auto;
+  min-width: 0;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.readiness-panel {
+  margin: 16px 0;
+}
+
+.readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 20px 16px;
+}
+
+.readiness-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgb(255 255 255 / .025);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.readiness-item.is-ready {
+  border-color: rgb(83 202 153 / .35);
+}
+
+.readiness-item.is-required {
+  border-color: rgb(235 116 105 / .45);
+  background: rgb(235 116 105 / .07);
+}
+
+.readiness-indicator {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--muted);
+  font: 700 11px/1 ui-monospace, monospace;
+}
+
+.is-ready .readiness-indicator {
+  color: var(--green);
+}
+
+.is-required .readiness-indicator {
+  color: var(--danger);
+}
+
+.readiness-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.readiness-copy strong,
+.readiness-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readiness-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.readiness-copy small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.readiness-feedback {
+  padding: 0 20px 10px;
+}
+
+.update-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 20px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.update-result strong {
+  color: var(--text);
+}
+
+.update-result.is-available {
+  border-color: rgb(110 214 170 / .42);
+  background: rgb(110 214 170 / .08);
+}
+
+.update-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.update-status {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: -8px 20px 16px;
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.update-status strong {
+  color: var(--text);
+}
+
+.update-status.is-unavailable strong {
+  color: var(--amber);
+}
+
+.update-status small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .shell-layout {
   display: grid;
   grid-template-columns: 238px minmax(0, 1fr);
@@ -1338,9 +1479,36 @@ button:disabled {
   .inventory-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .readiness-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .update-result {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .update-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .update-status {
+    grid-template-columns: auto auto;
+  }
+
+  .update-status small {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
 }
 
 @media (max-width: 520px) {
+  .readiness-grid {
+    grid-template-columns: 1fr;
+  }
+
   .top-actions .ui-button {
     width: 32px;
     min-width: 32px;
@@ -1990,6 +2158,67 @@ button:disabled {
   gap: 12px;
 }
 
+.credential-grid {
+  display: grid;
+  gap: 8px;
+  padding: 0 20px 20px;
+}
+
+.credential-row {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgb(255 255 255 / .025);
+}
+
+.credential-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.credential-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credential-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credential-input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  background: rgb(5 12 16 / .72);
+}
+
+.credential-input:focus {
+  border-color: var(--violet);
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(178 145 255 / .12);
+}
+
+.credential-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .persona-modern-card,
 .relationship-modern-card {
   display: grid;
@@ -2216,6 +2445,14 @@ button:disabled {
   .plugin-grid,
   .policy-preview {
     grid-template-columns: 1fr;
+  }
+
+  .credential-row {
+    grid-template-columns: 1fr;
+  }
+
+  .credential-actions {
+    justify-content: flex-start;
   }
 
   .module-select {

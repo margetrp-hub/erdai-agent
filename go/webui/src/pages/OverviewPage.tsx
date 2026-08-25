@@ -1,5 +1,6 @@
 import {
   ArrowUpRight,
+  ArrowUpCircle,
   Bot,
   Cable,
   Database,
@@ -7,14 +8,15 @@ import {
   GitBranch,
   HeartPulse,
   PackageCheck,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
   Wrench,
 } from 'lucide-react';
-import type { DashboardData } from '../lib/api';
+import { apiRequest, type DashboardData, type StableUpdate, type UpdateStatus } from '../lib/api';
 import { Button, InfoDialog, Panel, PanelHeading } from '../components/ui';
 import type { ViewId } from '../components/AppShell';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 type OverviewTab = 'signal' | 'inventory' | 'governance';
 
@@ -27,8 +29,28 @@ const inventory = [
   { key: 'platform_integrations', label: '连接器', icon: Cable, view: 'integrations' as ViewId, accent: 'cyan' },
 ];
 
+const readinessViews: Partial<Record<string, ViewId>> = {
+  admin_token: 'system',
+  runtime_token: 'system',
+  encryption_key: 'system',
+  model_provider: 'models',
+  semantic_provider: 'system',
+  qq_official: 'integrations',
+  grok: 'models',
+  image: 'models',
+  ops: 'integrations',
+};
+
 function numberValue(value: number | undefined) {
   return new Intl.NumberFormat('zh-CN').format(value ?? 0);
+}
+
+function updateStateLabel(state: string) {
+  return ({ idle: '已就绪', pending: '等待执行', running: '升级中', succeeded: '升级完成', failed: '升级失败' } as Record<string, string>)[state] || state;
+}
+
+function capabilityStatusLabel(status?: string) {
+  return ({ available: '真实任务可用', degraded: '真实任务异常', unverified: '待真实任务验证' } as Record<string, string>)[status || ''] || '暂无证据';
 }
 
 export function OverviewPage({
@@ -42,16 +64,38 @@ export function OverviewPage({
 }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<OverviewTab>('signal');
+  const [update, setUpdate] = useState<StableUpdate | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [requestingUpdate, setRequestingUpdate] = useState(false);
+  const [updateError, setUpdateError] = useState('');
   const counts = data.overview.counts || {};
   const models = data.overview.models || {};
+  const observability = data.observability || {};
   const activeInstance = (data.agentInstances.items || []).find((instance) => instance.id === activeInstanceId) || data.agentInstances.items?.[0];
   const activePersona = (data.personas.items || []).find((persona) => persona.id === (activeInstance?.personaId || data.config.activePersonaId));
   const facts = [
     ['Core Schema', `v${data.overview.schemaVersion ?? 0}`],
-    ['模型状态', `${models.healthy ?? 0} 健康 / ${models.unhealthy ?? 0} 异常`],
+    ['端点探针', `${models.healthy ?? 0} 健康 / ${models.unhealthy ?? 0} 异常`],
     ['路由模式', data.overview.routing?.mode || 'auto'],
     ['自动学习', data.config.learningEnabled ? '已启用' : '已关闭'],
+    ['生图', capabilityStatusLabel(observability.media?.image?.status)],
+    ['生视频', capabilityStatusLabel(observability.media?.video?.status)],
+    ['知识召回（24h）', `${observability.retrieval?.queryCount24h ?? 0} 次`],
+    ['记忆召回（24h）', `${observability.memory?.recallCount24h ?? 0} 次`],
   ];
+
+  useEffect(() => {
+    if (updateStatus?.state !== 'pending' && updateStatus?.state !== 'running') return;
+    const timer = window.setInterval(async () => {
+      try {
+        setUpdateStatus(await apiRequest<UpdateStatus>('/api/v1/update/status'));
+      } catch (cause) {
+        setUpdateError(cause instanceof Error ? cause.message : '升级状态读取失败');
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [updateStatus?.state]);
 
   return (
     <div className="view-stage">
@@ -80,11 +124,11 @@ export function OverviewPage({
           <small>独立运行边界</small>
         </article>
         <article className="metric-cell metric-amber">
-          <span>健康模型</span>
+          <span>探针健康</span>
           <strong>
             {models.healthy ?? 0} <em>/ {models.configured ?? 0}</em>
           </strong>
-          <small>Fresh health samples</small>
+          <small>接口探针，不代表真实生成</small>
         </article>
         <article className="metric-cell metric-violet">
           <span>累计任务</span>
@@ -92,6 +136,100 @@ export function OverviewPage({
           <small>Durable runs</small>
         </article>
       </div>
+
+      <Panel accent={data.installation.ready ? 'green' : 'amber'} className="readiness-panel">
+        <PanelHeading
+          eyebrow="INSTALLATION / READINESS"
+          title={data.installation.ready ? '运行条件已满足' : '首次启动还缺少配置'}
+          description={`${data.installation.configuredCount} 项已配置 · ${data.installation.requiredCount} 项为运行必需。敏感值只保留在运行环境，不会回显。`}
+          action={(
+            <Button
+              variant="secondary"
+              icon={<RefreshCw size={15} className={checkingUpdate ? 'spin' : ''} />}
+              disabled={checkingUpdate}
+              onClick={async () => {
+                setCheckingUpdate(true);
+                setUpdateError('');
+                try {
+                  const [stable, status] = await Promise.all([
+                    apiRequest<StableUpdate>('/api/v1/update/check'),
+                    apiRequest<UpdateStatus>('/api/v1/update/status'),
+                  ]);
+                  setUpdate(stable);
+                  setUpdateStatus(status);
+                } catch (cause) {
+                  setUpdateError(cause instanceof Error ? cause.message : 'Stable 更新检查失败');
+                } finally {
+                  setCheckingUpdate(false);
+                }
+              }}
+            >
+              {checkingUpdate ? '检查中' : '检查 Stable 更新'}
+            </Button>
+          )}
+        />
+        <div className="readiness-grid">
+          {data.installation.checks.map((check) => (
+            <button
+              className={`readiness-item ${check.configured ? 'is-ready' : check.required ? 'is-required' : 'is-optional'}`}
+              type="button"
+              key={check.id}
+              onClick={() => {
+                const view = readinessViews[check.id];
+                if (view) onNavigate(view);
+              }}
+            >
+              <span className="readiness-indicator" aria-hidden="true">{check.configured ? '✓' : check.required ? '!' : '·'}</span>
+              <span className="readiness-copy">
+                <strong>{check.label}</strong>
+                <small>{check.configured ? '已配置' : check.required ? '待配置' : '未启用'} · {check.detail}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+        {updateError ? <p className="form-error readiness-feedback">{updateError}</p> : null}
+        {update ? (
+          <div className={`update-result ${update.updateAvailable ? 'is-available' : ''}`}>
+            <span>当前 v{update.currentVersion}</span>
+            <strong>{update.latestVersion ? `Stable v${update.latestVersion}` : '暂无可用 Stable 发布'}</strong>
+            <div className="update-actions">
+              {update.updateAvailable && update.releaseUrl ? <a className="ui-button ui-button-ghost ui-button-text" href={update.releaseUrl} target="_blank" rel="noreferrer">查看发行版</a> : null}
+              {update.updateAvailable && update.upgradeReady ? (
+                <Button
+                  variant="primary"
+                  icon={<ArrowUpCircle size={14} />}
+                  disabled={!updateStatus?.agentReady || requestingUpdate || updateStatus?.state === 'pending' || updateStatus?.state === 'running'}
+                  onClick={async () => {
+                    if (!window.confirm(`确认升级到 Stable v${update.latestVersion}？升级期间服务会短暂重启。`)) return;
+                    setRequestingUpdate(true);
+                    setUpdateError('');
+                    try {
+                      const status = await apiRequest<UpdateStatus>('/api/v1/update/request', {
+                        method: 'POST',
+                        body: JSON.stringify({ version: update.latestVersion }),
+                      });
+                      setUpdateStatus(status);
+                    } catch (cause) {
+                      setUpdateError(cause instanceof Error ? cause.message : 'Stable 升级请求失败');
+                    } finally {
+                      setRequestingUpdate(false);
+                    }
+                  }}
+                >
+                  {requestingUpdate ? '提交中' : '提交 Stable 升级'}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        {updateStatus ? (
+          <div className={`update-status ${updateStatus.agentReady ? 'is-ready' : 'is-unavailable'}`}>
+            <span>宿主机升级代理</span>
+            <strong>{updateStatus.agentReady ? updateStateLabel(updateStatus.state) : '未就绪'}</strong>
+            <small>{updateStatus.message || '只有受信任的宿主机代理会执行下载、校验、备份和回滚。'}</small>
+          </div>
+        ) : null}
+      </Panel>
 
       <div className="overview-tabs">
         <div className="tabs-list" role="tablist" aria-label="总览面板">

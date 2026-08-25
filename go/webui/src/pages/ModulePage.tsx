@@ -1063,6 +1063,8 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
   const active = ctx.tab || 'channels';
   const runtimeMap = new Map(runtime.map((item) => [text(item.id), item]));
   const policies = integrations.filter((item) => asRecord(item.config) && Object.keys(asRecord(item.config)).length > 0);
+  const credentialConfig = asRecord(data.credentials);
+  const credentials = collectionItems<JsonMap>(credentialConfig);
   return (
     <ModuleShell accent="violet">
       <MetricRail items={[
@@ -1073,6 +1075,7 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
       ]} />
       <SectionTabs active={active} onChange={ctx.setTab} tabs={[
         { id: 'channels', label: '渠道与接管', count: platforms.length },
+        { id: 'credentials', label: '凭据配置', count: credentials.length },
         { id: 'policies', label: '策略模块', count: policies.length },
         { id: 'catalog', label: '平台目录', count: collectionItems(data.platformCatalog).length },
       ]} />
@@ -1081,7 +1084,7 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
           <PanelHeading
             eyebrow="PLATFORM CONNECTORS"
             title="平台连接器"
-            description="连接参数保存在 Core；凭据只引用服务器环境变量。"
+            description="连接参数保存在 Core；凭据引用服务器环境变量，可在凭据配置中填写。"
             action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增平台连接器', {
               id: crypto.randomUUID(),
               type: 'custom',
@@ -1110,6 +1113,8 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
             {!platforms.length ? <EmptyState text="暂无平台连接器。" /> : null}
           </div>
         </Panel>
+      ) : active === 'credentials' ? (
+        <CredentialPanel credentials={credentials} credentialFileConfigured={enabled(credentialConfig.credentialFileConfigured)} onReload={ctx.reload} />
       ) : active === 'policies' ? (
         <div className="module-policy-grid">
           {policies.map((policy) => <PolicyPanel key={itemId(policy)} title={text(policy.displayName, text(policy.id))} description={text(policy.description, 'Core 策略模块')} value={policy.config} endpointPath={endpoint('/api/v1/integrations', itemId(policy))} accent="violet" onEdit={ctx.openEditor} />)}
@@ -1122,6 +1127,66 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
         </Panel>
       )}
     </ModuleShell>
+  );
+}
+
+function CredentialPanel({ credentials, credentialFileConfigured, onReload }: { credentials: JsonMap[]; credentialFileConfigured: boolean; onReload: () => void }) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState('');
+  const [notice, setNotice] = useState('');
+  const save = async (name: string, value: string) => {
+    setSaving(name);
+    setNotice('');
+    try {
+      await apiRequest(`/api/v1/credentials/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ value }) });
+      setValues((current) => ({ ...current, [name]: '' }));
+      setNotice(`${name} 已保存，当前进程立即生效。`);
+      onReload();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : '凭据保存失败');
+    } finally {
+      setSaving('');
+    }
+  };
+  return (
+    <Panel accent="violet">
+      <PanelHeading
+        eyebrow="CREDENTIALS / HOST ENV"
+        title="供应商与平台凭据"
+        description="只显示配置状态，不回显密钥。输入后写入数据卷中的托管凭据文件，并在覆盖前保留 .bak。"
+      />
+      {!credentialFileConfigured ? <div className="module-notice module-notice-inline"><HardDrive size={15} />托管凭据文件尚未创建，首次保存时会在数据卷中创建。</div> : null}
+      {notice ? <div className="module-notice module-notice-inline"><CheckCircle2 size={15} />{notice}</div> : null}
+      <div className="credential-grid">
+        {credentials.map((credential) => {
+          const name = text(credential.name, '');
+          const current = values[name] || '';
+          const configured = enabled(credential.configured);
+          return (
+            <form className="credential-row" key={name} onSubmit={(event) => { event.preventDefault(); if (current.trim()) void save(name, current); }}>
+              <div className="credential-copy">
+                <strong>{text(credential.label, name)}</strong>
+                <small>{name} · {configured ? '已配置' : '未配置'} · {text(credential.source, '未配置')}</small>
+              </div>
+              <input
+                className="credential-input"
+                type="password"
+                autoComplete="new-password"
+                value={current}
+                placeholder={configured ? '输入新值覆盖' : '输入密钥'}
+                onChange={(event) => setValues((items) => ({ ...items, [name]: event.target.value }))}
+                disabled={saving === name}
+              />
+              <div className="credential-actions">
+                <Button type="submit" variant="primary" icon={saving === name ? <RefreshCw className="spin" size={14} /> : <KeyRound size={14} />} disabled={!current.trim() || saving === name}>保存</Button>
+                {configured && !enabled(credential.required) ? <Button type="button" variant="ghost" icon={<Trash2 size={14} />} disabled={saving === name} onClick={() => void save(name, '')}>清除</Button> : null}
+              </div>
+            </form>
+          );
+        })}
+      </div>
+      {!credentials.length ? <EmptyState text="暂无可管理凭据。先在供应商连接或平台连接器中配置 credentialRef。" /> : null}
+    </Panel>
   );
 }
 

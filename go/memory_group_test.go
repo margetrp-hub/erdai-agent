@@ -115,8 +115,14 @@ func TestRelationshipObservationIsIdempotentAndStagesInteraction(t *testing.T) {
 			t.Fatalf("relationship event %d: inserted=%v err=%v", index, inserted, err)
 		}
 	}
-	if state.InteractionCount != 10 || state.Stage != "熟悉群友" {
-		t.Fatalf("mature relationship = %+v", state)
+	if state.InteractionCount != 10 || state.Stage != "普通群友" {
+		t.Fatalf("weakly addressed relationship = %+v", state)
+	}
+	state, inserted, err = store.ObserveRelationship(
+		ctx, "event-11", "group-one", "sender-one", true, now.Add(11*time.Minute),
+	)
+	if err != nil || !inserted || state.InteractionCount != 11 || state.AddressedCount != 2 || state.Stage != "熟悉群友" {
+		t.Fatalf("mature relationship = %+v inserted=%v err=%v", state, inserted, err)
 	}
 }
 

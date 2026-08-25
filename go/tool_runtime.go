@@ -1397,7 +1397,18 @@ func containsSensitiveMemory(content string) bool {
 	return false
 }
 
-func (a *AgentRuntime) recallMemory(ctx context.Context, run runRecord, query string) (toolResult, error) {
+func (a *AgentRuntime) recallMemory(ctx context.Context, run runRecord, query string) (result toolResult, recallErr error) {
+	started := time.Now()
+	userMatches, groupMatches := 0, 0
+	defer func() {
+		_ = a.recordRunStage(run.ID, "memory_recall", started, map[string]any{
+			"queryChars":   len([]rune(strings.TrimSpace(query))),
+			"userMatches":  userMatches,
+			"groupMatches": groupMatches,
+			"returned":     userMatches + groupMatches,
+			"success":      recallErr == nil,
+		})
+	}()
 	if a.memory == nil {
 		return toolResult{}, errors.New("memory store is not configured")
 	}
@@ -1410,12 +1421,14 @@ func (a *AgentRuntime) recallMemory(ctx context.Context, run runRecord, query st
 	if err != nil {
 		return toolResult{}, err
 	}
+	userMatches = len(userMemories)
 	groupMemories := []RecalledMemory{}
 	if policy.AllowGroupSharedMemory {
 		groupMemories, err = a.memory.SearchMemories(ctx, personaMemoryScope(run.PersonaID, "group", scope.groupMemoryRef()), query, policy.RetrievalLimit)
 		if err != nil {
 			return toolResult{}, err
 		}
+		groupMatches = len(groupMemories)
 	}
 	items := make([]string, 0, len(userMemories)+len(groupMemories))
 	for _, memory := range append(userMemories, groupMemories...) {
@@ -2251,9 +2264,9 @@ func (a *AgentRuntime) personaForRun(run runRecord, prompt string) *nativeActive
 	return &nativeActivePersona{
 		ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
 		Description: persona.Description, VisualDescription: persona.VisualDescription,
-		VisualPromptOverride: profile.VisualPromptOverride,
+		VisualPromptOverride:  profile.VisualPromptOverride,
 		VisualReferencePrompt: a.configStore.personaVisualReferencePrompt(persona.ID),
-		CharacterVersion: persona.CharacterVersion,
+		CharacterVersion:      persona.CharacterVersion,
 	}
 }
 

@@ -21,9 +21,90 @@ export type Overview = {
   };
 };
 
+export type MediaCapabilityStatus = {
+  status?: 'available' | 'degraded' | 'unverified' | string;
+  reason?: string;
+  probeHealthy?: boolean;
+  successCount?: number;
+  failureCount?: number;
+  lastAttemptAt?: string;
+};
+
+export type Observability = {
+  media?: {
+    image?: MediaCapabilityStatus;
+    video?: MediaCapabilityStatus;
+  };
+  retrieval?: {
+    enabled?: boolean;
+    documentCount?: number;
+    chunkCount?: number;
+    embeddingCount?: number;
+    queryCount24h?: number;
+    embeddingQueryCount24h?: number;
+    lastQueryAt?: string;
+  };
+  memory?: {
+    storedCount?: number;
+    accessedCount?: number;
+    recallCount24h?: number;
+    lastWriteAt?: string;
+    lastAccessAt?: string;
+    lastRecallAt?: string;
+  };
+};
+
 export type RuntimeConfig = {
   activePersonaId?: string;
   learningEnabled?: boolean;
+};
+
+export type InstallationCheck = {
+  id: string;
+  label: string;
+  configured: boolean;
+  required: boolean;
+  source?: string;
+  detail?: string;
+};
+
+export type InstallationStatus = {
+  lifecycle: 'active' | 'setup_required' | string;
+  ready: boolean;
+  configuredCount: number;
+  requiredCount: number;
+  checks: InstallationCheck[];
+  checkedAt?: string;
+};
+
+export type StableUpdate = {
+  currentVersion: string;
+  latestVersion?: string;
+  releaseTag?: string;
+  updateAvailable: boolean;
+  upgradeReady?: boolean;
+  repository: string;
+  releaseUrl?: string;
+  publishedAt?: string;
+  releaseNotes?: string;
+  assetName?: string;
+  assetUrl?: string;
+  assetDigest?: string;
+  assetSize?: number;
+  checkedAt?: string;
+};
+
+export type UpdateStatus = {
+  agentConfigured: boolean;
+  agentReady: boolean;
+  state: 'unavailable' | 'idle' | 'pending' | 'running' | 'succeeded' | 'failed' | string;
+  requestId?: string;
+  targetVersion?: string;
+  message?: string;
+  requestedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  heartbeatAt?: string;
 };
 
 export type Persona = {
@@ -63,7 +144,9 @@ export type PersonaVisualReference = {
 
 export type DashboardData = {
   overview: Overview;
+  observability: Observability;
   config: RuntimeConfig;
+  installation: InstallationStatus;
   personas: {
     items?: Persona[];
   };
@@ -119,10 +202,10 @@ export async function getSession() {
   return response.ok && payload.data?.authenticated === true;
 }
 
-export function login(token: string) {
+export function login(credentials: { token?: string; username?: string; password?: string }) {
   return apiRequest<{ authenticated: boolean }>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ token }),
+    body: JSON.stringify(credentials),
   });
 }
 
@@ -131,13 +214,15 @@ export function logout() {
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
-  const [overview, config, personas, agentInstances] = await Promise.all([
+  const [overview, observability, config, installation, personas, agentInstances] = await Promise.all([
     apiRequest<Overview>('/api/v1/overview'),
+    apiRequest<Observability>('/api/v1/observability'),
     apiRequest<RuntimeConfig>('/api/v1/runtime/config'),
+    apiRequest<InstallationStatus>('/api/v1/installation/status'),
     apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100'),
     apiRequest<{ items?: AgentInstance[] }>('/api/v1/agent-instances'),
   ]);
-  return { overview, config, personas, agentInstances };
+  return { overview, observability, config, installation, personas, agentInstances };
 }
 
 async function loadEntries(entries: Array<[string, string]>): Promise<ModuleData> {
@@ -224,6 +309,7 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
     case 'integrations':
       return loadEntries([
         ['integrations', '/api/v1/integrations'],
+        ['credentials', '/api/v1/credentials'],
         ['platforms', '/api/v1/platforms'],
         ['platformCatalog', '/api/v1/platforms/catalog'],
         ['platformRuntime', '/api/v1/platforms/runtime-status'],

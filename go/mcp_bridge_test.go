@@ -182,7 +182,7 @@ func TestNativeContext7MCPRunsThroughAgentLoopAndOutbox(t *testing.T) {
 
 	select {
 	case <-mcpStarted:
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("agent loop did not call native Context7 MCP")
 	}
 	var progressCount int

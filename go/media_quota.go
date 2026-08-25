@@ -73,7 +73,7 @@ func (a *AgentRuntime) executeQuotaMedia(
 		return toolResult{}, err
 	}
 	if config.exempts(run.SenderRef, run.IsAdmin) {
-		return execute()
+		return a.executeObservedMedia(run, kind, execute)
 	}
 	reservation, err := a.mediaQuota.reserveForRun(ctx, run, kind)
 	if err != nil {
@@ -89,7 +89,7 @@ func (a *AgentRuntime) executeQuotaMedia(
 			_ = reservation.release(finalizeContext)
 		}
 	}()
-	result, err := execute()
+	result, err := a.executeObservedMedia(run, kind, execute)
 	if err != nil {
 		return toolResult{}, err
 	}

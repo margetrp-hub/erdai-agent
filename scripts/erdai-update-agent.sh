@@ -162,6 +162,24 @@ os.replace(temporary, path)
 PY
 }
 
+clear_request() {
+  expected_request_id=$1
+  python3 - "$request_file" "$expected_request_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected = sys.argv[2]
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+if data.get("requestId") == expected:
+    path.unlink(missing_ok=True)
+PY
+}
+
 download_and_apply() {
   request_id=$1
   target_version=$2
@@ -232,12 +250,14 @@ EOF
     kill "$heartbeat_pid" >/dev/null 2>&1 || true
     wait "$heartbeat_pid" 2>/dev/null || true
     write_status succeeded "$request_id" "$target_version" "Stable $target_version upgrade completed" "$requested_at" "$started_at" "$(timestamp)"
+    clear_request "$request_id"
     rm -rf "$work_root/$request_id"
   else
     kill "$heartbeat_pid" >/dev/null 2>&1 || true
     wait "$heartbeat_pid" 2>/dev/null || true
     printf 'Stable %s upgrade failed: %s\n' "$target_version" "$message" >&2
     write_status failed "$request_id" "$target_version" "Stable upgrade failed; inspect erdai-update-agent service logs" "$requested_at" "$started_at" "$(timestamp)"
+    clear_request "$request_id"
   fi
 }
 
@@ -250,6 +270,7 @@ esac
 
 while :; do
   request_error=/tmp/erdai-update-agent-request-error
+  request_fingerprint=$(sha256sum "$request_file" 2>/dev/null | awk '{print $1}' || true)
   if summary=$(request_summary 2>"$request_error"); then
     current=$(last_status)
     IFS='|' read -r current_request current_state <<EOF
@@ -270,6 +291,10 @@ EOF
     else
       error=$(tr '\n' ' ' < "$request_error")
       write_status failed "" "" "$error" "" "" "$(timestamp)"
+      current_fingerprint=$(sha256sum "$request_file" 2>/dev/null | awk '{print $1}' || true)
+      if [ -n "$request_fingerprint" ] && [ "$current_fingerprint" = "$request_fingerprint" ]; then
+        rm -f "$request_file"
+      fi
     fi
   fi
   sleep "$poll_seconds"

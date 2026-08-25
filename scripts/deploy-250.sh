@@ -120,8 +120,8 @@ fi
 
 docker load --input "$package_dir/images.tar" >/dev/null
 [ "$(docker image inspect -f '{{.Id}}' "$release_image")" = "$core_image_id" ] || fail "loaded Core image does not match manifest"
-[ "$(docker image inspect -f '{{.Id}}' "$embedding_image")" = "$embedding_image_id" ] || fail "loaded embedding image does not match manifest"
-[ "$(docker inspect -f '{{.Image}}' erdai-embedding)" = "$embedding_image_id" ] || fail "running embedding image differs; upgrade it separately"
+docker image inspect "$embedding_image" >/dev/null 2>&1 || fail "immutable embedding image is unavailable"
+[ "$(docker inspect -f '{{.Config.Image}}' erdai-embedding)" = "$embedding_image" ] || fail "running embedding reference differs; upgrade it separately"
 if docker container inspect erdai-agent >/dev/null 2>&1; then
   old_image_ref=$(docker container inspect -f '{{.Config.Image}}' erdai-agent)
   old_image_id=$(docker container inspect -f '{{.Image}}' erdai-agent)

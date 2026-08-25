@@ -98,13 +98,12 @@ for file in manifest.env SHA256SUMS images.tar app.tar.gz; do test -f "$package_
 
 release=$(manifest_value RELEASE_ID)
 release_image=$(manifest_value RELEASE_IMAGE)
-core_image_id=$(manifest_value CORE_IMAGE_ID)
 embedding_image=$(manifest_value EMBEDDING_IMAGE)
-embedding_image_id=$(manifest_value EMBEDDING_IMAGE_ID)
 schema=$(manifest_value SCHEMA_VERSION)
 platform=$(manifest_value PLATFORM)
+source_revision=$(manifest_value SOURCE_REVISION)
 memory_total=$(manifest_value MEMORY_LIMIT_TOTAL_BYTES)
-for value in "$release" "$release_image" "$core_image_id" "$embedding_image" "$embedding_image_id" "$platform"; do safe_value "$value"; done
+for value in "$release" "$release_image" "$embedding_image" "$platform" "$source_revision"; do safe_value "$value"; done
 case "$schema:$memory_total" in *[!0-9:]*|:*) fail "invalid numeric manifest field";; esac
 [ "$platform" = linux/amd64 ] || fail "only linux/amd64 release bundles are accepted"
 [ "$memory_total" -le 1073741824 ] || fail "release memory budget exceeds the 1.6-GiB VPS safety limit"
@@ -137,7 +136,10 @@ if [ "$mode" = --dry-run ]; then
 fi
 
 docker load --input "$package_dir/images.tar" >/dev/null
-[ "$(docker image inspect -f '{{.Id}}' "$release_image")" = "$core_image_id" ] || fail "loaded Core image does not match manifest"
+core_image_id=$(docker image inspect -f '{{.Id}}' "$release_image")
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$release_image")" = "$release" ] || fail "loaded Core version label does not match manifest"
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$release_image")" = "$source_revision" ] || fail "loaded Core revision label does not match manifest"
+[ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$release_image")" = "$platform" ] || fail "loaded Core platform does not match manifest"
 docker image inspect "$embedding_image" >/dev/null 2>&1 || fail "immutable embedding image is unavailable"
 [ "$(docker inspect -f '{{.Config.Image}}' erdai-embedding)" = "$embedding_image" ] || fail "running embedding reference differs; upgrade it separately"
 if docker container inspect erdai-agent >/dev/null 2>&1; then

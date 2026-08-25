@@ -14,6 +14,7 @@ old_container=
 old_image_ref=
 old_image_id=
 old_channel_mode=off
+channel_quiesced=0
 swapped_app=0
 rollback_armed=0
 
@@ -27,6 +28,15 @@ manifest_value() {
 }
 safe_value() {
   case "$1" in *[!A-Za-z0-9._:/@-]*|'') fail "unsafe manifest value";; esac
+}
+persist_env_value() {
+  key=$1
+  value=$2
+  if grep -q "^${key}=" "$env_file"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$env_file"
+  fi
 }
 cleanup() {
   status=$?
@@ -47,6 +57,9 @@ cleanup() {
       rm -rf "$root/app"
       mv "$rollback_dir/app" "$root/app"
     fi
+    if [ -f "$rollback_dir/.env" ]; then
+      cp -a "$rollback_dir/.env" "$env_file"
+    fi
     if [ -n "$old_container" ] && docker container inspect "$old_container" >/dev/null 2>&1; then
       docker rename "$old_container" erdai-agent >/dev/null 2>&1 && docker start erdai-agent >/dev/null 2>&1 || true
     elif [ -n "$old_image_ref" ] && [ -f "$root/app/compose.production.yml" ]; then
@@ -64,6 +77,11 @@ cleanup() {
       attempt=$((attempt + 1))
       sleep 1
     done
+  elif [ "$status" -ne 0 ] && [ "$channel_quiesced" -eq 1 ]; then
+    set +e
+    if docker ps --format '{{.Names}}' | grep -qx erdai-agent; then
+      ERDAI_INSTALL_ROOT="$root" "$root/app/scripts/set-channel-mode.sh" "$old_channel_mode" >/dev/null 2>&1 || true
+    fi
   fi
   [ -z "$stage" ] || rm -rf "$stage"
   if [ "$status" -eq 0 ]; then [ -z "$rollback_dir" ] || rm -rf "$rollback_dir"; fi
@@ -144,7 +162,9 @@ except (OSError, sqlite3.Error, TypeError, ValueError):
 print(mode if mode in {"off", "shadow", "active"} else "off")
 PY
 )
+cp -a "$env_file" "$rollback_dir/.env"
 if docker ps --format '{{.Names}}' | grep -qx erdai-agent; then
+  channel_quiesced=1
   ERDAI_INSTALL_ROOT="$root" "$stage/scripts/set-channel-mode.sh" off
   sleep "${ERDAI_DRAIN_SECONDS:-15}"
 fi
@@ -193,6 +213,8 @@ fi
 
 ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" "$root/app/scripts/verify-production.sh" off "$release_image" "$schema" "$memory_total"
 ERDAI_INSTALL_ROOT="$root" "$root/app/scripts/set-channel-mode.sh" "$old_channel_mode"
+channel_quiesced=0
+persist_env_value ERDAI_RELEASE_IMAGE "$release_image"
 if [ -n "$old_container" ]; then docker rm "$old_container" >/dev/null 2>&1 || true; fi
 if [ -n "$old_image_id" ] && [ "$old_image_id" != "$core_image_id" ]; then docker image rm "$old_image_id" >/dev/null 2>&1 || true; fi
 rollback_armed=0

@@ -7,6 +7,7 @@ status_file=${ERDAI_UPDATE_STATUS_FILE:-$root/update-status/update-status.json}
 work_root=${ERDAI_UPDATE_WORK_DIR:-$root/data/update-work}
 poll_seconds=${ERDAI_UPDATE_POLL_SECONDS:-5}
 allowed_repository=${ERDAI_UPDATE_REPOSITORY:-}
+running_script_digest=$(sha256sum "$0" | awk '{print $1}')
 
 case "$poll_seconds" in *[!0-9]*|'') poll_seconds=5 ;; esac
 [ "$poll_seconds" -ge 1 ] || poll_seconds=1
@@ -16,6 +17,26 @@ for command in curl python3 sha256sum tar; do
 done
 
 timestamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+safe_extract_archive() {
+  archive=$1
+  target=$2
+  python3 - "$archive" "$target" <<'PY'
+import sys
+import tarfile
+from pathlib import Path, PurePosixPath
+
+archive = Path(sys.argv[1])
+target = Path(sys.argv[2])
+with tarfile.open(archive, "r:gz") as bundle:
+    members = bundle.getmembers()
+    for member in members:
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk() or member.isdev():
+            raise SystemExit(f"unsafe release archive entry: {member.name}")
+    bundle.extractall(target, members=members)
+PY
+}
 
 write_status() {
   state=$1
@@ -162,6 +183,26 @@ os.replace(temporary, path)
 PY
 }
 
+refresh_terminal_or_idle() {
+  current=$(last_status)
+  IFS='|' read -r current_request current_state <<EOF
+$current
+EOF
+  case "$current_state" in
+    succeeded|failed) refresh_status ;;
+    *) write_status idle "" "" "waiting for Stable update request" "" "" "" ;;
+  esac
+}
+
+reload_if_updated() {
+  installed_script=$root/app/scripts/erdai-update-agent.sh
+  test -x "$installed_script" || return 0
+  installed_digest=$(sha256sum "$installed_script" | awk '{print $1}')
+  if [ "$installed_digest" != "$running_script_digest" ]; then
+    exec "$installed_script"
+  fi
+}
+
 clear_request() {
   expected_request_id=$1
   python3 - "$request_file" "$expected_request_id" <<'PY'
@@ -207,27 +248,16 @@ download_and_apply() {
   [ "$actual_digest" = "$expected_digest" ] || { echo "release asset digest mismatch" >&2; return 1; }
   extract_dir=$work_dir/extracted
   install -d -m 700 "$extract_dir"
-  python3 - "$archive" "$extract_dir" <<'PY'
-import sys
-import tarfile
-from pathlib import Path, PurePosixPath
-
-archive = Path(sys.argv[1])
-target = Path(sys.argv[2])
-with tarfile.open(archive, "r:gz") as bundle:
-    members = bundle.getmembers()
-    for member in members:
-        path = PurePosixPath(member.name)
-        if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk() or member.isdev():
-            raise SystemExit(f"unsafe release archive entry: {member.name}")
-    bundle.extractall(target, members=members)
-PY
+  safe_extract_archive "$archive" "$extract_dir"
   bundle=$(find "$extract_dir" -mindepth 2 -maxdepth 3 -type f -name manifest.env -exec dirname {} \; | head -n 1)
   [ -n "$bundle" ] || { echo "release bundle manifest is missing" >&2; return 1; }
   for file in manifest.env SHA256SUMS images.tar app.tar.gz; do
     test -f "$bundle/$file" || { echo "release bundle file is missing: $file" >&2; return 1; }
   done
-  release_script=$root/app/scripts/deploy-250.sh
+  release_app=$work_dir/release-app
+  install -d -m 700 "$release_app"
+  safe_extract_archive "$bundle/app.tar.gz" "$release_app"
+  release_script=$release_app/scripts/deploy-250.sh
   test -x "$release_script" || { echo "release deploy script is missing" >&2; return 1; }
   "$release_script" "$bundle"
 }
@@ -252,6 +282,7 @@ EOF
     write_status succeeded "$request_id" "$target_version" "Stable $target_version upgrade completed" "$requested_at" "$started_at" "$(timestamp)"
     clear_request "$request_id"
     rm -rf "$work_root/$request_id"
+    reload_if_updated
   else
     kill "$heartbeat_pid" >/dev/null 2>&1 || true
     wait "$heartbeat_pid" 2>/dev/null || true
@@ -287,7 +318,7 @@ EOF
   else
     request_exit=$?
     if [ "$request_exit" -eq 10 ]; then
-      write_status idle "" "" "waiting for Stable update request" "" "" ""
+      refresh_terminal_or_idle
     else
       error=$(tr '\n' ' ' < "$request_error")
       write_status failed "" "" "$error" "" "" "$(timestamp)"

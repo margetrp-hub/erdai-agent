@@ -6,10 +6,10 @@
 
 ## Architecture
 
-- One `erdai-agent` image and container owns the complete production application.
+- One Stable release bundle owns the complete production application: the `erdai-agent` Core image plus pinned local embedding and private monitor-browser images.
 - One Go process owns the control plane, agent loop, durable state, platform connections, Outbox delivery and WebUI.
 - All 18 AstrBot 4.26.8 platform types have native Go connectors for authentication, inbound normalization, Core ownership, Outbox delivery, media and health state. The production Go runtime does not require a Python or AstrBot process.
-- Two listeners in the same Go process: runtime/API on `6280`, authenticated local management UI on `6282`.
+- Two listeners in the same Go process: runtime/API on `6280`, authenticated local management UI on `6282`; the screenshot browser has no published host port.
 - SQLite WAL with FTS5 trigram search, durable runs, media quota accounting and Outbox delivery state.
 - Provider credentials are read from environment variables or the data-volume managed credential file; they are never stored in SQLite or returned by management APIs.
 - Provider connections own their protocol, API base, credential reference, timeout and active health samples. Model endpoints bind to a connection, so chat, task, group-decision and media routes can fail over across real suppliers without sharing one global URL or key.

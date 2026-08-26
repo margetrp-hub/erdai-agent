@@ -78,6 +78,40 @@ services:
         max-size: 5m
         max-file: "3"
 
+  erdai-monitor-browser:
+    image: ${ERDAI_MONITOR_BROWSER_IMAGE:?ERDAI_MONITOR_BROWSER_IMAGE is required}
+    platform: linux/amd64
+    container_name: erdai-monitor-browser
+    restart: unless-stopped
+    init: true
+    networks:
+      erdai-agent:
+        aliases:
+          - erdai-monitor-browser
+    shm_size: 256m
+    cpus: 1.0
+    mem_limit: ${ERDAI_MONITOR_BROWSER_MEMORY_LIMIT:-512m}
+    memswap_limit: ${ERDAI_MONITOR_BROWSER_MEMORY_SWAP_LIMIT:-768m}
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222"]
+      interval: 20s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
   erdai-embedding:
     image: ${ERDAI_EMBEDDING_IMAGE:-ghcr.io/ggml-org/llama.cpp@sha256:046ad33efae5c4ec3e19be344778a80c2bb402d3f10b464514c5fe99eab94d19}
     platform: linux/amd64

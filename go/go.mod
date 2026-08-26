@@ -1,9 +1,10 @@
 module erdai-agent-core
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/amarnathcjd/gogram v1.7.6
+	github.com/chromedp/chromedp v0.16.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/larksuite/oapi-sdk-go/v3 v3.9.10
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
@@ -15,8 +16,14 @@ require (
 )
 
 require (
+	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f // indirect
+	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
 	github.com/go-resty/resty/v2 v2.6.0 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -31,7 +38,7 @@ require (
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

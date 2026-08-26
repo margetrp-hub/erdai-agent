@@ -8,6 +8,7 @@ expected_mode=${1:?usage: verify-production.sh MODE IMAGE SCHEMA MEMORY_TOTAL_BY
 expected_image=${2:?usage: verify-production.sh MODE IMAGE SCHEMA MEMORY_TOTAL_BYTES}
 expected_schema=${3:?usage: verify-production.sh MODE IMAGE SCHEMA MEMORY_TOTAL_BYTES}
 expected_memory_total=${4:?usage: verify-production.sh MODE IMAGE SCHEMA MEMORY_TOTAL_BYTES}
+expected_browser_image=${ERDAI_MONITOR_BROWSER_IMAGE:?ERDAI_MONITOR_BROWSER_IMAGE is required}
 
 case "$expected_mode" in off|shadow|active) ;; *) echo "invalid mode" >&2; exit 2;; esac
 case "$expected_schema:$expected_memory_total" in *[!0-9:]*|:*) echo "invalid numeric expectation" >&2; exit 2;; esac
@@ -153,6 +154,12 @@ test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' erdai-agent)" = "true
 test "$(docker inspect -f '{{.State.Health.Status}}' erdai-agent)" = "healthy"
 test "$(docker inspect -f '{{.State.OOMKilled}}' erdai-agent)" = "false"
 test "$(docker inspect -f '{{.RestartCount}}' erdai-agent)" = "0"
+test "$(docker inspect -f '{{.Config.Image}}' erdai-monitor-browser)" = "$expected_browser_image"
+test "$(docker inspect -f '{{.State.Health.Status}}' erdai-monitor-browser)" = "healthy"
+test "$(docker inspect -f '{{.State.OOMKilled}}' erdai-monitor-browser)" = "false"
+test "$(docker inspect -f '{{.RestartCount}}' erdai-monitor-browser)" = "0"
+test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' erdai-monitor-browser)" = "true"
+test -z "$(docker port erdai-monitor-browser 9222/tcp 2>/dev/null || true)"
 
 test "$(docker inspect -f '{{json .Config.Entrypoint}}' erdai-agent)" = '["/app/erdai-agent"]'
 test "$(docker top erdai-agent -eo pid,args | tail -n +2 | wc -l | tr -d ' ')" = 1
@@ -163,7 +170,8 @@ core_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-agent)
 if docker container inspect erdai-embedding >/dev/null 2>&1; then
   test "$(docker inspect -f '{{.State.Health.Status}}' erdai-embedding)" = "healthy"
   embedding_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-embedding)
-  [ $((core_memory + embedding_memory)) -le "$expected_memory_total" ]
+  browser_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-monitor-browser)
+  [ $((core_memory + embedding_memory + browser_memory)) -le "$expected_memory_total" ]
 fi
 test "$(docker inspect -f '{{.HostConfig.MemorySwap}}' erdai-agent)" -le "805306368"
 test "$(docker inspect -f '{{.HostConfig.NanoCpus}}' erdai-agent)" -le "1500000000"
@@ -283,11 +291,13 @@ print("qq_connector=" + json.dumps({"status": qq["status"], "details": visible},
 PY
 
 export ERDAI_RELEASE_IMAGE="$expected_image"
+export ERDAI_MONITOR_BROWSER_IMAGE="$expected_browser_image"
 docker compose --env-file "$env_file" -f "$compose_file" config -q
 services=$(docker compose --env-file "$env_file" -f "$compose_file" config --services)
-test "$(printf '%s\n' "$services" | wc -l)" -eq 2
+test "$(printf '%s\n' "$services" | wc -l)" -eq 3
 printf '%s\n' "$services" | grep -qx erdai-agent
 printf '%s\n' "$services" | grep -qx erdai-embedding
+printf '%s\n' "$services" | grep -qx erdai-monitor-browser
 test "$(stat -c '%a %U:%G' "$root/app")" = "755 root:root"
 test -z "$(find "$root/app" -xdev -perm /022 -print -quit)"
 

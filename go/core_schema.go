@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 74
+const nativeCoreSchemaVersion = 75
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -922,7 +922,7 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 				"sub2api-channel-monitor", "渠道监控",
 				"读取 Sub2API 被动监控结果，提供 /渠道、单组状态和 /雷达。",
 				"1.0.0", "二呆 Core", "ops_policy",
-				`{"category":"monitoring","integrationId":"ops_policy","commands":["/渠道","/雷达","/分组名"],"capabilities":["近15分钟三段状态","可用率与实时倍率","单组详情","模型评分雷达"],"toolIds":["ops-status","query_ops_status"],"references":["https://github.com/lsmallice/astrbot_plugin_sub2api_status","https://github.com/liuwanwan1/astrbot_plugin_sub2api_health"]}`,
+				`{"category":"monitoring","integrationId":"ops_policy","commands":["/渠道","/雷达","/分组名"],"capabilities":["近90分钟真实监控卡片截图","单组详情","模型评分雷达"],"toolIds":["ops-status","query_ops_status"],"references":["https://github.com/lsmallice/astrbot_plugin_sub2api_status","https://github.com/liuwanwan1/astrbot_plugin_sub2api_health"]}`,
 			},
 			{
 				"affiliate-invite", "邀请积分",
@@ -2021,7 +2021,7 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 
 func migratePluginContractsV72(tx coreSchemaTx, now string) error {
 	manifests := map[string]string{
-		"sub2api-channel-monitor": `{"manifestSchemaVersion":1,"category":"monitoring","integrationId":"ops_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/ops_policy","healthMode":"live","commands":["/渠道","/雷达","/分组名"],"capabilities":["近15分钟三段状态","可用率与实时倍率","单组详情","模型评分雷达"],"toolIds":["ops-status"],"references":["https://github.com/lsmallice/astrbot_plugin_sub2api_status","https://github.com/liuwanwan1/astrbot_plugin_sub2api_health"]}`,
+		"sub2api-channel-monitor": `{"manifestSchemaVersion":1,"category":"monitoring","integrationId":"ops_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/ops_policy","healthMode":"live","commands":["/渠道","/雷达","/分组名"],"capabilities":["近90分钟真实监控卡片截图","单组详情","模型评分雷达"],"toolIds":["ops-status"],"references":["https://github.com/lsmallice/astrbot_plugin_sub2api_status","https://github.com/liuwanwan1/astrbot_plugin_sub2api_health"]}`,
 		"affiliate-invite":        `{"manifestSchemaVersion":1,"category":"growth","integrationId":"affiliate_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/affiliate_policy","healthMode":"readiness","commands":["/绑定 邀请码","/邀请链接","/查询积分","/积分查询"],"capabilities":["QQ 邀请码绑定","专属邀请链接","充值奖励积分"],"toolIds":[],"references":[]}`,
 		"group-conversation":      `{"manifestSchemaVersion":1,"category":"conversation","integrationId":"group_chat_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/group_chat_policy","healthMode":"readiness","commands":[],"capabilities":["群聊参与决策","智能批量上下文","主动对话冷却","低价值消息过滤"],"toolIds":[],"dependencies":["companion-context"]}`,
 		"memory-relationship":     `{"manifestSchemaVersion":1,"category":"memory","integrationId":"memory_policy","toggleMode":"policy_field","configView":"memories","configPath":"/api/v1/integrations/memory_policy","healthMode":"readiness","commands":[],"capabilities":["自动记忆采集","关系脉冲","群组记忆隔离","互动反馈"],"toolIds":["memory-recall","memory-remember","memory-forget"]}`,
@@ -2389,6 +2389,7 @@ const nativeDocumentPolicyDefaults = `{
 const nativeOpsPolicyDefaults = `{
   "enabled":true,"statusUrl":"https://ops.example.invalid/group-status",
   "statusTitle":"渠道监控","credentialRef":"ERDAI_OPS_TOKEN","requestTimeoutSeconds":10,
+	"cardPageUrl":"","cardBrowserUrl":"http://erdai-monitor-browser:9222","cardCaptureTimeoutSeconds":45,
   "commandAliases":["/渠道","/ops","/分组","/线路","/ops状态"],"timelinePoints":3,
   "evaluationWindowMinutes":15,"evaluationPollSeconds":60,
   "groupMultipliers":{},"showMultiplierNote":true,

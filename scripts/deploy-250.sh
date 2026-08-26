@@ -13,6 +13,7 @@ rollback_dir=
 old_container=
 old_image_ref=
 old_image_id=
+old_browser_image_id=
 old_channel_mode=off
 channel_quiesced=0
 swapped_app=0
@@ -45,6 +46,7 @@ cleanup() {
     echo "release failed; restoring the temporary rollback point" >&2
     set +e
     docker rm -f erdai-agent >/dev/null 2>&1 || true
+    docker rm -f erdai-monitor-browser >/dev/null 2>&1 || true
     [ -z "$old_image_ref" ] || docker image tag "$old_image_id" "$old_image_ref" >/dev/null 2>&1 || true
     for database in erdai-agent-core.sqlite3 erdai-runtime.sqlite3; do
       if [ -n "$rollback_dir" ] && [ -f "$rollback_dir/$database" ]; then
@@ -66,6 +68,13 @@ cleanup() {
       ERDAI_RELEASE_IMAGE="$old_image_ref" ERDAI_EMBEDDING_IMAGE="$embedding_image" \
         docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" \
         up -d --no-build --force-recreate erdai-agent >/dev/null 2>&1 || true
+    fi
+    if [ -f "$root/app/compose.production.yml" ] &&
+      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" \
+        docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" config --services 2>/dev/null | grep -qx erdai-monitor-browser; then
+      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" \
+        docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" \
+        up -d --no-build --force-recreate erdai-monitor-browser >/dev/null 2>&1 || true
     fi
     attempt=0
     while docker container inspect erdai-agent >/dev/null 2>&1 && [ "$attempt" -lt 60 ]; do
@@ -99,14 +108,16 @@ for file in manifest.env SHA256SUMS images.tar app.tar.gz; do test -f "$package_
 release=$(manifest_value RELEASE_ID)
 release_image=$(manifest_value RELEASE_IMAGE)
 embedding_image=$(manifest_value EMBEDDING_IMAGE)
+browser_image=$(manifest_value BROWSER_IMAGE)
+browser_image_id=$(manifest_value BROWSER_IMAGE_ID)
 schema=$(manifest_value SCHEMA_VERSION)
 platform=$(manifest_value PLATFORM)
 source_revision=$(manifest_value SOURCE_REVISION)
 memory_total=$(manifest_value MEMORY_LIMIT_TOTAL_BYTES)
-for value in "$release" "$release_image" "$embedding_image" "$platform" "$source_revision"; do safe_value "$value"; done
+for value in "$release" "$release_image" "$embedding_image" "$browser_image" "$platform" "$source_revision"; do safe_value "$value"; done
 case "$schema:$memory_total" in *[!0-9:]*|:*) fail "invalid numeric manifest field";; esac
 [ "$platform" = linux/amd64 ] || fail "only linux/amd64 release bundles are accepted"
-[ "$memory_total" -le 1073741824 ] || fail "release memory budget exceeds the 1.6-GiB VPS safety limit"
+[ "$memory_total" -le 1717986918 ] || fail "release memory budget exceeds the 1.6-GiB VPS safety limit"
 
 install -d -m 700 "$root"
 exec 9>"$root/.erdai-agent-release.lock"
@@ -130,7 +141,7 @@ test -f "$stage/compose.production.yml"
 test -x "$stage/scripts/verify-production.sh"
 chmod 755 "$stage"
 chown root:root "$stage"
-ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" docker compose --env-file "$env_file" -f "$stage/compose.production.yml" config -q
+ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$stage/compose.production.yml" config -q
 
 if [ "$mode" = --dry-run ]; then
   printf 'dry_run=ok\nrelease=%s\nimage=%s\nschema=%s\n' "$release" "$release_image" "$schema"
@@ -143,10 +154,18 @@ core_image_id=$(docker image inspect -f '{{.Id}}' "$release_image")
 [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$release_image")" = "$source_revision" ] || fail "loaded Core revision label does not match manifest"
 [ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$release_image")" = "$platform" ] || fail "loaded Core platform does not match manifest"
 docker image inspect "$embedding_image" >/dev/null 2>&1 || fail "immutable embedding image is unavailable"
+docker image inspect "$browser_image" >/dev/null 2>&1 || fail "immutable monitor browser image is unavailable"
+[ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$browser_image")" = "$platform" ] || fail "monitor browser platform does not match manifest"
+[ "$(docker image inspect -f '{{.Id}}' "$browser_image")" = "$browser_image_id" ] || fail "loaded monitor browser image does not match manifest"
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$browser_image")" = "$release" ] || fail "loaded monitor browser version label does not match manifest"
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$browser_image")" = "$source_revision" ] || fail "loaded monitor browser revision label does not match manifest"
 [ "$(docker inspect -f '{{.Config.Image}}' erdai-embedding)" = "$embedding_image" ] || fail "running embedding reference differs; upgrade it separately"
 if docker container inspect erdai-agent >/dev/null 2>&1; then
   old_image_ref=$(docker container inspect -f '{{.Config.Image}}' erdai-agent)
   old_image_id=$(docker container inspect -f '{{.Image}}' erdai-agent)
+fi
+if docker container inspect erdai-monitor-browser >/dev/null 2>&1; then
+  old_browser_image_id=$(docker container inspect -f '{{.Image}}' erdai-monitor-browser)
 fi
 old_channel_mode=$(python3 - "$root/data/erdai-agent-core.sqlite3" <<'PY'
 import json
@@ -197,7 +216,14 @@ mv "$stage" "$root/app"
 stage=
 swapped_app=1
 
-ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-agent
+ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-monitor-browser
+attempt=0
+while [ "$attempt" -lt 90 ]; do
+  if [ "$(docker inspect -f '{{.State.Health.Status}}' erdai-monitor-browser 2>/dev/null || true)" = healthy ]; then break; fi
+  attempt=$((attempt + 1)); sleep 1
+done
+[ "$attempt" -lt 90 ] || { docker logs --tail 100 erdai-monitor-browser; fail "monitor browser did not become healthy"; }
+ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-agent
 attempt=0
 while [ "$attempt" -lt 180 ]; do
   if curl -fsS http://127.0.0.1:6280/healthz >/dev/null 2>&1 && curl -fsS http://127.0.0.1:6282/healthz >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Health.Status}}' erdai-agent)" = healthy ]; then break; fi
@@ -210,16 +236,19 @@ core_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-agent)
 if docker container inspect erdai-embedding >/dev/null 2>&1; then
   [ "$(docker inspect -f '{{.State.Health.Status}}' erdai-embedding)" = healthy ] || fail "embedding is not healthy"
   embedding_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-embedding)
-  [ $((core_memory + embedding_memory)) -le "$memory_total" ] || fail "container memory limits exceed the release budget"
+  browser_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-monitor-browser)
+  [ $((core_memory + embedding_memory + browser_memory)) -le "$memory_total" ] || fail "container memory limits exceed the release budget"
 fi
 [ "$(docker inspect -f '{{.State.OOMKilled}}' erdai-agent)" = false ] || fail "Core was OOM-killed"
 [ "$(docker inspect -f '{{.RestartCount}}' erdai-agent)" = 0 ] || fail "Core restarted during cutover"
 
-ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" "$root/app/scripts/verify-production.sh" off "$release_image" "$schema" "$memory_total"
+ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" "$root/app/scripts/verify-production.sh" off "$release_image" "$schema" "$memory_total"
 ERDAI_INSTALL_ROOT="$root" "$root/app/scripts/set-channel-mode.sh" "$old_channel_mode"
 channel_quiesced=0
 persist_env_value ERDAI_RELEASE_IMAGE "$release_image"
+persist_env_value ERDAI_MONITOR_BROWSER_IMAGE "$browser_image"
 if [ -n "$old_container" ]; then docker rm "$old_container" >/dev/null 2>&1 || true; fi
 if [ -n "$old_image_id" ] && [ "$old_image_id" != "$core_image_id" ]; then docker image rm "$old_image_id" >/dev/null 2>&1 || true; fi
+if [ -n "$old_browser_image_id" ] && [ "$old_browser_image_id" != "$(docker image inspect -f '{{.Id}}' "$browser_image")" ]; then docker image rm "$old_browser_image_id" >/dev/null 2>&1 || true; fi
 rollback_armed=0
 printf 'release=%s\nimage=%s\nschema=%s\nchannel_mode=%s\n' "$release" "$release_image" "$schema" "$old_channel_mode"

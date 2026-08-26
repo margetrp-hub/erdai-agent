@@ -46,6 +46,8 @@ type RuntimeConfig struct {
 	SearchBaseURL                 string
 	ImageAPIKey                   string
 	OpsToken                      string
+	Sub2APIMonitorEmail           string
+	Sub2APIMonitorPassword        string
 	EncryptionKey                 string
 	IdentitySecret                string
 	MediaDir                      string
@@ -67,6 +69,8 @@ type AgentRuntime struct {
 	searchBaseURL                 string
 	imageAPIKey                   string
 	opsToken                      string
+	sub2APIMonitorEmail           string
+	sub2APIMonitorPassword        string
 	mediaDir                      string
 	updateRepository              string
 	updateAPIBaseURL              string
@@ -89,6 +93,7 @@ type AgentRuntime struct {
 	realtime                      *realtimeHub
 	localMCP                      *localMCPHub
 	videoMu                       sync.Mutex
+	opsCaptureMu                  sync.Mutex
 	videoCancelID                 uint64
 	videoCancels                  map[uint64]context.CancelFunc
 	mediaGCMu                     sync.Mutex
@@ -631,17 +636,19 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runtime := &AgentRuntime{
 		db: db, configStore: configStore,
-		adminToken:       strings.TrimSpace(config.AdminToken),
-		runtimeToken:     strings.TrimSpace(config.RuntimeToken),
-		modelAPIKey:      strings.TrimSpace(config.ModelAPIKey),
-		grokAPIKey:       strings.TrimSpace(config.GrokAPIKey),
-		searchBaseURL:    searchBaseURL,
-		imageAPIKey:      strings.TrimSpace(config.ImageAPIKey),
-		opsToken:         strings.TrimSpace(config.OpsToken),
-		mediaDir:         strings.TrimSpace(config.MediaDir),
-		updateRepository: strings.TrimSpace(config.UpdateRepository),
-		updateAPIBaseURL: strings.TrimRight(strings.TrimSpace(config.UpdateAPIBaseURL), "/"),
-		aead:             aead, client: client, wake: make(chan struct{}, runtimeWorkerCount),
+		adminToken:             strings.TrimSpace(config.AdminToken),
+		runtimeToken:           strings.TrimSpace(config.RuntimeToken),
+		modelAPIKey:            strings.TrimSpace(config.ModelAPIKey),
+		grokAPIKey:             strings.TrimSpace(config.GrokAPIKey),
+		searchBaseURL:          searchBaseURL,
+		imageAPIKey:            strings.TrimSpace(config.ImageAPIKey),
+		opsToken:               strings.TrimSpace(config.OpsToken),
+		sub2APIMonitorEmail:    strings.TrimSpace(config.Sub2APIMonitorEmail),
+		sub2APIMonitorPassword: strings.TrimSpace(config.Sub2APIMonitorPassword),
+		mediaDir:               strings.TrimSpace(config.MediaDir),
+		updateRepository:       strings.TrimSpace(config.UpdateRepository),
+		updateAPIBaseURL:       strings.TrimRight(strings.TrimSpace(config.UpdateAPIBaseURL), "/"),
+		aead:                   aead, client: client, wake: make(chan struct{}, runtimeWorkerCount),
 		lifecycle:                     ctx,
 		cancel:                        cancel,
 		videoPollInterval:             config.VideoPollInterval,
@@ -1944,6 +1951,13 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 				}
 			}
 			return agentReply{}, errors.New("OPS group was not found")
+		}
+		if command.Kind == directCommandOPSAll && strings.TrimSpace(command.Policy.CardPageURL) != "" {
+			attachment, captureErr := a.captureOPSCardImage(ctx, command.Policy)
+			if captureErr != nil {
+				return agentReply{}, captureErr
+			}
+			return agentReply{Attachments: []agentAttachment{attachment}}, nil
 		}
 		var result toolResult
 		var err error

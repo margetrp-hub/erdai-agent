@@ -27,23 +27,26 @@ const (
 var errCoreDirectCommandDisabled = errors.New("core direct command is disabled for this agent instance")
 
 type opsPolicy struct {
-	Enabled                  bool               `json:"enabled"`
-	StatusURL                string             `json:"statusUrl"`
-	StatusTitle              string             `json:"statusTitle"`
-	RequestTimeoutSeconds    int                `json:"requestTimeoutSeconds"`
-	CommandAliases           []string           `json:"commandAliases"`
-	TimelinePoints           int                `json:"timelinePoints"`
-	EvaluationWindowMinutes  int                `json:"evaluationWindowMinutes"`
-	EvaluationPollSeconds    int                `json:"evaluationPollSeconds"`
-	GroupMultipliers         map[string]float64 `json:"groupMultipliers"`
-	ShowMultiplierNote       bool               `json:"showMultiplierNote"`
-	RadarEnabled             bool               `json:"radarEnabled"`
-	RadarURL                 string             `json:"radarUrl"`
-	RadarCommandAliases      []string           `json:"radarCommandAliases"`
-	RadarMinimumSamples      int                `json:"radarMinimumSamples"`
-	RadarFamilyOrder         []string           `json:"radarFamilyOrder"`
-	RadarRecommendationOrder []string           `json:"radarRecommendationOrder"`
-	RadarRecommendations     map[string]string  `json:"radarRecommendations"`
+	Enabled                   bool               `json:"enabled"`
+	StatusURL                 string             `json:"statusUrl"`
+	StatusTitle               string             `json:"statusTitle"`
+	RequestTimeoutSeconds     int                `json:"requestTimeoutSeconds"`
+	CardPageURL               string             `json:"cardPageUrl"`
+	CardBrowserURL            string             `json:"cardBrowserUrl"`
+	CardCaptureTimeoutSeconds int                `json:"cardCaptureTimeoutSeconds"`
+	CommandAliases            []string           `json:"commandAliases"`
+	TimelinePoints            int                `json:"timelinePoints"`
+	EvaluationWindowMinutes   int                `json:"evaluationWindowMinutes"`
+	EvaluationPollSeconds     int                `json:"evaluationPollSeconds"`
+	GroupMultipliers          map[string]float64 `json:"groupMultipliers"`
+	ShowMultiplierNote        bool               `json:"showMultiplierNote"`
+	RadarEnabled              bool               `json:"radarEnabled"`
+	RadarURL                  string             `json:"radarUrl"`
+	RadarCommandAliases       []string           `json:"radarCommandAliases"`
+	RadarMinimumSamples       int                `json:"radarMinimumSamples"`
+	RadarFamilyOrder          []string           `json:"radarFamilyOrder"`
+	RadarRecommendationOrder  []string           `json:"radarRecommendationOrder"`
+	RadarRecommendations      map[string]string  `json:"radarRecommendations"`
 }
 
 type coreDirectCommand struct {

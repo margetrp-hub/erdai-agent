@@ -87,6 +87,8 @@ func main() {
 		SearchBaseURL:             envOr("ERDAI_SEARCH_BASE_URL", defaultSearchBaseURL),
 		ImageAPIKey:               os.Getenv("ERDAI_IMAGE_API_KEY"),
 		OpsToken:                  os.Getenv("ERDAI_OPS_TOKEN"),
+		Sub2APIMonitorEmail:       os.Getenv("ERDAI_SUB2API_MONITOR_EMAIL"),
+		Sub2APIMonitorPassword:    os.Getenv("ERDAI_SUB2API_MONITOR_PASSWORD"),
 		EncryptionKey:             os.Getenv("ERDAI_RUN_ENCRYPTION_KEY"),
 		IdentitySecret:            os.Getenv("ERDAI_RUNTIME_IDENTITY_SECRET"),
 		MediaDir:                  envOr("ERDAI_MEDIA_DIR", "/data/media"),

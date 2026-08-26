@@ -567,8 +567,20 @@ func (s *coreConfigStore) pluginHealth(a *AgentRuntime, id string) (map[string]a
 		if err := a.integrationConfig(context.Background(), "ops_policy", &policy); err != nil {
 			return nil, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
+		if strings.TrimSpace(policy.CardPageURL) != "" {
+			image, captureErr := a.captureOPSCardPNG(ctx, policy)
+			if captureErr != nil {
+				result["state"] = "unavailable"
+				result["message"] = captureErr.Error()
+				return result, nil
+			}
+			result["state"] = "healthy"
+			result["source"] = "sub2api_card_page_90m"
+			result["imageBytes"] = len(image)
+			return result, nil
+		}
 		groups, fetchErr := a.fetchOPSGroups(ctx, policy)
 		if fetchErr != nil {
 			result["state"] = "unavailable"

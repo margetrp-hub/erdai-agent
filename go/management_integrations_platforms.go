@@ -107,6 +107,7 @@ var mgmtIntegrationFields = map[string]map[string]struct{}{
 	),
 	"ops_policy": coreFieldSet(
 		"enabled", "statusUrl", "statusTitle", "credentialRef", "requestTimeoutSeconds",
+		"cardPageUrl", "cardBrowserUrl", "cardCaptureTimeoutSeconds",
 		"commandAliases", "timelinePoints", "evaluationWindowMinutes", "evaluationPollSeconds",
 		"groupMultipliers", "showMultiplierNote",
 		"radarEnabled", "radarUrl", "radarCommandAliases", "radarMinimumSamples",
@@ -197,7 +198,7 @@ func (s *coreConfigStore) mgmtIntegrations() ([]mgmtIntegration, error) {
 func mgmtPrivateHost(host string) bool {
 	host = strings.Trim(strings.ToLower(host), "[]")
 	for _, allowed := range []string{
-		"localhost", "erdai-agent-core", "erdai-core", "erdai-embedding", "grok2api-local",
+		"localhost", "erdai-agent-core", "erdai-core", "erdai-embedding", "erdai-monitor-browser", "grok2api-local",
 	} {
 		if host == allowed {
 			return true
@@ -348,13 +349,18 @@ func mgmtValidateIntegration(id string, current, input map[string]any) (map[stri
 				normalized[slot] = reference
 			}
 			value = normalized
-		case "apiBase", "statusUrl", "radarUrl":
+		case "apiBase", "statusUrl", "radarUrl", "cardPageUrl", "cardBrowserUrl":
 			raw, ok := value.(string)
 			if !ok {
 				return nil, coreInvalid(field + " must be a string")
 			}
-			allowQuery := id == "ops_policy" && (field == "statusUrl" || field == "radarUrl")
-			normalized, err := mgmtHTTPURL(raw, field, false, id == "grok_policy" || id == "ops_policy", allowQuery)
+			if field == "cardPageUrl" && strings.TrimSpace(raw) == "" {
+				value = ""
+				break
+			}
+			allowQuery := id == "ops_policy" && (field == "statusUrl" || field == "radarUrl" || field == "cardPageUrl")
+			privateOnly := id == "ops_policy" && field == "cardBrowserUrl"
+			normalized, err := mgmtHTTPURL(raw, field, privateOnly, id == "grok_policy" || id == "ops_policy", allowQuery)
 			if err != nil {
 				return nil, err
 			}
@@ -393,6 +399,11 @@ func mgmtValidateIntegration(id string, current, input map[string]any) (map[stri
 			number, err := mgmtFiniteNumber(value, field)
 			if err != nil || number < 15 || number > 300 || number != float64(int(number)) {
 				return nil, coreInvalid("evaluationPollSeconds must be an integer between 15 and 300")
+			}
+		case "cardCaptureTimeoutSeconds":
+			number, err := mgmtFiniteNumber(value, field)
+			if err != nil || number < 10 || number > 90 || number != float64(int(number)) {
+				return nil, coreInvalid("cardCaptureTimeoutSeconds must be an integer between 10 and 90")
 			}
 		case "radarRecommendations":
 			record, ok := value.(map[string]any)

@@ -16,13 +16,15 @@ import (
 // The admin UI may manage provider/platform credentials, but never the keys
 // that protect the database or the administrator session itself.
 var managedCredentialDefaults = map[string]string{
-	"ERDAI_RUNTIME_TOKEN":      "运行时服务密钥",
-	"ERDAI_MODEL_API_KEY":      "主模型供应商密钥",
-	"ERDAI_GROK_API_KEY":       "Grok 搜索与多媒体密钥",
-	"ERDAI_IMAGE_API_KEY":      "图片生成密钥",
-	"ERDAI_OPS_TOKEN":          "Sub2API 监控密钥",
-	"ERDAI_QQ_SECRET":          "QQ Secret",
-	"ERDAI_LOCAL_SEMANTIC_KEY": "Embedding 服务密钥",
+	"ERDAI_RUNTIME_TOKEN":            "运行时服务密钥",
+	"ERDAI_MODEL_API_KEY":            "主模型供应商密钥",
+	"ERDAI_GROK_API_KEY":             "Grok 搜索与多媒体密钥",
+	"ERDAI_IMAGE_API_KEY":            "图片生成密钥",
+	"ERDAI_OPS_TOKEN":                "Sub2API 监控密钥",
+	"ERDAI_SUB2API_MONITOR_EMAIL":    "Sub2API 监控账号",
+	"ERDAI_SUB2API_MONITOR_PASSWORD": "Sub2API 监控密码",
+	"ERDAI_QQ_SECRET":                "QQ Secret",
+	"ERDAI_LOCAL_SEMANTIC_KEY":       "Embedding 服务密钥",
 }
 
 var requiredManagedCredentials = map[string]struct{}{
@@ -79,6 +81,9 @@ func managedCredentialNameAllowed(name string) bool {
 	}
 	if _, blocked := blockedManagedCredentials[name]; blocked {
 		return false
+	}
+	if name == "ERDAI_SUB2API_MONITOR_EMAIL" {
+		return true
 	}
 	for _, value := range name {
 		if (value < 'A' || value > 'Z') && (value < '0' || value > '9') && value != '_' {
@@ -354,6 +359,10 @@ func (a *AgentRuntime) applyManagedCredential(name, value string) {
 		a.imageAPIKey = strings.TrimSpace(value)
 	case "ERDAI_OPS_TOKEN":
 		a.opsToken = strings.TrimSpace(value)
+	case "ERDAI_SUB2API_MONITOR_EMAIL":
+		a.sub2APIMonitorEmail = strings.TrimSpace(value)
+	case "ERDAI_SUB2API_MONITOR_PASSWORD":
+		a.sub2APIMonitorPassword = strings.TrimSpace(value)
 	}
 }
 

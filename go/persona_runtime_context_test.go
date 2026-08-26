@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStableMemoryExtractionIsConservative(t *testing.T) {
@@ -48,6 +49,20 @@ func TestAddressRecallAnswerHint(t *testing.T) {
 	}
 	if hint := addressRecallAnswerHint("我喜欢喝什么", memories); hint != "" {
 		t.Fatalf("unrelated query got address hint: %q", hint)
+	}
+}
+
+func TestAddressMemoryMatchesRecallQuestion(t *testing.T) {
+	now := time.Now().UTC()
+	memory := RecalledMemory{
+		Kind: "address", UntrustedContent: "用户希望被称为老板",
+		Confidence: 0.88, Importance: 0.9, UpdatedAt: now,
+	}
+	if _, matched := memoryRelevanceScore(memory, "你叫我什么", now); !matched {
+		t.Fatal("address memory did not match a direct recall question")
+	}
+	if _, matched := memoryRelevanceScore(memory, "今天天气怎么样", now); matched {
+		t.Fatal("address memory matched an unrelated question")
 	}
 }
 

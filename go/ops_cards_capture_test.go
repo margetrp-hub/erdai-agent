@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sync/atomic"
 	"testing"
 )
 
@@ -27,7 +28,9 @@ func TestOPSCardPageIsPinnedToNinetyMinutes(t *testing.T) {
 }
 
 func TestSub2APIMonitorLoginUsesDedicatedAccount(t *testing.T) {
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		if r.URL.Path != "/api/v1/auth/login" || r.Method != http.MethodPost {
 			t.Fatalf("login request = %s %s", r.Method, r.URL.Path)
 		}
@@ -55,6 +58,15 @@ func TestSub2APIMonitorLoginUsesDedicatedAccount(t *testing.T) {
 	}
 	if login.AccessToken != "access" || login.RefreshToken != "refresh" || login.ExpiresIn != 3600 {
 		t.Fatalf("login response = %+v", login)
+	}
+	if _, err = runtime.cachedSub2APIMonitorLogin(context.Background(), pageURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtime.cachedSub2APIMonitorLogin(context.Background(), pageURL); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("login requests = %d, want direct login plus one cached-session login", requests.Load())
 	}
 }
 

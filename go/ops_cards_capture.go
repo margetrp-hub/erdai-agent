@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/emulation"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -111,6 +113,19 @@ func (a *AgentRuntime) sub2APIMonitorLogin(ctx context.Context, pageURL *url.URL
 	return login, nil
 }
 
+func (a *AgentRuntime) cachedSub2APIMonitorLogin(ctx context.Context, pageURL *url.URL) (sub2APILogin, error) {
+	if strings.TrimSpace(a.opsCaptureLogin.AccessToken) != "" && time.Now().Add(time.Minute).Before(a.opsCaptureLoginExpiresAt) {
+		return a.opsCaptureLogin, nil
+	}
+	login, err := a.sub2APIMonitorLogin(ctx, pageURL)
+	if err != nil {
+		return sub2APILogin{}, err
+	}
+	a.opsCaptureLogin = login
+	a.opsCaptureLoginExpiresAt = time.Now().Add(time.Duration(login.ExpiresIn) * time.Second)
+	return login, nil
+}
+
 func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) ([]byte, error) {
 	a.opsCaptureMu.Lock()
 	defer a.opsCaptureMu.Unlock()
@@ -135,7 +150,7 @@ func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) 
 	captureCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	login, err := a.sub2APIMonitorLogin(captureCtx, pageURL)
+	login, err := a.cachedSub2APIMonitorLogin(captureCtx, pageURL)
 	if err != nil {
 		return nil, err
 	}
@@ -149,8 +164,11 @@ func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) 
 		"auth_user":        string(login.User),
 		"sub2api_locale":   "zh",
 	})
-	origin := pageURL.Scheme + "://" + pageURL.Host + "/"
-	seedScript := `(values => { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value) })(` + string(storage) + `)`
+	origin, _ := json.Marshal(pageURL.Scheme + "://" + pageURL.Host)
+	seedScript := `(values => {
+		if (location.origin !== ` + string(origin) + `) return;
+		for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value);
+	})(` + string(storage) + `)`
 	suppressAnnouncementScript := `(() => {
 		const suppress = () => {
 			document.querySelectorAll('[data-testid="announcement-popup-dismiss"]').forEach((button) => {
@@ -173,12 +191,18 @@ func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) 
 	var screenshot []byte
 	if err = chromedp.Run(browserCtx,
 		chromedp.EmulateViewport(1024, 768),
-		chromedp.Navigate(origin),
-		chromedp.Evaluate(seedScript, nil),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return emulation.SetTimezoneOverride("Asia/Shanghai").Do(ctx)
+		}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, scriptErr := page.AddScriptToEvaluateOnNewDocument(seedScript).Do(ctx)
+			return scriptErr
+		}),
 		chromedp.Navigate(pageURL.String()),
 		chromedp.Evaluate(suppressAnnouncementScript, nil),
 		chromedp.WaitVisible(`.monitor-card`, chromedp.ByQuery),
-		chromedp.Sleep(1200*time.Millisecond),
+		chromedp.WaitNotPresent(`header .animate-spin`, chromedp.ByQuery),
+		chromedp.Sleep(100*time.Millisecond),
 		chromedp.Screenshot(`div.space-y-6.pb-12`, &screenshot, chromedp.ByQuery),
 	); err != nil {
 		return nil, fmt.Errorf("Sub2API monitor card capture failed: %w", err)

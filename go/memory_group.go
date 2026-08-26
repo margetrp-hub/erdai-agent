@@ -796,6 +796,9 @@ func memoryRelevanceScore(memory RecalledMemory, query string, now time.Time) (f
 	if content == "" {
 		return 0, false
 	}
+	if memory.Kind == "address" && addressRecallQuestion(query) {
+		return base + 1, true
+	}
 	queryTokens := memorySearchTokens(query)
 	contentTokens := memorySearchTokens(content)
 	intersection := 0

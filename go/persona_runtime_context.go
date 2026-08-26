@@ -374,13 +374,20 @@ func addressRecallAnswerHint(query string, memories []RecalledMemory) string {
 	if !hasAddress {
 		return ""
 	}
+	if addressRecallQuestion(query) {
+		return "Core 回答要求：这是称呼回忆问题。直接说出已记录的称呼，不重复首次设置时的确认或接受话术。"
+	}
+	return ""
+}
+
+func addressRecallQuestion(query string) bool {
 	query = strings.TrimSpace(query)
 	for _, marker := range []string{"叫我什么", "怎么称呼我", "如何称呼我", "我的称呼"} {
 		if strings.Contains(query, marker) {
-			return "Core 回答要求：这是称呼回忆问题。直接说出已记录的称呼，不重复首次设置时的确认或接受话术。"
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func marshalRecentMessages(values []string) json.RawMessage {

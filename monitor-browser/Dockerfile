@@ -4,6 +4,8 @@ FROM ${ERDAI_MONITOR_BROWSER_BASE_IMAGE}
 ARG ERDAI_RELEASE_VERSION=dev
 ARG ERDAI_SOURCE_REVISION=unknown
 
+ENV TZ=Asia/Shanghai
+
 RUN LANG=C.UTF-8 DEBIAN_FRONTEND=noninteractive apt-get update \
     && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*

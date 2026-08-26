@@ -94,6 +94,8 @@ type AgentRuntime struct {
 	localMCP                      *localMCPHub
 	videoMu                       sync.Mutex
 	opsCaptureMu                  sync.Mutex
+	opsCaptureLogin               sub2APILogin
+	opsCaptureLoginExpiresAt      time.Time
 	videoCancelID                 uint64
 	videoCancels                  map[uint64]context.CancelFunc
 	mediaGCMu                     sync.Mutex

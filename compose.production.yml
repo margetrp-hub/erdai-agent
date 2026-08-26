@@ -88,6 +88,8 @@ services:
       erdai-agent:
         aliases:
           - erdai-monitor-browser
+    environment:
+      TZ: Asia/Shanghai
     shm_size: 256m
     cpus: 1.0
     mem_limit: ${ERDAI_MONITOR_BROWSER_MEMORY_LIMIT:-512m}

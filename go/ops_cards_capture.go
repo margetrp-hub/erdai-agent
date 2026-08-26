@@ -151,10 +151,19 @@ func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) 
 	})
 	origin := pageURL.Scheme + "://" + pageURL.Host + "/"
 	seedScript := `(values => { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value) })(` + string(storage) + `)`
-	dismissAnnouncementScript := `(() => {
-		const button = document.querySelector('[data-testid="announcement-popup-dismiss"]');
-		if (button instanceof HTMLElement) button.click();
-		document.body.style.overflow = '';
+	suppressAnnouncementScript := `(() => {
+		const suppress = () => {
+			document.querySelectorAll('[data-testid="announcement-popup-dismiss"]').forEach((button) => {
+				const overlay = button.closest('.fixed.inset-0');
+				if (overlay instanceof HTMLElement) overlay.style.setProperty('display', 'none', 'important');
+			});
+			document.body.style.overflow = '';
+		};
+		suppress();
+		if (!window.__erdaiAnnouncementObserver) {
+			window.__erdaiAnnouncementObserver = new MutationObserver(suppress);
+			window.__erdaiAnnouncementObserver.observe(document.documentElement, { childList: true, subtree: true });
+		}
 	})()`
 
 	allocatorCtx, allocatorCancel := chromedp.NewRemoteAllocator(captureCtx, browserURL.String())
@@ -167,10 +176,9 @@ func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) 
 		chromedp.Navigate(origin),
 		chromedp.Evaluate(seedScript, nil),
 		chromedp.Navigate(pageURL.String()),
+		chromedp.Evaluate(suppressAnnouncementScript, nil),
 		chromedp.WaitVisible(`.monitor-card`, chromedp.ByQuery),
-		chromedp.Sleep(800*time.Millisecond),
-		chromedp.Evaluate(dismissAnnouncementScript, nil),
-		chromedp.Sleep(300*time.Millisecond),
+		chromedp.Sleep(1200*time.Millisecond),
 		chromedp.Screenshot(`div.space-y-6.pb-12`, &screenshot, chromedp.ByQuery),
 	); err != nil {
 		return nil, fmt.Errorf("Sub2API monitor card capture failed: %w", err)

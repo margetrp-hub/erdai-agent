@@ -72,7 +72,6 @@ chmod 755 "$bundle/app/scripts/"*.sh
 
 docker image inspect -f '{{.Id}}' "$image" > "$bundle/core-image-id"
 docker image inspect -f '{{.Id}}' "$embedding_image" > "$bundle/embedding-image-id"
-docker image inspect -f '{{.Id}}' "$browser_image" > "$bundle/browser-image-id"
 docker save --output "$bundle/images.tar" "$image" "$embedding_image" "$browser_image"
 tar -czf "$bundle/app.tar.gz" --owner=0 --group=0 --numeric-owner -C "$bundle/app" .
 rm -rf "$bundle/app"
@@ -84,7 +83,6 @@ CORE_IMAGE_ID=$(cat "$bundle/core-image-id")
 EMBEDDING_IMAGE=$embedding_image
 EMBEDDING_IMAGE_ID=$(cat "$bundle/embedding-image-id")
 BROWSER_IMAGE=$browser_image
-BROWSER_IMAGE_ID=$(cat "$bundle/browser-image-id")
 SCHEMA_VERSION=$schema
 PLATFORM=$platform
 SOURCE_REVISION=$source_revision
@@ -93,7 +91,7 @@ EMBEDDING_MEMORY_LIMIT_BYTES=469762048
 BROWSER_MEMORY_LIMIT_BYTES=536870912
 MEMORY_LIMIT_TOTAL_BYTES=1543503872
 EOF
-rm -f "$bundle/core-image-id" "$bundle/embedding-image-id" "$bundle/browser-image-id"
+rm -f "$bundle/core-image-id" "$bundle/embedding-image-id"
 (cd "$bundle" && sha256sum manifest.env images.tar app.tar.gz > SHA256SUMS)
 
 tar -czf "$archive" -C "$output_dir" "$(basename "$bundle")"

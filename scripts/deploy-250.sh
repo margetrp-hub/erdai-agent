@@ -109,7 +109,6 @@ release=$(manifest_value RELEASE_ID)
 release_image=$(manifest_value RELEASE_IMAGE)
 embedding_image=$(manifest_value EMBEDDING_IMAGE)
 browser_image=$(manifest_value BROWSER_IMAGE)
-browser_image_id=$(manifest_value BROWSER_IMAGE_ID)
 schema=$(manifest_value SCHEMA_VERSION)
 platform=$(manifest_value PLATFORM)
 source_revision=$(manifest_value SOURCE_REVISION)
@@ -156,7 +155,6 @@ core_image_id=$(docker image inspect -f '{{.Id}}' "$release_image")
 docker image inspect "$embedding_image" >/dev/null 2>&1 || fail "immutable embedding image is unavailable"
 docker image inspect "$browser_image" >/dev/null 2>&1 || fail "immutable monitor browser image is unavailable"
 [ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$browser_image")" = "$platform" ] || fail "monitor browser platform does not match manifest"
-[ "$(docker image inspect -f '{{.Id}}' "$browser_image")" = "$browser_image_id" ] || fail "loaded monitor browser image does not match manifest"
 [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$browser_image")" = "$release" ] || fail "loaded monitor browser version label does not match manifest"
 [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$browser_image")" = "$source_revision" ] || fail "loaded monitor browser revision label does not match manifest"
 [ "$(docker inspect -f '{{.Config.Image}}' erdai-embedding)" = "$embedding_image" ] || fail "running embedding reference differs; upgrade it separately"

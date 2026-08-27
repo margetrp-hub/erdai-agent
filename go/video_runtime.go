@@ -21,7 +21,7 @@ import (
 const (
 	videoUnavailableReply                = "视频通道暂时没额度。"
 	defaultVideoPollInterval             = 4 * time.Second
-	defaultVideoPollMaxTransientFailures = 450
+	defaultVideoPollMaxTransientFailures = 15
 	defaultVideoCreateMaxAttempts        = 3
 	defaultVideoCreateRetryDelay         = 250 * time.Millisecond
 	maxVideoGenerationDuration           = 45 * time.Minute

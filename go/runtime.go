@@ -2073,6 +2073,9 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 		}
 		return agentReply{Text: humanizeSearchReply(payload.Result)}, nil
 	}
+	if reply, handled, followupErr := a.mediaFollowupReply(ctx, run, message); handled {
+		return reply, followupErr
+	}
 	var prepared prepareResponse
 	hasImage, hasAudio, hasDocument := attachmentKinds(run.Attachments)
 	personaContext := a.personaContext(ctx, run, message)
@@ -2708,8 +2711,9 @@ func (a *AgentRuntime) enqueueDelivery(run runRecord, reply agentReply, phase, e
 	// a terminal reply may only claim work is underway when this run really
 	// started a media/tool task. A chat run improvising "马上给你看" is rewritten
 	// into an honest no-commitment reply before it can reach the platform.
+	hasTaskEvidence := phase == "terminal" && a.runHasMediaTaskEvidence(run.ID)
 	if phase == "terminal" && errorCode == "" && len(reply.Attachments) == 0 &&
-		replyMakesUnbackedMediaPromise(reply.Text) && !a.runHasMediaTaskEvidence(run.ID) {
+		replyMakesUnbackedMediaPromise(reply.Text) && !hasTaskEvidence {
 		reply.Text = "这次还没真做出来，先别等。"
 		reply.Segments = nil
 	}
@@ -2755,7 +2759,7 @@ func (a *AgentRuntime) enqueueDelivery(run runRecord, reply agentReply, phase, e
 	// from the same member already got its terminal reply. This check runs in
 	// the same transaction that writes the outbox row, so unlike the
 	// pre-generation supersede check it cannot race with a sibling worker.
-	if phase == "terminal" && run.ConversationKind == "group" && strings.TrimSpace(run.CreatedAt) != "" {
+	if phase == "terminal" && !hasTaskEvidence && run.ConversationKind == "group" && strings.TrimSpace(run.CreatedAt) != "" {
 		var newerDelivered int
 		if err = tx.QueryRow(`SELECT count(*) FROM agent_deliveries d
 			JOIN agent_runs r ON r.id = d.run_id

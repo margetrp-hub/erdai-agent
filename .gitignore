@@ -26,6 +26,7 @@ build/
 output/
 node_modules/
 .vite/
+.playwright-cli/
 __pycache__/
 *.py[cod]
 *.tar

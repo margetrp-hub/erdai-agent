@@ -108,10 +108,7 @@ func main() {
 	if err = runtime.StartPlatformConnectors(context.Background()); err != nil {
 		log.Printf("platform connectors unavailable: %v", err)
 	}
-	webRoot := "web"
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("ERDAI_WEBUI_MODE")), "modern") {
-		webRoot = "webui/dist"
-	}
+	webRoot := webRootForMode(os.Getenv("ERDAI_WEBUI_MODE"))
 	coreGateway := NewGatewayFromRoot("", webRoot)
 	coreGateway.runtime = runtime
 	adminGateway := NewGatewayFromRootWithCredentials(adminToken, adminUsername, adminPasswordHash, webRoot)
@@ -143,6 +140,13 @@ func main() {
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		log.Fatal(serveErr)
 	}
+}
+
+func webRootForMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "legacy") {
+		return "web"
+	}
+	return "webui/dist"
 }
 
 func handleCLI(args []string) (bool, error) {

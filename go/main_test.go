@@ -47,6 +47,16 @@ func TestHandleCLIRejectsUnknownArguments(t *testing.T) {
 	}
 }
 
+func TestWebUIUsesModernConsoleByDefault(t *testing.T) {
+	for mode, want := range map[string]string{
+		"": "webui/dist", "modern": "webui/dist", "STANDARD": "webui/dist", "legacy": "web",
+	} {
+		if got := webRootForMode(mode); got != want {
+			t.Fatalf("web root for %q = %q, want %q", mode, got, want)
+		}
+	}
+}
+
 func TestGatewayAdminUsernamePasswordLogin(t *testing.T) {
 	gateway := NewGatewayFromRootWithCredentials("legacy-admin-token-that-is-at-least-32-bytes", "admin", hashAdminPassword("correct horse"), "web")
 	server := httptest.NewServer(gateway)

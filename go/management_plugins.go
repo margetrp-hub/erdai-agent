@@ -41,6 +41,23 @@ type mgmtPluginPayload struct {
 	Manifest      *map[string]any `json:"manifest"`
 }
 
+type mgmtPluginReadinessItem struct {
+	PluginID string         `json:"pluginId"`
+	Name     string         `json:"name"`
+	State    string         `json:"state"`
+	Message  string         `json:"message,omitempty"`
+	Health   map[string]any `json:"health"`
+}
+
+type mgmtPluginReadiness struct {
+	Ready     bool                      `json:"ready"`
+	State     string                    `json:"state"`
+	CheckedAt string                    `json:"checkedAt"`
+	Counts    map[string]int            `json:"counts"`
+	Blocking  []mgmtPluginReadinessItem `json:"blocking"`
+	Plugins   []map[string]any          `json:"plugins"`
+}
+
 var mgmtPluginCreateFields = coreFieldSet("id", "name", "description", "version", "author", "enabled", "integrationId", "manifest")
 
 var pluginExternalReservedManifestFields = coreFieldSet(
@@ -70,6 +87,9 @@ func pluginManifestValues(input mgmtPluginPayload) (mgmtPlugin, error) {
 	}
 	if value.ID, err = mgmtIdentifier(*input.ID, "id"); err != nil {
 		return value, err
+	}
+	if value.ID == "readiness" {
+		return value, coreInvalid("plugin id is reserved by Core")
 	}
 	if value.Name, err = normalizeCoreText(*input.Name, "name", 120, false); err != nil {
 		return value, err
@@ -558,6 +578,10 @@ func (s *coreConfigStore) pluginHealth(a *AgentRuntime, id string) (map[string]a
 		result["dependencyStates"] = dependencyStates
 	}
 	switch plugin.ID {
+	case "image-generation":
+		return s.mediaPluginHealth(a, mediaKindImage, result)
+	case "video-generation":
+		return s.mediaPluginHealth(a, mediaKindVideo, result)
 	case "sub2api-channel-monitor":
 		if a == nil {
 			result["state"] = "unavailable"
@@ -584,7 +608,11 @@ func (s *coreConfigStore) pluginHealth(a *AgentRuntime, id string) (map[string]a
 		groups, fetchErr := a.fetchOPSGroups(ctx, policy)
 		if fetchErr != nil {
 			result["state"] = "unavailable"
-			result["message"] = fetchErr.Error()
+			message := fetchErr.Error()
+			if strings.Contains(strings.ToLower(message), "not configured") {
+				message = "渠道监控尚未完成配置"
+			}
+			result["message"] = message
 			return result, nil
 		}
 		counts := map[string]int{}
@@ -630,6 +658,81 @@ func (s *coreConfigStore) pluginHealth(a *AgentRuntime, id string) (map[string]a
 	return result, nil
 }
 
+func (s *coreConfigStore) mediaPluginHealth(a *AgentRuntime, kind mediaKind, result map[string]any) (map[string]any, error) {
+	if a == nil {
+		result["state"] = "unavailable"
+		result["message"] = "运行实例不可用"
+		return result, nil
+	}
+	status, err := a.mediaCapabilityStatus(kind)
+	if err != nil {
+		return nil, err
+	}
+	result["healthMode"] = "real_task"
+	result["media"] = status
+	result["message"] = status.Reason
+	switch status.Status {
+	case "available":
+		result["state"] = "healthy"
+	case "degraded":
+		result["state"] = "degraded"
+	default:
+		result["state"] = "unverified"
+	}
+	return result, nil
+}
+
+func pluginReadinessBlocks(plugin mgmtPlugin, state string) bool {
+	if plugin.State == "disabled" || plugin.State == "registered" {
+		return false
+	}
+	switch state {
+	case "ready", "healthy", "disabled", "registered":
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *coreConfigStore) pluginsReadiness(a *AgentRuntime) (mgmtPluginReadiness, error) {
+	plugins, err := s.mgmtPlugins()
+	if err != nil {
+		return mgmtPluginReadiness{}, err
+	}
+	value := mgmtPluginReadiness{
+		Ready: true, State: "healthy", CheckedAt: mgmtNow(), Counts: map[string]int{},
+		Blocking: []mgmtPluginReadinessItem{}, Plugins: []map[string]any{},
+	}
+	for _, plugin := range plugins {
+		health, healthErr := s.pluginHealth(a, plugin.ID)
+		if healthErr != nil {
+			health = map[string]any{
+				"pluginId": plugin.ID, "state": "unavailable", "checkedAt": mgmtNow(),
+				"message": healthErr.Error(),
+			}
+		}
+		state := strings.TrimSpace(pluginStringValue(health["state"]))
+		if state == "" {
+			state = "unavailable"
+			health["state"] = state
+		}
+		value.Counts[state]++
+		value.Plugins = append(value.Plugins, health)
+		if pluginReadinessBlocks(plugin, state) {
+			value.Ready = false
+			value.State = "degraded"
+			value.Blocking = append(value.Blocking, mgmtPluginReadinessItem{
+				PluginID: plugin.ID,
+				Name:     plugin.Name,
+				State:    state,
+				Message:  strings.TrimSpace(pluginStringValue(health["message"])),
+				Health:   health,
+			})
+		}
+	}
+	return value, nil
+}
+
 func (s *coreConfigStore) handleManagementPlugins(a *AgentRuntime, w http.ResponseWriter, r *http.Request, path string) error {
 	if path == "/api/v1/plugins" {
 		if r.Method == http.MethodPost {
@@ -649,6 +752,16 @@ func (s *coreConfigStore) handleManagementPlugins(a *AgentRuntime, w http.Respon
 		values, err := s.mgmtPlugins()
 		if err == nil {
 			mgmtWriteData(w, http.StatusOK, values)
+		}
+		return err
+	}
+	if path == "/api/v1/plugins/readiness" {
+		if r.Method != http.MethodGet {
+			return mgmtMethodNotAllowed()
+		}
+		value, err := s.pluginsReadiness(a)
+		if err == nil {
+			mgmtWriteData(w, http.StatusOK, value)
 		}
 		return err
 	}

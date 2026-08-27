@@ -1,6 +1,6 @@
 # 二呆智能体系统说明
 
-> 文档版本：0.13.0（Schema v75）
+> 文档版本：0.13.2（Schema v76）
 >
 > 公开文档只记录源码、接口和可复现的验收方法。生产主机、网络地址、备份路径和真实账号验收证据保存在私有运维记录中。
 >
@@ -14,6 +14,7 @@
 - QQ 只是一个连接器；同一个 Core 可以接入多个平台和多个角色。
 - AstrBot 的运行能力已经按能力迁移到 Go，不再启动 Python/AstrBot 运行层。
 - WebUI、配置、模型、记忆、知识、工具、MCP、任务和投递都由 Core 统一管理。
+- 四主题现代控制台是默认界面；只有显式设置 `ERDAI_WEBUI_MODE=legacy` 才进入兼容旧页。
 - 供应商密钥只从服务器环境变量读取，不进入 SQLite、浏览器响应、日志和发布包。
 
 ## 2. 当前运行拓扑
@@ -41,7 +42,7 @@
 
 当前线上容器：
 
-- Core：`erdai-agent:0.9.4-runtime-instances-r2`，healthy。
+- Core：`erdai-agent:stable`，精确版本以 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md) 为准。
 - Embedding：`erdai-embedding`，healthy。
 - QQ 通道是否 `active` 以线上 Core 的 `channel_runtime` 配置为准，不以旧文档为准。
 - 旧镜像、回滚容器和部署备份单独保留，不参与当前请求处理。
@@ -317,6 +318,15 @@ Core 支持：
 
 MCP 调用有启用状态、工具白名单、成员/管理员权限、审批模式、超时、响应大小上限和审计记录。stdio 命令必须命中服务器环境中的显式 allowlist；外部结果视为不可信材料，不能提升权限。
 
+### 11.4 插件中心
+
+插件中心管理的是能力包和 Core 适配边界，不在服务器上执行任意第三方代码：
+
+- 内置插件由 Core 托管，可关联接入策略、工具、配置页、依赖和健康检查。
+- 外部能力包先登记只读 manifest；只有绑定管理员创建的受信任适配器后，才能使用白名单内的 `health.read`、`config.read` 和 `runtime.toggle` 权限。
+- “检查全部”会汇总所有已启用插件。停用和只登记的能力不阻断；缺配置、缺依赖、检查失败、待真实任务验证和最近真实失败会进入需处理清单。
+- 图片与视频是两个独立插件。端点探针只证明接口可达；只有近 7 天真实任务生成附件，插件才显示“运行正常”。最近任务失败显示“运行异常”，从未产生真实成品则显示“待真实任务验证”。
+
 ## 12. 持久任务图
 
 复杂任务不会只依赖内存循环。每次模型、工具、媒体和投递步骤都可以写入任务图：
@@ -462,6 +472,13 @@ GET/POST/PUT/DELETE /api/v1/skills
 GET/POST/PUT/DELETE /api/v1/mcp/servers
 POST   /api/v1/mcp/servers/:id/discover
 POST   /api/v1/mcp/servers/:id/call
+GET/POST /api/v1/plugins
+GET    /api/v1/plugins/readiness
+GET    /api/v1/plugins/:id/health
+PUT/DELETE /api/v1/plugins/:id
+GET/POST /api/v1/trusted-adapters
+GET    /api/v1/trusted-adapters/:id/health
+GET/PUT/DELETE /api/v1/trusted-adapters/:id
 GET/PUT /api/v1/integrations/:id
 ```
 

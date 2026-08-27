@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 75
+const nativeCoreSchemaVersion = 76
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -1027,6 +1027,11 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	}
 	if previousVersion < 73 {
 		if err := migrateTrustedAdaptersV73(tx, now); err != nil {
+			return err
+		}
+	}
+	if previousVersion < 76 {
+		if err := migratePluginRuntimeHealthV76(tx, now); err != nil {
 			return err
 		}
 	}
@@ -2121,6 +2126,28 @@ func migrateTrustedAdaptersV73(tx coreSchemaTx, now string) error {
 	}
 	if _, err := tx.Exec("UPDATE agent_plugins SET version = '1.1.1', manifest_json = ?, updated_at = ? WHERE id = 'affiliate-invite'", mgmtJSON(manifest), now); err != nil {
 		return fmt.Errorf("update affiliate plugin manifest for v73: %w", err)
+	}
+	return nil
+}
+
+func migratePluginRuntimeHealthV76(tx coreSchemaTx, now string) error {
+	imageManifest := `{"manifestSchemaVersion":1,"category":"media","integrationId":"image_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/image_policy","healthMode":"media_image","commands":[],"capabilities":["图片生成","视觉导演","真实成品校验","任务并发限制","提示词审计"],"toolIds":["image-generate","grok-generate-image"]}`
+	searchManifest := `{"manifestSchemaVersion":1,"category":"research","integrationId":"grok_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/grok_policy","healthMode":"readiness","commands":[],"capabilities":["联网搜索","来源摘要","TTS","学习 worker"],"toolIds":["grok-web-search"]}`
+	videoManifest := `{"manifestSchemaVersion":1,"category":"media","integrationId":"image_policy","toggleMode":"readonly","configView":"integrations","configPath":"/api/v1/integrations/grok_policy","healthMode":"media_video","commands":[],"capabilities":["视频生成","异步任务追踪","真实成品校验","追问恢复"],"toolIds":["grok-generate-video"],"dependencies":["image-generation"]}`
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE agent_plugins SET version = '1.2.0', manifest_json = ?, updated_at = ` + now + ` WHERE id = 'image-generation' AND source = 'builtin'`, []any{imageManifest}},
+		{`UPDATE agent_plugins SET name = '搜索与学习', description = '接入联网搜索、来源摘要、TTS 和学习 worker，按角色与策略开放。', version = '1.2.0', manifest_json = ?, updated_at = ` + now + ` WHERE id = 'web-search-learning' AND source = 'builtin'`, []any{searchManifest}},
+		{`INSERT OR IGNORE INTO agent_plugins
+			(id, name, description, version, author, source, enabled, manifest_json, created_at, updated_at)
+			VALUES ('video-generation', '视频生成', '独立展示视频创建、轮询、下载和附件成品的真实运行状态。', '1.0.0', '二呆 Core', 'builtin', 1, ?, ` + now + `, ` + now + `)`, []any{videoManifest}},
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement.query, statement.args...); err != nil {
+			return fmt.Errorf("migrate plugin runtime health v76: %w", err)
+		}
 	}
 	return nil
 }

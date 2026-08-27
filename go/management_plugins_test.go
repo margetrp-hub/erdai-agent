@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManagementPluginsListHealthAndToggleIntegration(t *testing.T) {
@@ -13,7 +15,7 @@ func TestManagementPluginsListHealthAndToggleIntegration(t *testing.T) {
 	runtime.adminToken = managementAdminToken
 
 	listed := managementRequest(t, runtime, http.MethodGet, "/api/v1/plugins", nil, "")
-	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"id":"sub2api-channel-monitor"`) || !strings.Contains(listed.Body.String(), `"id":"affiliate-invite"`) || !strings.Contains(listed.Body.String(), `"id":"knowledge-retrieval"`) || !strings.Contains(listed.Body.String(), `"id":"tools-and-mcp"`) {
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"id":"sub2api-channel-monitor"`) || !strings.Contains(listed.Body.String(), `"id":"affiliate-invite"`) || !strings.Contains(listed.Body.String(), `"id":"knowledge-retrieval"`) || !strings.Contains(listed.Body.String(), `"id":"video-generation"`) || !strings.Contains(listed.Body.String(), `"id":"tools-and-mcp"`) {
 		t.Fatalf("plugin list = %d: %s", listed.Code, listed.Body.String())
 	}
 	messagePlugin, found, err := runtime.configStore.mgmtPlugin("message-experience")
@@ -141,5 +143,53 @@ func TestManagementPluginHealthReportsDependencyDegradation(t *testing.T) {
 	health := managementRequest(t, runtime, http.MethodGet, "/api/v1/plugins/group-conversation/health", nil, "")
 	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"state":"degraded"`) || !strings.Contains(health.Body.String(), `"companion-context":"disabled"`) {
 		t.Fatalf("dependency health = %d: %s", health.Code, health.Body.String())
+	}
+}
+
+func TestManagementPluginMediaHealthUsesRealTaskEvidence(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	runtime.adminToken = managementAdminToken
+	setTestIntegration(t, runtime.configStore.db, "image_policy", map[string]any{"enabled": true})
+
+	unverified := managementRequest(t, runtime, http.MethodGet, "/api/v1/plugins/image-generation/health", nil, "")
+	if unverified.Code != http.StatusOK || !strings.Contains(unverified.Body.String(), `"state":"unverified"`) || !strings.Contains(unverified.Body.String(), `"healthMode":"real_task"`) {
+		t.Fatalf("unverified image health = %d: %s", unverified.Code, unverified.Body.String())
+	}
+
+	run := insertQuotaTestRun(t, runtime, "plugin-video-health-run", "plugin-video-health-sender")
+	runtime.recordMediaTaskOutcome(run.ID, mediaKindVideo, time.Now().Add(-time.Second), toolResult{}, errors.New("provider timeout"))
+	degraded := managementRequest(t, runtime, http.MethodGet, "/api/v1/plugins/video-generation/health", nil, "")
+	if degraded.Code != http.StatusOK || !strings.Contains(degraded.Body.String(), `"state":"degraded"`) || !strings.Contains(degraded.Body.String(), `"consecutiveFailures":1`) || !strings.Contains(degraded.Body.String(), `"最近一次真实任务失败"`) {
+		t.Fatalf("degraded video health = %d: %s", degraded.Code, degraded.Body.String())
+	}
+}
+
+func TestManagementPluginsReadinessAggregatesBlockingEvidence(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	runtime.adminToken = managementAdminToken
+	setTestIntegration(t, runtime.configStore.db, "image_policy", map[string]any{"enabled": true})
+
+	response := managementRequest(t, runtime, http.MethodGet, "/api/v1/plugins/readiness", nil, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) ||
+		!strings.Contains(response.Body.String(), `"pluginId":"image-generation"`) ||
+		!strings.Contains(response.Body.String(), `"state":"unverified"`) ||
+		!strings.Contains(response.Body.String(), `"pluginId":"video-generation"`) ||
+		!strings.Contains(response.Body.String(), `"渠道监控尚未完成配置"`) {
+		t.Fatalf("plugin readiness = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestManagementPluginsRejectReservedReadinessID(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	runtime.adminToken = managementAdminToken
+
+	response := managementRequest(t, runtime, http.MethodPost, "/api/v1/plugins", map[string]any{
+		"id": "readiness", "name": "冲突插件",
+	}, "admin")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("reserved plugin id = %d: %s", response.Code, response.Body.String())
 	}
 }

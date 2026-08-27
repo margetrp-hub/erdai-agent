@@ -539,6 +539,7 @@ function pluginTone(state: unknown): 'ok' | 'warn' | 'bad' | 'idle' {
       return 'ok';
     case 'needs_configuration':
     case 'degraded':
+    case 'unverified':
       return 'warn';
     case 'unavailable':
       return 'bad';
@@ -552,7 +553,8 @@ function pluginStateLabel(state: unknown) {
     case 'healthy': return '运行正常';
     case 'ready': return '已就绪';
     case 'needs_configuration': return '待配置';
-    case 'degraded': return '依赖异常';
+    case 'degraded': return '运行异常';
+    case 'unverified': return '待真实任务验证';
     case 'unavailable': return '检查失败';
     case 'disabled': return '已停用';
     case 'registered': return '已登记';
@@ -594,6 +596,7 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
   const [checking, setChecking] = useState('');
   const [health, setHealth] = useState<Record<string, JsonMap>>({});
   const [adapterHealth, setAdapterHealth] = useState<Record<string, JsonMap>>({});
+  const [readiness, setReadiness] = useState<JsonMap | null>(null);
   const enabledPlugins = plugins.filter((item) => enabled(item.enabled));
   const builtins = plugins.filter((item) => text(item.source, 'builtin') === 'builtin');
   const runCheck = async (plugin: JsonMap) => {
@@ -620,6 +623,20 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
       setChecking('');
     }
   };
+  const runAllChecks = async () => {
+    setChecking('*');
+    try {
+      const result = await apiRequest<JsonMap>('/api/v1/plugins/readiness');
+      const checked = collectionItems<JsonMap>(result.plugins);
+      setHealth(Object.fromEntries(checked.map((item) => [text(item.pluginId), item])));
+      setReadiness(result);
+    } catch (cause) {
+      setReadiness({ ready: false, state: 'unavailable', blocking: [], message: cause instanceof Error ? cause.message : '全量检查失败' });
+    } finally {
+      setChecking('');
+    }
+  };
+  const blocking = collectionItems<JsonMap>(readiness?.blocking);
   return (
     <ModuleShell accent="cyan">
       <MetricRail items={[
@@ -632,12 +649,22 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
         <PanelHeading
           eyebrow="PLUGIN REGISTRY"
           title="插件目录"
-          description="插件是能力编排层；真实策略仍由 Core 接入配置和权限边界执行。"
-          action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('登记外部能力包', {
-            id: 'my-capability', name: '我的能力包', description: '', version: '0.1.0', author: '', enabled: true,
-            manifest: { category: 'extension', capabilities: [], commands: [] },
-          }, '/api/v1/plugins', 'POST', '只登记 manifest，不执行远程代码；需要运行适配器时再由 Core 增加受控实现。')}>登记能力包</Button>}
+          description="配置探针和真实任务证据分开判断；待实测或最近失败不会显示成可用。"
+          action={<div className="plugin-heading-actions">
+            <Button variant="secondary" icon={checking === '*' ? <RefreshCw className="spin" size={15} /> : <ListChecks size={15} />} disabled={checking === '*'} onClick={runAllChecks}>检查全部</Button>
+            <Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('登记外部能力包', {
+              id: 'my-capability', name: '我的能力包', description: '', version: '0.1.0', author: '', enabled: true,
+              manifest: { category: 'extension', capabilities: [], commands: [] },
+            }, '/api/v1/plugins', 'POST', '只登记 manifest，不执行远程代码；需要运行适配器时再由 Core 增加受控实现。')}>登记能力包</Button>
+          </div>}
         />
+        {readiness ? <div className={`plugin-readiness ${enabled(readiness.ready) ? 'is-ready' : 'is-blocked'}`}>
+          {enabled(readiness.ready) ? <CheckCircle2 size={17} /> : <CircleAlert size={17} />}
+          <div>
+            <strong>{enabled(readiness.ready) ? '已启用插件全部通过' : `${number(blocking.length)} 项需要处理`}</strong>
+            <span>{enabled(readiness.ready) ? `检查时间 ${text(readiness.checkedAt)}` : blocking.map((item) => `${text(item.name, text(item.pluginId))}：${text(item.message, pluginStateLabel(item.state))}`).join('；')}</span>
+          </div>
+        </div> : null}
         <div className="plugin-grid">
           {plugins.map((plugin) => {
             const id = itemId(plugin);
@@ -650,6 +677,7 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
             const dependencies = collectionItems(manifest.dependencies);
             const resourceCount = pluginHealth?.resourceCount;
             const resourceCounts = asRecord(pluginHealth?.resourceCounts);
+            const media = asRecord(pluginHealth?.media);
             return (
               <article className={`plugin-card ${enabled(plugin.enabled) ? 'is-enabled' : 'is-disabled'}`} key={id}>
                 <div className="plugin-card-header">
@@ -676,6 +704,7 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
                 {pluginHealth?.groupCount !== undefined ? <div className="plugin-health-summary">渠道 {number(pluginHealth.groupCount)} 组 · 来源 {text(pluginHealth.source, '运行时')}</div> : null}
                 {pluginHealth?.bindingCount !== undefined ? <div className="plugin-health-summary">已绑定 QQ {number(pluginHealth.bindingCount)} 个</div> : null}
                 {resourceCount !== undefined ? <div className="plugin-health-summary">资源 {number(resourceCount)} 项{Object.keys(resourceCounts).length ? ` · ${Object.entries(resourceCounts).map(([key, value]) => `${key} ${number(value)}`).join(' · ')}` : ''}</div> : null}
+                {Object.keys(media).length ? <div className="plugin-health-summary">真实任务：成功 {number(media.successCount)} · 失败 {number(media.failureCount)} · 连续失败 {number(media.consecutiveFailures)}{media.lastSuccessAt ? ` · 最近成品 ${text(media.lastSuccessAt)}` : ''}</div> : null}
                 <div className="plugin-card-actions">
                   <Button variant="secondary" icon={checking === id ? <RefreshCw className="spin" size={14} /> : <Play size={14} />} disabled={checking === id} onClick={() => runCheck(plugin)}>运行检查</Button>
                   <Button variant="secondary" icon={<Settings2 size={14} />} disabled={!configTarget} onClick={() => { if (configTarget) ctx.onNavigate(configTarget); }}>{configTarget ? '能力配置' : '无需配置'}</Button>

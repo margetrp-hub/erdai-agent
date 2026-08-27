@@ -62,8 +62,15 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 	if err = store.db.QueryRow("SELECT count(*) FROM agent_plugins WHERE source = 'builtin'").Scan(&pluginCount); err != nil {
 		t.Fatal(err)
 	}
-	if pluginCount < 12 {
+	if pluginCount < 13 {
 		t.Fatalf("builtin plugin seed count = %d", pluginCount)
+	}
+	var videoManifest string
+	if err = store.db.QueryRow("SELECT manifest_json FROM agent_plugins WHERE id = 'video-generation'").Scan(&videoManifest); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(videoManifest, `"healthMode":"media_video"`) || !strings.Contains(videoManifest, `"grok-generate-video"`) {
+		t.Fatalf("video plugin manifest = %s", videoManifest)
 	}
 	var qqEnabled int
 	if err = store.db.QueryRow(

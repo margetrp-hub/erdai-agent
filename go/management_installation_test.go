@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +32,26 @@ func TestManagementInstallationStatusRedactsCredentialValues(t *testing.T) {
 	}
 }
 
+// nextStableTestVersion derives a version strictly newer than the running
+// build, so this suite survives every release bump instead of hardcoding one.
+func nextStableTestVersion(t *testing.T) string {
+	t.Helper()
+	parts := strings.Split(erdaiRuntimeVersion, ".")
+	if len(parts) != 3 {
+		t.Fatalf("unexpected runtime version %q", erdaiRuntimeVersion)
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		t.Fatalf("unexpected runtime version %q", erdaiRuntimeVersion)
+	}
+	return parts[0] + "." + strconv.Itoa(minor+1) + ".0"
+}
+
 func TestManagementStableUpdateSelectsOnlyStableRelease(t *testing.T) {
 	runtime := newManagementRuntime(t)
+	nextVersion := nextStableTestVersion(t)
+	nextTag := "v" + nextVersion
+	nextAsset := "erdai-agent-stable-" + nextTag + ".tar.gz"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/example/erdai-agent/releases" || r.URL.Query().Get("per_page") != "20" {
 			t.Fatalf("unexpected update request: %s", r.URL.String())
@@ -41,7 +60,7 @@ func TestManagementStableUpdateSelectsOnlyStableRelease(t *testing.T) {
 		_, _ = w.Write([]byte(`[
             {"tag_name":"v0.12.0-rc1","prerelease":true,"html_url":"https://example.test/rc"},
             {"tag_name":"v0.11.9","html_url":"https://example.test/older"},
-            {"tag_name":"v0.13.0","html_url":"https://example.test/stable","published_at":"2026-08-24T00:00:00Z","body":"stable release","assets":[{"name":"erdai-agent-stable-v0.13.0.tar.gz","browser_download_url":"https://github.com/example/erdai-agent/releases/download/v0.13.0/erdai-agent-stable-v0.13.0.tar.gz","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","size":123}]}
+            {"tag_name":"` + nextTag + `","html_url":"https://example.test/stable","published_at":"2026-08-24T00:00:00Z","body":"stable release","assets":[{"name":"` + nextAsset + `","browser_download_url":"https://github.com/example/erdai-agent/releases/download/` + nextTag + `/` + nextAsset + `","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","size":123}]}
         ]`))
 	}))
 	defer server.Close()
@@ -53,7 +72,7 @@ func TestManagementStableUpdateSelectsOnlyStableRelease(t *testing.T) {
 		t.Fatalf("update check = %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `"latestVersion":"0.13.0"`) || !strings.Contains(body, `"updateAvailable":true`) || !strings.Contains(body, `"upgradeReady":true`) || strings.Contains(body, "0.12.0-rc1") {
+	if !strings.Contains(body, `"latestVersion":"`+nextVersion+`"`) || !strings.Contains(body, `"updateAvailable":true`) || !strings.Contains(body, `"upgradeReady":true`) || strings.Contains(body, "0.12.0-rc1") {
 		t.Fatalf("stable update selection = %s", body)
 	}
 	statusPath := filepath.Join(t.TempDir(), "update-status.json")
@@ -64,7 +83,7 @@ func TestManagementStableUpdateSelectsOnlyStableRelease(t *testing.T) {
 	if err := os.WriteFile(statusPath, []byte(status), 0600); err != nil {
 		t.Fatal(err)
 	}
-	requestResponse := managementRequest(t, runtime, http.MethodPost, "/api/v1/update/request", map[string]string{"version": "0.13.0"}, "admin")
+	requestResponse := managementRequest(t, runtime, http.MethodPost, "/api/v1/update/request", map[string]string{"version": nextVersion}, "admin")
 	if requestResponse.Code != http.StatusAccepted {
 		t.Fatalf("update request = %d: %s", requestResponse.Code, requestResponse.Body.String())
 	}
@@ -73,7 +92,7 @@ func TestManagementStableUpdateSelectsOnlyStableRelease(t *testing.T) {
 	if err != nil || json.Unmarshal(requestRaw, &request) != nil {
 		t.Fatalf("update request file = %s, err=%v", requestRaw, err)
 	}
-	if request.TargetVersion != "0.13.0" || request.AssetName != "erdai-agent-stable-v0.13.0.tar.gz" || request.AssetDigest == "" {
+	if request.TargetVersion != nextVersion || request.AssetName != nextAsset || request.AssetDigest == "" {
 		t.Fatalf("unexpected update request: %#v", request)
 	}
 	statusResponse := managementRequest(t, runtime, http.MethodGet, "/api/v1/update/status", nil, "admin")

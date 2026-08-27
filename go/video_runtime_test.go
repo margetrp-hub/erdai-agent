@@ -75,7 +75,7 @@ func TestVideoRouteSurvivesTransientPollsAndDeliversMP4(t *testing.T) {
 			writeJSON(w, http.StatusOK, map[string]any{"id": "video-task", "status": "queued"})
 		case r.Method == http.MethodGet && r.URL.Path == "/grok/videos/video-task":
 			recordHeaders(r)
-			if pollCalls.Add(1) <= defaultVideoPollMaxTransientFailures {
+			if pollCalls.Add(1) <= 450 {
 				http.NotFound(w, r)
 				return
 			}

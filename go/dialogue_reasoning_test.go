@@ -79,9 +79,14 @@ func TestCoalesceQueuedWakeRunsCancelsOnlyStalePings(t *testing.T) {
 	event.Conversation.Kind = "group"
 	event.Sender.Key = "member-one"
 	event.Flags.IsWake = true
-	count, err := runtime.coalesceQueuedWakeRuns(context.Background(), event, "doubao", "@豆包 怎么不理我")
-	if err != nil || count != 1 {
+	// Default policy is concurrentMode=smart + smartMaxBatchSize=3: the stale
+	// ping is dropped and the substantive sibling folds into the new run.
+	merged, count, err := runtime.coalesceQueuedWakeRuns(context.Background(), event, "doubao", "@豆包 怎么不理我")
+	if err != nil || count != 2 {
 		t.Fatalf("coalesced = %d err=%v", count, err)
+	}
+	if len(merged) != 1 || merged[0] != "@豆包 帮我分析这张图" {
+		t.Fatalf("merged burst = %#v", merged)
 	}
 	var pingState, taskState string
 	if err = runtime.db.QueryRow("SELECT state FROM agent_runs WHERE id = 'old-ping'").Scan(&pingState); err != nil {
@@ -90,8 +95,47 @@ func TestCoalesceQueuedWakeRunsCancelsOnlyStalePings(t *testing.T) {
 	if err = runtime.db.QueryRow("SELECT state FROM agent_runs WHERE id = 'real-task'").Scan(&taskState); err != nil {
 		t.Fatal(err)
 	}
-	if pingState != "cancelled" || taskState != "queued" {
+	if pingState != "cancelled" || taskState != "cancelled" {
 		t.Fatalf("states = ping:%s task:%s", pingState, taskState)
+	}
+}
+
+func TestCoalesceLeavesSubstantiveSiblingWhenSmartMergeOff(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	setTestIntegration(t, runtime.configStore.db, "group_chat_policy", map[string]any{
+		"enabled": true, "concurrentMode": "off", "smartMaxBatchSize": 3,
+	})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	ciphertext, err := runtime.encrypt([]byte("@豆包 帮我分析这张图"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtime.db.Exec(`INSERT INTO agent_runs (
+		id, event_id, message_id, reply_to_message_id, thread_key, transport, reply_handle,
+		conversation_ref, conversation_kind, sender_ref, persona_id, input_cipher,
+		attachments_cipher, is_admin, is_wake, is_mention_bot, ownership_reason, state,
+		created_at, updated_at
+	) VALUES ('off-task', 'off-task', '', '', '', 'qq_official', 'reply-one', 'group-one', 'group',
+		'member-one', 'doubao', ?, NULL, 0, 1, 1, 'wake_required', 'queued', ?, ?)`,
+		ciphertext, now, now); err != nil {
+		t.Fatal(err)
+	}
+	event := transportEvent{}
+	event.Conversation.Key = "group-one"
+	event.Conversation.Kind = "group"
+	event.Sender.Key = "member-one"
+	event.Flags.IsWake = true
+	merged, count, err := runtime.coalesceQueuedWakeRuns(context.Background(), event, "doubao", "@豆包 再帮我看看这个")
+	if err != nil || count != 0 || len(merged) != 0 {
+		t.Fatalf("off-mode coalesce = %d merged=%#v err=%v", count, merged, err)
+	}
+	var state string
+	if err = runtime.db.QueryRow("SELECT state FROM agent_runs WHERE id = 'off-task'").Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" {
+		t.Fatalf("off-mode task state = %s", state)
 	}
 }
 

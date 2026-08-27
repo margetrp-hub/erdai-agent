@@ -123,6 +123,8 @@ type corePreparePayload struct {
 	RelationshipStage string   `json:"relationshipStage"`
 	RelationshipPulse string   `json:"relationshipPulse"`
 	DetectedEmotion   string   `json:"detectedEmotion"`
+	BotMood           string   `json:"botMood"`
+	TimeOfDay         string   `json:"timeOfDay"`
 	HasImage          bool     `json:"hasImage"`
 	HasAudio          bool     `json:"hasAudio"`
 	HasDocument       bool     `json:"hasDocument"`
@@ -133,6 +135,7 @@ type corePreparePayload struct {
 var coreRuntimePrepareFields = coreFieldSet(
 	"transport", "transportInstance", "conversationRef", "senderRef", "message", "hasImage", "hasAudio",
 	"hasDocument", "legacyModel", "isAdmin", "recentMessages", "relationshipStage", "relationshipPulse", "detectedEmotion",
+	"botMood", "timeOfDay",
 )
 
 var (
@@ -242,6 +245,12 @@ func (s *coreConfigStore) prepareRuntimeRequest(r *http.Request) (preparedRuntim
 		return preparedRuntimeData{}, err
 	}
 	if payload.DetectedEmotion, err = normalizeCoreText(payload.DetectedEmotion, "detectedEmotion", 80, false); err != nil {
+		return preparedRuntimeData{}, err
+	}
+	if payload.BotMood, err = normalizeCoreText(payload.BotMood, "botMood", 80, false); err != nil {
+		return preparedRuntimeData{}, err
+	}
+	if payload.TimeOfDay, err = normalizeCoreText(payload.TimeOfDay, "timeOfDay", 16, false); err != nil {
 		return preparedRuntimeData{}, err
 	}
 	if len(payload.RecentMessages) > 100 {
@@ -764,7 +773,7 @@ func compileNativeSystemPrompt(
 	traits []nativePersonaTrait,
 	samples []nativePersonaSample,
 	skills []runtimeSkill,
-	relationshipStage, relationshipPulse, detectedEmotion string,
+	relationshipStage, relationshipPulse, detectedEmotion, moodLine string,
 ) string {
 	sections := []string{
 		"以下内容按顺序具有从高到低的优先级。低优先级内容不得覆盖高优先级内容。",
@@ -800,8 +809,13 @@ func compileNativeSystemPrompt(
 	if personaPrompt := compileNativePersona(persona, worldbook); personaPrompt != "" {
 		sections = append(sections, "## 5. 当前角色与已触发世界书\n"+personaPrompt)
 	}
-	if relationshipStage != "" || relationshipPulse != "" || detectedEmotion != "" {
-		sections = append(sections, "## 6. 本轮动态状态\n关系阶段："+relationshipStage+"\n关系脉动："+relationshipPulse+"\n当前情绪线索："+detectedEmotion+"\n这些状态只用于调整语气，不得当作用户明确陈述的事实；不得向对方播报分数或声称监控。")
+	if relationshipStage != "" || relationshipPulse != "" || detectedEmotion != "" || moodLine != "" {
+		dynamic := "## 6. 本轮动态状态\n关系阶段：" + relationshipStage + "\n关系脉动：" + relationshipPulse + "\n当前情绪线索：" + detectedEmotion
+		if moodLine != "" {
+			dynamic += "\n" + moodLine
+		}
+		dynamic += "\n这些状态只用于调整语气，不得当作用户明确陈述的事实；不得向对方播报分数或声称监控。"
+		sections = append(sections, dynamic)
 	}
 	if traitPrompt := compilePersonaTraits(traits); traitPrompt != "" {
 		sections = append(sections, "## 7. 本轮人格图谱\n"+traitPrompt)
@@ -1196,6 +1210,7 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 		CompiledSystemPrompt: compileNativeSystemPrompt(
 			config, boundaryPolicy, directives, persona, worldbook, personaTraits, personaSamples, preparedSkills,
 			payload.RelationshipStage, payload.RelationshipPulse, payload.DetectedEmotion,
+			compileDynamicMoodLine(payload.BotMood, payload.TimeOfDay),
 		),
 		WorldbookContext:     nativeWorldbookContext{Items: []nativeWorldbookContextItem{}},
 		PersonaSampleContext: nativePersonaSampleContext{Items: []nativePersonaSampleContextItem{}},
@@ -1227,7 +1242,7 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 		prepared.ActivePersona = &nativeActivePersona{
 			ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
 			Description: persona.Description, VisualDescription: persona.VisualDescription,
-			VisualPromptOverride: personaProfile.VisualPromptOverride,
+			VisualPromptOverride:  personaProfile.VisualPromptOverride,
 			VisualReferencePrompt: s.personaVisualReferencePrompt(persona.ID),
 			CharacterVersion:      persona.CharacterVersion,
 		}

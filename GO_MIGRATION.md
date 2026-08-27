@@ -129,11 +129,23 @@ QQ Official 是当前已有生产链路。其余连接器只有在真实凭据�
 - **人性打磨**:骨架级避重(口头禅开场重复触发重写);多段回复按 1.1s 节奏错峰投递(经 `next_attempt_at`,不阻塞投递循环);webhook 入站补齐 @/回复识别,与 gateway 对齐。
 - **搜索质量**:RSS 来源逐条相关性过滤,无相关来源时诚实短失败,不再让无关来源进摘要。
 
+## 拟人化契约(0.13.0 起)
+
+2026-08-27 实施,目标是去掉"秒回、逐条回、无状态"的机器感:
+
+- **打字节奏**:纯文本聊天终态按"读消息(28ms/字,≤1.4s)+思考(350ms)+打字(75ms/字)"计算理想的事件到可见耗时,扣除模型已耗时后经 `next_attempt_at` 延迟首段投递,±18% 抖动,默认封顶 5s;媒体结果、失败提示、命令回复、进度确认零延迟。`message_policy.humanPacingEnabled/humanPacingMaxSeconds` 可配,`human_pacing` 阶段记录实际延迟。
+- **连发合并**:`SmartMaxBatchSize` 正式接线。同发送者排队中的实质消息并入最新 run 一次回答(封顶 batch-1),取消竞态由 `state='queued'` 守卫,只有真正取消成功的文本才并入;`concurrentMode=off` 关闭合并;ping 类清理保持原行为。`event_accepted` 阶段记录 `mergedBurst`。
+- **情绪连续性**:机器人自身有短寿命对话级情绪底色(被夸→心情不错,被怼→带点不服气,办砸→蔫),存 `conversation_state.bot_mood`,45 分钟无新线索衰减;只有明确叫到机器人的话才更新,静默失败同样致蔫。`message_policy.moodContinuityEnabled` 可关。
+- **时段感知**:清晨/上午/中午/下午/晚上/深夜按容器时钟注入 §6 动态状态,与情绪合成一行,并要求"语气自然带出,不明说"。
+- **记忆卫生**:过期记忆由 6 小时一次的 prune worker 物理删除(此前删除函数无调用方);新增记忆闭环端到端测试(观察→自动吸收→按实例隔离召回→同域去重→过期过滤→删除)。
+- **向量正确性**:`vectorCosine` 改为真余弦(除以 L2 范数),未归一化的远程向量不再全体钳到 1.0;RAG 注入加 `<untrusted_knowledge_context>` 围栏,条数跟随检索策略 TopK(≤8),摘要截断 420 字,不再最坏 2 万字裸拼进 system prompt。
+
 ## 尚未完成
 
-- 小满个人 QQ 侧车登录和真实账号 canary(NapCat 于 2026-08-14 真实在线收发过,后被腾讯踢下线,重扫码即可恢复)。
-- 多个 QQ Official BotGo WebSocket 在同进程内的真实并行验收。
+- 小满个人 QQ 侧车登录和真实账号 canary(NapCat 于 2026-08-14 真实在线收发过,后被腾讯踢下线,重扫码即可恢复;当前按用户指示暂停)。
+- 多个 QQ Official BotGo WebSocket 在同进程内的真实并行验收;沙箱级并行已有测试设计(含 B1 全局 logger 重连风暴、B2 ErrorNotifyHandler 旁路注册表两个已定位缺陷待修)。
 - `telegram_user` MTProto 的生产资源评估和真实账号 canary。
-- 除当前 QQ 外的其他平台真实账号矩阵验收。
-- 长时间群聊下的主动参与命中率复盘(需一周真实群样本;P95 统计面已具备)。
-- 图片下载阶段的独立 stage(当前由 `media_attached` + ACK 覆盖);`SmartMaxBatchSize` 仍未接线(同发送者连发合并现只覆盖 ping 类)。
+- 除当前 QQ 外的其他平台真实账号矩阵验收;连接器四档验收矩阵(源码/协议/沙箱/真实)待落地为 catalog 字段与运行时状态。
+- 长时间群聊下的主动参与命中率复盘(需一周真实群样本;P95 统计面已具备,每日观察任务运行中)。
+- 图片下载阶段的独立 stage(当前由 `media_attached` + ACK 覆盖;视频已有 `media_download_completed`)。
+- 知识/向量深水区(已盘点待实施):开箱无 embedding 端点导致整链静默跑 local_hash、分层知识库在真实对话被 `runtime.go` 单命名空间覆盖、sidecar `--pooling last` 与 BGE 的 CLS 目标不匹配(改后须清 chunk embedding 缓存)、`agent_memories` 无向量召回、文档上传/分块检查/重建索引 API 缺失、React 知识页 namespace 硬编码。

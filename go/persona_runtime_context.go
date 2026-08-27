@@ -49,6 +49,7 @@ type personaRuntimeContext struct {
 	RelationshipStage string
 	RelationshipPulse string
 	DetectedEmotion   string
+	BotMood           string
 	RecentMessages    []string
 }
 
@@ -171,6 +172,9 @@ func (a *AgentRuntime) personaContext(ctx context.Context, run runRecord, messag
 		if state.Pulse != nil && state.Pulse.Ready {
 			result.RelationshipPulse = relationshipPulsePrompt(*state.Pulse)
 		}
+	}
+	if a.moodContinuityEnabled(ctx) {
+		result.BotMood = a.memory.BotMood(ctx, personaConversationRef(run.PersonaID, memoryConversation))
 	}
 	contextPolicy := a.companionContextPolicy(ctx)
 	recent, err := a.memory.RecentPersonaGroupEvents(ctx, memoryConversation, run.PersonaID, contextPolicy.ContextMessagesPerPrompt+1)

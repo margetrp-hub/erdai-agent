@@ -42,6 +42,7 @@ var mgmtIntegrationFields = map[string]map[string]struct{}{
 		"segmentMaxDelaySeconds", "toolProgressEnabled", "toolProgressSearchEnabled", "toolProgressSearchMessages",
 		"toolProgressImageMessages", "toolProgressPhotoMessages", "toolCompletionImageMessages", "toolProgressVideoMessages",
 		"toolCompletionVideoMessages", "toolProgressDocumentMessages", "toolCompletionDocumentMessages",
+		"humanPacingEnabled", "humanPacingMaxSeconds", "moodContinuityEnabled",
 	),
 	"content_boundary_policy": coreFieldSet(
 		"enabled", "sexualAction", "violenceAction", "abuseAction", "provocationAction",

@@ -130,14 +130,23 @@ func localHashVector(value string, dimensions int) []float64 {
 	return vector
 }
 
+// vectorCosine is true cosine similarity. Remote embedding providers do not
+// guarantee unit vectors; a plain dot product would clamp every un-normalized
+// pair to 1.0 and silently collapse the ranking to insertion order.
 func vectorCosine(left, right []float64) float64 {
 	if len(left) == 0 || len(left) != len(right) {
 		return 0
 	}
-	score := 0.0
+	score, leftNorm, rightNorm := 0.0, 0.0, 0.0
 	for index := range left {
 		score += left[index] * right[index]
+		leftNorm += left[index] * left[index]
+		rightNorm += right[index] * right[index]
 	}
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0
+	}
+	score /= math.Sqrt(leftNorm) * math.Sqrt(rightNorm)
 	if score < 0 {
 		return 0
 	}

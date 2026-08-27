@@ -156,6 +156,11 @@ func TestNativeContext7MCPRunsThroughAgentLoopAndOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
+	// The lease below runs immediately after generation; disable the human
+	// typing rhythm so the terminal delivery is eligible at once.
+	setTestIntegration(t, runtime.configStore.db, "message_policy", map[string]any{
+		"humanPacingEnabled": false,
+	})
 	defer func() {
 		select {
 		case <-releaseMCP:

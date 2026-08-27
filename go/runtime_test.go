@@ -256,6 +256,9 @@ func TestRuntimeOwnsWakeCallsModelAndDeliversThroughOutbox(t *testing.T) {
 	setTestIntegration(t, configDB, "message_policy", map[string]any{
 		"segmentedReplyEnabled": true, "segmentMinChars": 8,
 		"segmentMaxChars": 20, "maxReplySegments": 2,
+		// This test asserts outbox plumbing right after generation; the human
+		// typing rhythm would hold the first segment past the lease call.
+		"humanPacingEnabled": false,
 	})
 	insertTestEndpoint(t, configDB, "chat-test", "fake-model", []string{"chat", "vision"}, "llm", "openai")
 	_ = configDB.Close()

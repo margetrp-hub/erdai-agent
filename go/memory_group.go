@@ -319,6 +319,15 @@ func (s *MemoryGroupStore) InitSchema(ctx context.Context) error {
 			return err
 		}
 	}
+	// 机器人对话级情绪底色:被夸/被怼/办砸事的短寿命状态,只影响语气。
+	for _, column := range []struct{ name, definition string }{
+		{"bot_mood", "TEXT NOT NULL DEFAULT ''"},
+		{"bot_mood_updated_at", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err = ensureRuntimeColumn(s.runtime.db, "conversation_state", column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	_, err = s.runtime.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_agent_memories_scope_relevance
 			ON agent_memories(scope_digest, importance DESC, updated_at DESC);
@@ -1329,6 +1338,43 @@ func (s *MemoryGroupStore) MarkBotReplyAck(ctx context.Context, conversation str
 			updated_at = excluded.updated_at
 	`, s.digest("conversation", conversation), formattedAck, formatStoreTime(s.now().UTC()))
 	return err
+}
+
+// ObserveBotMoodCue 记录一条会指向机器人自身情绪的线索(被夸/被怼/办砸)。
+// 空 mood 不写入;情绪只影响语气,由读取侧按 TTL 判定是否仍然有效。
+func (s *MemoryGroupStore) ObserveBotMoodCue(ctx context.Context, conversation, mood string) error {
+	if strings.TrimSpace(conversation) == "" || strings.TrimSpace(mood) == "" {
+		return nil
+	}
+	now := formatStoreTime(s.now().UTC())
+	_, err := s.runtime.db.ExecContext(ctx, `
+		INSERT INTO conversation_state (conversation_digest, bot_mood, bot_mood_updated_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(conversation_digest) DO UPDATE SET
+			bot_mood = excluded.bot_mood,
+			bot_mood_updated_at = excluded.bot_mood_updated_at,
+			updated_at = excluded.updated_at
+	`, s.digest("conversation", conversation), strings.TrimSpace(mood), now, now)
+	return err
+}
+
+// BotMood 返回该会话内机器人当前仍有效的情绪底色;过期返回空。
+func (s *MemoryGroupStore) BotMood(ctx context.Context, conversation string) string {
+	if strings.TrimSpace(conversation) == "" {
+		return ""
+	}
+	var mood, updatedAt string
+	err := s.runtime.db.QueryRowContext(ctx, `
+		SELECT bot_mood, bot_mood_updated_at FROM conversation_state
+		WHERE conversation_digest = ?
+	`, s.digest("conversation", conversation)).Scan(&mood, &updatedAt)
+	if err != nil || strings.TrimSpace(mood) == "" {
+		return ""
+	}
+	if !moodStillFresh(updatedAt, s.now()) {
+		return ""
+	}
+	return mood
 }
 
 func (s *MemoryGroupStore) LastBotReplyAck(ctx context.Context, conversation string) (time.Time, bool, error) {

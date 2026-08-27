@@ -70,6 +70,9 @@ type runtimeMessagePolicy struct {
 	MaxReplySegments               int      `json:"maxReplySegments"`
 	MaxReplyChars                  int      `json:"maxReplyChars,omitempty"`
 	MaxReplySentences              int      `json:"maxReplySentences,omitempty"`
+	HumanPacingEnabled             *bool    `json:"humanPacingEnabled"`
+	HumanPacingMaxSeconds          int      `json:"humanPacingMaxSeconds"`
+	MoodContinuityEnabled          *bool    `json:"moodContinuityEnabled"`
 }
 
 type runtimeTool struct {
@@ -95,6 +98,11 @@ type agentReply struct {
 	Text        string
 	Attachments []agentAttachment
 	Segments    []string
+	// TypingDelayMS is the ideal event-to-visible time for a plain chat
+	// reply (human reading + typing rhythm). Zero means deliver immediately.
+	// Only the chat finalize path sets it; commands, media results and
+	// failure notices stay instant.
+	TypingDelayMS int
 }
 
 type chatToolCall struct {
@@ -477,6 +485,13 @@ func (a *AgentRuntime) finalizeAgentReplyKey(
 		text = reply.Text
 	}
 	reply.Segments = splitReplyText(text, messagePolicy, preserveFormatting)
+	if len(reply.Attachments) == 0 {
+		firstSegment := text
+		if len(reply.Segments) > 0 {
+			firstSegment = reply.Segments[0]
+		}
+		reply.TypingDelayMS = humanTypingDelayMillis(message, firstSegment, messagePolicy)
+	}
 	return reply
 }
 

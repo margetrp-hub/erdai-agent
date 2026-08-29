@@ -10,4 +10,5 @@ lab-assets
 **/*.pyc
 **/node_modules
 go/webui/output
+go/webui/dist
 .pytest_cache

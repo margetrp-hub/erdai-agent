@@ -114,7 +114,8 @@ func videoGenerationOptionsForPrompt(prompt string) videoGenerationOptions {
 	case strings.Contains(normalized, "9:16") ||
 		strings.Contains(normalized, "\u7ad6\u5c4f") ||
 		strings.Contains(normalized, "\u7ad6\u7248") ||
-		strings.Contains(normalized, "portrait"):
+		strings.Contains(normalized, "portrait") ||
+		nativeSelfImageRequestPattern.MatchString(normalized):
 		options.AspectRatio = "9:16"
 	case strings.Contains(normalized, "1:1") ||
 		strings.Contains(normalized, "\u65b9\u5f62") ||

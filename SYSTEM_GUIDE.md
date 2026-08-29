@@ -1,6 +1,6 @@
 # 二呆智能体系统说明
 
-> 文档版本：0.13.2（Schema v76）
+> 源码基线：Schema v77；当前 Stable 版本见 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md)。
 >
 > 公开文档只记录源码、接口和可复现的验收方法。生产主机、网络地址、备份路径和真实账号验收证据保存在私有运维记录中。
 >
@@ -14,8 +14,8 @@
 - QQ 只是一个连接器；同一个 Core 可以接入多个平台和多个角色。
 - AstrBot 的运行能力已经按能力迁移到 Go，不再启动 Python/AstrBot 运行层。
 - WebUI、配置、模型、记忆、知识、工具、MCP、任务和投递都由 Core 统一管理。
-- 四主题现代控制台是默认界面；只有显式设置 `ERDAI_WEBUI_MODE=legacy` 才进入兼容旧页。
-- 供应商密钥只从服务器环境变量读取，不进入 SQLite、浏览器响应、日志和发布包。
+- WebUI 只有一套四主题现代控制台：原生、标准、二次元、废土工业。
+- 供应商密钥从服务器环境变量或数据卷中的受管凭据文件读取，不进入 SQLite、浏览器响应、日志和发布包。
 
 ## 2. 当前运行拓扑
 
@@ -40,12 +40,12 @@
 
 持久化使用 SQLite WAL。运行库和配置库默认使用同一数据库，媒体文件位于数据库旁的 `data/media` 目录。
 
-当前线上容器：
+Stable 发布拓扑：
 
 - Core：`erdai-agent:stable`，精确版本以 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md) 为准。
-- Embedding：`erdai-embedding`，healthy。
-- QQ 通道是否 `active` 以线上 Core 的 `channel_runtime` 配置为准，不以旧文档为准。
-- 旧镜像、回滚容器和部署备份单独保留，不参与当前请求处理。
+- Embedding：`erdai-embedding`，通过内部网络为 Core 提供向量服务。
+- QQ 通道是否 `active` 以目标实例的 `channel_runtime` 配置和实时健康为准，不以文档为准。
+- 生产主机、镜像摘要和实时健康只记录在私有运维证据中，公开文档不固化易漂移状态。
 
 ## 3. 一条消息的完整生命周期
 
@@ -95,7 +95,7 @@ Run 的阶段时间线会记录事件接收、上下文、路由、模型、首�
 - 世界书条目、关键词、优先级和注入条件。
 - 聊天模型、任务模型、判断模型和工具白名单/黑名单。
 - 主动参与、最大字数、最大句数、记忆策略和表达提示。
-- 头像、外形描述、视觉提示词、自拍类型和视觉参考附件。
+- 一个可选择的外观库；外形描述、主参考、自拍/动作/视频素材由外观库统一管理。
 
 豆包的 QQ 昵称只是连接器显示名。运行时通过 `personaId` 绑定角色，不把“豆包”硬编码到所有流程。
 
@@ -113,13 +113,14 @@ QQ 命令：
 
 普通成员只读；可信管理员才能切换。切换记录旧角色、新角色、操作者、来源和时间，支持回滚。切换不会删除旧角色记忆，切回后恢复原关系和表达连续性。
 
-### 4.3 角色视觉资料
+### 4.3 外观库
 
-每张角色卡可以上传并整理头像、半身、全身、自拍、动作和视频参考。视觉参考支持：
+外观库是独立于角色卡的视觉资产。角色卡只选择一个外观库，不复制图片、视频或提示词；多个角色可以共享同一外观库，切换绑定后媒体生成会读取新库。
 
-- 单独预览、启用/停用、设为主参考。
-- 导入/导出 `.erdai.zip` 包。
-- 服务端事务导入，任一子项失败则整包回滚。
+- 外观库管理名称、说明、统一外形描述和启用状态。
+- 库内参考按 identity、style、expression、makeup、outfit、scene、motion 分类，可预览、启用/停用并设置主参考。
+- 删除仍被角色使用的外观库会被拒绝，避免产生悬空绑定。
+- 旧角色视觉参考导入/导出接口继续作为兼容入口；新配置统一在外观库中维护。
 - 参考图片和视频只作为生图提示和视觉一致性约束，不自动识别或伪造真实身份。
 
 ## 5. 对话与拟人化
@@ -389,7 +390,8 @@ WebUI 与 Core 同源提供，左侧导航按模块聚合，避免把所有字�
 | --- | --- |
 | 总览 | Core、Embedding、连接器、模型、Run、Outbox、健康和资源状态 |
 | 运行中心 | 运行实例、策略模板、角色卡、连接器账号、会话路由和最终有效配置 |
-| 智能体/角色卡 | 创建、编辑、复制、删除、导入、导出、切换和绑定 |
+| 智能体/角色卡 | 创建、编辑、删除、导入、导出、切换、绑定和选择外观库 |
+| 外观库 | 共享外形描述、主参考、图片/视频素材、分类和角色使用关系 |
 | 角色运行档案 | 模型覆盖、工具权限、主动参与、回复长度、记忆和视觉提示 |
 | 记忆与关系 | 成员记忆、亲密度、关系阶段、纠正、合并和删除 |
 | 世界书/人格样本 | 关键词、场景样本、特质、禁用表达和权重 |
@@ -448,6 +450,12 @@ GET/POST/PUT/DELETE /api/v1/personas/:id/samples
 GET/POST/PUT/DELETE /api/v1/personas/:id/traits
 GET/PUT /api/v1/personas/runtime-profiles
 GET/POST/PUT/DELETE /api/v1/persona-bindings
+GET/POST       /api/v1/appearance-libraries
+GET/PUT/DELETE /api/v1/appearance-libraries/:id
+GET/POST       /api/v1/appearance-libraries/:id/references
+GET/PUT/DELETE /api/v1/appearance-libraries/:id/references/:referenceId
+GET/PUT        /api/v1/personas/:id/appearance-library
+# 以下角色视觉参考接口仅保留用于旧资产兼容导入/导出
 GET/POST/PUT/DELETE /api/v1/personas/:id/visual-references
 GET    /api/v1/personas/:id/visual-references/export
 POST   /api/v1/personas/:id/visual-references/import
@@ -507,7 +515,7 @@ Run 输入、附件引用、工具输出、搜索结果、任务产物和投递�
 
 ### 不进入数据库的内容
 
-- Provider API Key、QQ Secret、Runtime Token 和加密主密钥只来自环境变量。
+- Provider API Key 和 QQ Secret 来自环境变量或数据卷受管凭据文件；Runtime Token 和加密主密钥保持主机环境变量专用。
 - 日志和管理响应不得输出密钥。
 - 对外文档、知识区和交付包不得写入真实密钥。
 
@@ -515,7 +523,7 @@ Run 输入、附件引用、工具输出、搜索结果、任务产物和投递�
 
 ### 服务器构建原则
 
-当前项目约定在 OVH 二呆主节点的 Docker 内构建、测试、验收和发布，不在本机或旧 250 运行生产 Go 构建。
+Stable 发布从干净源码检出开始，由 Docker 构建 WebUI、执行 Go 测试与静态检查，再生成正式镜像。生产主机身份和部署路径属于私有运维记录，不写死在公开项目说明中。
 
 ```text
 备份 SQLite 与 Compose
@@ -552,19 +560,18 @@ docker exec erdai-agent /app/erdai-agent --health-check
 - Core Schema、迁移、统一数据库和 SQLite 完整性。
 - 19 类连接器的协议归一化、身份、文本、媒体、重连和投递。
 - QQ 群 @、回复续聊、普通消息观察、主动插话、去重和管理员权限。
-- 角色卡、绑定、运行档案、世界书、样本、特质和视觉参考导入导出。
+- 角色卡、绑定、运行档案、世界书、样本、特质、外观库共享/切换和旧视觉参考导入导出。
 - RAG FTS、Embedding、混合召回、Rerank 和搜索持久化。
 - 供应商连接、健康摘除/恢复、价格同步和 Token/费用统计。
 - 工具权限、审批、MCP HTTP/SSE/stdio、任务步骤、重试和取消。
 - 图片/视频配额、附件持久化、Outbox ACK/FAIL 和媒体 GC。
 - 回复分段、近似重复、身份暴露、敏感边界和自然度守门。
 
-当前线上最近一轮 r53b 验证：
+每个 Stable 候选都必须重新通过：
 
-- `go test ./...`：通过。
-- `go vet ./...`：通过。
-- 附件续接回归：通过。
-- Core 与 Embedding 健康：通过。
+- Docker `verify` 目标中的 WebUI 生产构建、`go test ./...` 和 `go vet ./...`。
+- 干净数据库容器启动、管理认证和关键只读 API 冒烟。
+- 正式发布前的真实 QQ `@豆包`、附件续接、Outbox ACK 和失败回滚验证。
 
 ## 20. 当前已完成与未完成边界
 
@@ -573,7 +580,7 @@ docker exec erdai-agent /app/erdai-agent --health-check
 - 纯 Go 单进程 Core、WebUI 和连接器管理。
 - 19 类连接器源码实现和统一 Outbox；源码存在不代表真实账号已验收。
 - QQ 主链路、@、回复续聊、去重和附件续接。
-- 多角色卡、绑定、切换、记忆隔离和视觉参考管理。
+- 多角色卡、绑定、切换、记忆隔离，以及可共享、可选择的独立外观库。
 - 独立 Provider、模型路由、健康检查、价格和使用量统计。
 - Grok 搜索一次调用限制、相关性检查和短总结。
 - 图片生成、图片编辑、视频生成任务链和配额。

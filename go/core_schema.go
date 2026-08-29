@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 76
+const nativeCoreSchemaVersion = 77
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -201,6 +201,46 @@ CREATE INDEX IF NOT EXISTS persona_visual_references_persona_idx
 
 CREATE UNIQUE INDEX IF NOT EXISTS persona_visual_references_primary_idx
   ON persona_visual_references(persona_id) WHERE is_primary = 1;
+
+CREATE TABLE IF NOT EXISTS appearance_libraries (
+  id TEXT PRIMARY KEY,
+  namespace TEXT NOT NULL DEFAULT 'default',
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  visual_description TEXT NOT NULL DEFAULT '',
+  source_persona_id TEXT REFERENCES personas(id) ON DELETE SET NULL,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(namespace, name)
+);
+
+CREATE TABLE IF NOT EXISTS appearance_library_references (
+  id TEXT PRIMARY KEY,
+  library_id TEXT NOT NULL REFERENCES appearance_libraries(id) ON DELETE CASCADE,
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+  mime_type TEXT NOT NULL,
+  original_name TEXT NOT NULL DEFAULT '',
+  storage_name TEXT NOT NULL UNIQUE,
+  byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+  category TEXT NOT NULL DEFAULT 'identity',
+  label TEXT NOT NULL DEFAULT '',
+  prompt_notes TEXT NOT NULL DEFAULT '',
+  is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS appearance_library_references_primary_idx
+  ON appearance_library_references(library_id) WHERE is_primary = 1;
+
+CREATE TABLE IF NOT EXISTS persona_appearance_libraries (
+  persona_id TEXT PRIMARY KEY REFERENCES personas(id) ON DELETE CASCADE,
+  library_id TEXT NOT NULL REFERENCES appearance_libraries(id) ON DELETE RESTRICT,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS persona_switch_history (
   id TEXT PRIMARY KEY,
@@ -639,6 +679,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_instance_routes_match
 CREATE INDEX IF NOT EXISTS idx_transport_events_run ON transport_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_transport_events_conversation
   ON transport_events(transport, conversation_ref, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_appearance_libraries_namespace
+  ON appearance_libraries(namespace, enabled DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_appearance_library_references_library
+  ON appearance_library_references(library_id, enabled DESC, is_primary DESC, sort_order, created_at);
+CREATE INDEX IF NOT EXISTS idx_persona_appearance_libraries_library
+  ON persona_appearance_libraries(library_id, persona_id);
 
 CREATE TRIGGER IF NOT EXISTS knowledge_documents_ai AFTER INSERT ON knowledge_documents BEGIN
   INSERT INTO knowledge_documents_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
@@ -1032,6 +1078,11 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	}
 	if previousVersion < 76 {
 		if err := migratePluginRuntimeHealthV76(tx, now); err != nil {
+			return err
+		}
+	}
+	if previousVersion < 77 {
+		if err := migrateAppearanceLibrariesV77(tx, now); err != nil {
 			return err
 		}
 	}
@@ -2150,6 +2201,44 @@ func migratePluginRuntimeHealthV76(tx coreSchemaTx, now string) error {
 		}
 	}
 	return nil
+}
+
+func migrateAppearanceLibrariesV77(tx coreSchemaTx, now string) error {
+	rows, err := tx.Query(`SELECT id, namespace, name, visual_description FROM personas ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var personaID, namespace, name, visualDescription string
+		if err := rows.Scan(&personaID, &namespace, &name, &visualDescription); err != nil {
+			return err
+		}
+		libraryID := "persona-appearance-" + personaID
+		libraryName := strings.TrimSpace(name)
+		if libraryName == "" {
+			libraryName = personaID
+		}
+		libraryName += " 默认外观库"
+		var nameExists int
+		if err := tx.QueryRow(`SELECT count(*) FROM appearance_libraries WHERE namespace = ? AND name = ? AND id <> ?`, namespace, libraryName, libraryID).Scan(&nameExists); err != nil {
+			return err
+		}
+		if nameExists > 0 {
+			libraryName += " · " + personaID
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO appearance_libraries
+			(id, namespace, name, description, visual_description, source_persona_id, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, 1, `+now+`, `+now+`)`, libraryID, namespace, libraryName,
+			"沿用角色卡已有视觉素材；可被多个角色共用。", visualDescription, personaID); err != nil {
+			return fmt.Errorf("seed appearance library for %s: %w", personaID, err)
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO persona_appearance_libraries
+			(persona_id, library_id, updated_at) VALUES (?, ?, `+now+`)`, personaID, libraryID); err != nil {
+			return fmt.Errorf("bind appearance library for %s: %w", personaID, err)
+		}
+	}
+	return rows.Err()
 }
 
 func migrateLegacyPlatformRegistry(tx coreSchemaTx, now string) error {

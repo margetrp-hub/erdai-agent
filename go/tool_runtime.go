@@ -2257,7 +2257,7 @@ func (a *AgentRuntime) activePersonaImagePrompt(ctx context.Context, prompt stri
 	profile, _ := a.configStore.personaRuntimeProfile(persona.ID)
 	return a.personaImagePrompt(ctx, prompt, &nativeActivePersona{
 		ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
-		Description: persona.Description, VisualDescription: persona.VisualDescription,
+		Description: persona.Description, VisualDescription: a.configStore.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
 		VisualPromptOverride: profile.VisualPromptOverride,
 		CharacterVersion:     persona.CharacterVersion, VisualReferencePrompt: visualPrompt,
 	})
@@ -2287,7 +2287,7 @@ func (a *AgentRuntime) personaForRun(run runRecord, prompt string) *nativeActive
 	profile, _ := a.configStore.effectivePersonaRuntimeProfile(persona.ID, run.AgentInstanceID)
 	return &nativeActivePersona{
 		ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
-		Description: persona.Description, VisualDescription: persona.VisualDescription,
+		Description: persona.Description, VisualDescription: a.configStore.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
 		VisualPromptOverride:  profile.VisualPromptOverride,
 		VisualReferencePrompt: a.configStore.personaVisualReferencePrompt(persona.ID),
 		CharacterVersion:      persona.CharacterVersion,
@@ -2316,8 +2316,13 @@ func (a *AgentRuntime) personaAvatarDataURI(ctx context.Context, personaID, prom
 	if err != nil || persona == nil {
 		return ""
 	}
-	if reference, referenceErr := a.configStore.primaryPersonaVisualReferenceDataURI(persona.ID); referenceErr == nil && strings.TrimSpace(reference) != "" {
-		return reference
+	if reference, referenceErr := a.configStore.primaryPersonaVisualReferenceDataURI(persona.ID); referenceErr == nil {
+		if strings.TrimSpace(reference) != "" {
+			return reference
+		}
+		if a.configStore.personaHasAppearanceLibrary(persona.ID) {
+			return ""
+		}
 	}
 	return strings.TrimSpace(persona.AvatarDataURI)
 }
@@ -2415,6 +2420,9 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 			} `json:"data"`
 		}
 		payload := map[string]any{"model": target.model, "prompt": fitImageProviderPrompt(prompt), "n": 1, "response_format": "b64_json"}
+		if aspectRatio := imageAspectRatioForPrompt(prompt); aspectRatio != "" {
+			payload["aspect_ratio"] = aspectRatio
+		}
 		endpoint := base + "/images/generations"
 		if grok && strings.TrimSpace(reference) != "" {
 			endpoint = base + "/images/edits"
@@ -2454,6 +2462,13 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 		lastErr = errors.New("image generation is not configured")
 	}
 	return toolResult{}, lastErr
+}
+
+func imageAspectRatioForPrompt(prompt string) string {
+	if nativeSelfImageRequestPattern.MatchString(strings.TrimSpace(prompt)) {
+		return "9:16"
+	}
+	return ""
 }
 
 func fitImageProviderPrompt(prompt string) string {

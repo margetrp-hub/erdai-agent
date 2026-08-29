@@ -32,7 +32,6 @@ test ! -e "$archive"
 
 command -v docker >/dev/null
 command -v sha256sum >/dev/null
-command -v npm >/dev/null
 if git -C "$root" ls-files --error-unmatch Dockerfile >/dev/null 2>&1; then
   test -z "$(git -C "$root" status --porcelain -- .github Dockerfile compose.production.yml monitor-browser runtime.env.example go scripts)" || {
     echo "release source has uncommitted release-pipeline changes" >&2
@@ -42,8 +41,6 @@ if git -C "$root" ls-files --error-unmatch Dockerfile >/dev/null 2>&1; then
 else
   source_revision=
 fi
-
-(cd "$root/go/webui" && npm ci && npm run build)
 
 if [ -z "$source_revision" ]; then
   source_revision=$(tar -cf - --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \

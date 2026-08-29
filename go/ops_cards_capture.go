@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,64 @@ import (
 const (
 	defaultOPSCardBrowserURL = "http://erdai-monitor-browser:9222"
 	defaultOPSCardTimeout    = 45 * time.Second
+	opsCardFreshness         = 90 * time.Minute
 )
+
+var opsCardTimestampPattern = regexp.MustCompile(`(?m)((?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}))\s+(\d{1,2}):(\d{2})`)
+
+func validOPSCardPageContent(cardCount int, text string) bool {
+	text = strings.TrimSpace(text)
+	return cardCount > 0 && len([]rune(text)) >= 40 && opsCardTimestampPattern.MatchString(text)
+}
+
+func opsCardPageTimestamp(text string, now time.Time) (time.Time, bool) {
+	matches := opsCardTimestampPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return time.Time{}, false
+	}
+	latest := time.Time{}
+	for _, match := range matches {
+		if len(match) != 4 {
+			continue
+		}
+		datePart := strings.ReplaceAll(match[1], "/", "-")
+		if len(strings.Split(datePart, "-")) == 2 {
+			datePart = strconv.Itoa(now.Year()) + "-" + datePart
+		}
+		date, err := time.ParseInLocation("2006-1-2", datePart, now.Location())
+		if err != nil {
+			continue
+		}
+		hour, hourErr := strconv.Atoi(match[2])
+		minute, minuteErr := strconv.Atoi(match[3])
+		if hourErr != nil || minuteErr != nil || hour > 23 || minute > 59 {
+			continue
+		}
+		candidate := time.Date(date.Year(), date.Month(), date.Day(), hour, minute, 0, 0, now.Location())
+		if candidate.After(now.Add(10 * time.Minute)) {
+			candidate = candidate.AddDate(-1, 0, 0)
+		}
+		if latest.IsZero() || candidate.After(latest) {
+			latest = candidate
+		}
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	return latest, true
+}
+
+func freshOPSCardPageContent(cardCount int, text string, now time.Time, maxAge time.Duration) bool {
+	if !validOPSCardPageContent(cardCount, text) {
+		return false
+	}
+	timestamp, ok := opsCardPageTimestamp(text, now)
+	if !ok {
+		return false
+	}
+	age := now.Sub(timestamp)
+	return age >= -10*time.Minute && age <= maxAge
+}
 
 type sub2APILogin struct {
 	AccessToken  string          `json:"access_token"`
@@ -202,6 +260,23 @@ func (a *AgentRuntime) captureOPSCardPNG(ctx context.Context, policy opsPolicy) 
 		chromedp.Evaluate(suppressAnnouncementScript, nil),
 		chromedp.WaitVisible(`.monitor-card`, chromedp.ByQuery),
 		chromedp.WaitNotPresent(`header .animate-spin`, chromedp.ByQuery),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var content struct {
+				CardCount int    `json:"cardCount"`
+				Text      string `json:"text"`
+			}
+			if err := chromedp.Evaluate(`(() => {
+				const root = document.querySelector('div.space-y-6.pb-12') || document.body;
+				return { cardCount: document.querySelectorAll('.monitor-card').length,
+					text: root ? root.innerText : '' };
+			})()`, &content).Do(ctx); err != nil {
+				return err
+			}
+			if !freshOPSCardPageContent(content.CardCount, content.Text, time.Now(), opsCardFreshness) {
+				return errors.New("Sub2API monitor card page returned empty or stale content")
+			}
+			return nil
+		}),
 		chromedp.Sleep(100*time.Millisecond),
 		chromedp.Screenshot(`div.space-y-6.pb-12`, &screenshot, chromedp.ByQuery),
 	); err != nil {

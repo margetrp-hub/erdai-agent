@@ -99,19 +99,6 @@ export function OverviewPage({
 
   return (
     <div className="view-stage">
-      <header className="page-hero">
-        <div>
-          <span className="hero-kicker">SYSTEM / OVERVIEW</span>
-          <h1>运行总览</h1>
-          <p>把角色、模型、消息链路和治理状态收在一个可读的控制面上。</p>
-        </div>
-        <div className="hero-actions">
-          <Button variant="secondary" icon={<ArrowUpRight size={15} />} onClick={() => setDialogOpen(true)}>
-            查看运行契约
-          </Button>
-        </div>
-      </header>
-
       <div className="metric-rail">
         <article className="metric-cell metric-cyan">
           <span>当前实例</span>
@@ -143,29 +130,32 @@ export function OverviewPage({
           title={data.installation.ready ? '运行条件已满足' : '首次启动还缺少配置'}
           description={`${data.installation.configuredCount} 项已配置 · ${data.installation.requiredCount} 项为运行必需。敏感值只保留在运行环境，不会回显。`}
           action={(
-            <Button
-              variant="secondary"
-              icon={<RefreshCw size={15} className={checkingUpdate ? 'spin' : ''} />}
-              disabled={checkingUpdate}
-              onClick={async () => {
-                setCheckingUpdate(true);
-                setUpdateError('');
-                try {
-                  const [stable, status] = await Promise.all([
-                    apiRequest<StableUpdate>('/api/v1/update/check'),
-                    apiRequest<UpdateStatus>('/api/v1/update/status'),
-                  ]);
-                  setUpdate(stable);
-                  setUpdateStatus(status);
-                } catch (cause) {
-                  setUpdateError(cause instanceof Error ? cause.message : 'Stable 更新检查失败');
-                } finally {
-                  setCheckingUpdate(false);
-                }
-              }}
-            >
-              {checkingUpdate ? '检查中' : '检查 Stable 更新'}
-            </Button>
+            <div className="panel-heading-actions">
+              <Button variant="secondary" icon={<ArrowUpRight size={15} />} onClick={() => setDialogOpen(true)}>运行契约</Button>
+              <Button
+                variant="secondary"
+                icon={<RefreshCw size={15} className={checkingUpdate ? 'spin' : ''} />}
+                disabled={checkingUpdate}
+                onClick={async () => {
+                  setCheckingUpdate(true);
+                  setUpdateError('');
+                  try {
+                    const [stable, status] = await Promise.all([
+                      apiRequest<StableUpdate>('/api/v1/update/check'),
+                      apiRequest<UpdateStatus>('/api/v1/update/status'),
+                    ]);
+                    setUpdate(stable);
+                    setUpdateStatus(status);
+                  } catch (cause) {
+                    setUpdateError(cause instanceof Error ? cause.message : 'Stable 更新检查失败');
+                  } finally {
+                    setCheckingUpdate(false);
+                  }
+                }}
+              >
+                {checkingUpdate ? '检查中' : '检查 Stable 更新'}
+              </Button>
+            </div>
           )}
         />
         <div className="readiness-grid">
@@ -367,8 +357,8 @@ export function OverviewPage({
             <strong>same-origin admin session</strong>
           </div>
           <div>
-            <span>fallback</span>
-            <strong>ERDAI_WEBUI_MODE=legacy</strong>
+            <span>release channel</span>
+            <strong>Stable only</strong>
           </div>
         </div>
       </InfoDialog>

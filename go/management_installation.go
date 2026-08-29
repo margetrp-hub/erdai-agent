@@ -133,10 +133,6 @@ func (a *AgentRuntime) installationStatus() installationStatus {
 		{ID: "qq_official", Label: "QQ 官方连接器", Configured: a.configuredIntegration("qq_official", "ERDAI_QQ_SECRET"), Required: false, Source: "Core config / process environment", Detail: "可在平台与接入中测试"},
 		{ID: "grok", Label: "Grok 搜索与多媒体", Configured: strings.TrimSpace(a.grokAPIKey) != "" || a.configuredIntegration("grok_policy", "ERDAI_GROK_API_KEY"), Required: false, Source: "Core config / process environment", Detail: "可在模型与供应商中测试"},
 		{ID: "image", Label: "图片生成", Configured: strings.TrimSpace(a.imageAPIKey) != "" || a.configuredIntegration("image_policy", "ERDAI_IMAGE_API_KEY"), Required: false, Source: "Core config / process environment", Detail: "可在模型与供应商中测试"},
-		{ID: "ops", Label: "Sub2API 渠道监控", Configured: strings.TrimSpace(a.opsToken) != "" ||
-			(strings.TrimSpace(a.sub2APIMonitorEmail) != "" && strings.TrimSpace(a.sub2APIMonitorPassword) != "") ||
-			a.configuredIntegration("ops_policy", "ERDAI_OPS_TOKEN"), Required: false,
-			Source: "Core config / managed credentials", Detail: "/渠道 截图与 /雷达"},
 	}
 	configuredCount := 0
 	requiredCount := 0

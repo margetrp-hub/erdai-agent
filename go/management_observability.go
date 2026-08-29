@@ -36,6 +36,7 @@ type retrievalObservability struct {
 	EmbeddingCount         int    `json:"embeddingCount"`
 	QueryCount24H          int    `json:"queryCount24h"`
 	EmbeddingQueryCount24H int    `json:"embeddingQueryCount24h"`
+	FallbackCount24H       int    `json:"fallbackCount24h"`
 	LastQueryAt            string `json:"lastQueryAt,omitempty"`
 }
 
@@ -186,15 +187,22 @@ func (a *AgentRuntime) retrievalObservability() (retrievalObservability, error) 
 		WHERE stage = 'embedding_query' AND completed_at >= ?`, cutoff).Scan(&value.EmbeddingQueryCount24H); err != nil {
 		return value, err
 	}
+	if err := a.db.QueryRow(`SELECT count(*) FROM run_stage_events
+		WHERE stage = 'retrieval_query' AND completed_at >= ?
+		AND json_extract(details_json, '$.vectorFallback') = 1`, cutoff).Scan(&value.FallbackCount24H); err != nil {
+		return value, err
+	}
 	return value, nil
 }
 
 func (a *AgentRuntime) memoryObservability() (memoryObservability, error) {
 	value := memoryObservability{}
 	var lastWrite, lastAccess, lastRecall sql.NullString
+	now := formatStoreTime(time.Now().UTC())
 	if err := a.db.QueryRow(`SELECT count(*),
 		coalesce(sum(CASE WHEN access_count > 0 THEN 1 ELSE 0 END), 0),
-		max(updated_at), max(last_accessed_at) FROM agent_memories`).Scan(
+		max(updated_at), max(last_accessed_at) FROM agent_memories
+		WHERE expires_at IS NULL OR expires_at > ?`, now).Scan(
 		&value.StoredCount, &value.AccessedCount, &lastWrite, &lastAccess); err != nil {
 		return value, err
 	}

@@ -12,57 +12,51 @@ import (
 	"testing"
 )
 
-func TestGatewayHealthAndStatic(t *testing.T) {
-	gateway := NewGateway("")
-	server := httptest.NewServer(gateway)
-	defer server.Close()
-	response, err := http.Get(server.URL + "/healthz")
+var modernAssetPattern = regexp.MustCompile(`/(?:assets/[^"']+\.(?:js|css)|favicon\.svg)`)
+
+func TestGatewayHealthAndModernStatic(t *testing.T) {
+	gateway := httptest.NewServer(NewGateway(""))
+	defer gateway.Close()
+
+	health, err := http.Get(gateway.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("health status = %d", response.StatusCode)
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d", health.StatusCode)
 	}
-	response.Body.Close()
-	response, err = http.Get(server.URL + "/")
+
+	response, err := http.Get(gateway.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("static status = %d", response.StatusCode)
-	}
-	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/html") {
-		t.Fatalf("content type = %q", contentType)
-	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, section := range []string{
-		"二呆智能体",
-		"data-view=\"overview\"",
-		"data-view=\"system\"",
-		"data-view=\"models\"",
-		"data-view=\"roles\"",
-		"data-view=\"worldbook\"",
-		"data-view=\"knowledge\"",
-		"data-view=\"tools\"",
-		"data-view=\"routing\"",
-		"data-view=\"operations\"",
-		"data-view=\"security\"",
-	} {
-		if !strings.Contains(string(body), section) {
-			t.Fatalf("static page missing %s", section)
+	index := string(body)
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("static response = %d %q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	for _, marker := range []string{"二呆智能体 · 控制台", `<div id="root"></div>`, `type="module"`, "/assets/"} {
+		if !strings.Contains(index, marker) {
+			t.Fatalf("modern WebUI index missing %q", marker)
 		}
 	}
-	favicon, err := http.Get(server.URL + "/favicon.svg")
-	if err != nil {
-		t.Fatal(err)
+	if strings.Contains(index, `data-view="overview"`) || strings.Contains(index, "/app.js") {
+		t.Fatal("legacy WebUI is still being served")
 	}
-	defer favicon.Body.Close()
-	if favicon.StatusCode != http.StatusOK {
-		t.Fatalf("favicon status = %d", favicon.StatusCode)
+	for _, asset := range modernAssetPattern.FindAllString(index, -1) {
+		assetResponse, requestErr := http.Get(gateway.URL + asset)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		assetResponse.Body.Close()
+		if assetResponse.StatusCode != http.StatusOK {
+			t.Fatalf("asset %s status = %d", asset, assetResponse.StatusCode)
+		}
 	}
 }
 
@@ -91,271 +85,90 @@ func TestCoreListenerExposesOnlyTransportRuntimeAPI(t *testing.T) {
 	}
 }
 
-func TestToolAndMCPConfigurationUIIsEmbedded(t *testing.T) {
+func TestModernWebUIAssetsAndConditionalCaching(t *testing.T) {
 	gateway := httptest.NewServer(NewGateway(""))
 	defer gateway.Close()
-	response, err := http.Get(gateway.URL + "/app.js")
+	indexResponse, err := http.Get(gateway.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	indexBody, err := io.ReadAll(indexResponse.Body)
+	indexResponse.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(body)
-	for _, marker := range []string{
-		`data-form="tool"`, `data-form="mcp"`,
-		`data-form="admin-login"`, `/auth/login`, `/auth/logout`,
-		`new-tool`, `edit-tool`, `toggle-tool`, `delete-tool`,
-		`new-mcp`, `edit-mcp`, `toggle-mcp`, `delete-mcp`,
-		`inspect-mcp`, `/discover`, `/api/v1/tools`, `/api/v1/mcp/servers`,
-		`tools-subnav`, `show-tools`, `show-mcp`, `control-dialog`, `close-dialog`, `registry-row`,
-		`page-subnav`, `page-subnav-tab`, `set-section`, `pageSections`, `clearActiveDialog`,
-		`renderEpoch`, `viewWarmups`, `loadingView`, `warmView`, `data-rendered-view`,
-		`['channels', '渠道与接管'`, `['connections', '供应商连接'`, `['cards', '角色卡'`,
-		`['relationships', '关系与亲密度'`, `['retrieval', '检索与向量'`, `['runs', '最近运行'`,
-		`Go 原生连接`, `toolProgressPhotoMessages`, `自拍反馈文案`,
-	} {
-		if !strings.Contains(script, marker) {
-			t.Fatalf("embedded app.js missing %s", marker)
+	assets := modernAssetPattern.FindAllString(string(indexBody), -1)
+	var scriptPath, stylePath string
+	for _, asset := range assets {
+		if strings.HasSuffix(asset, ".js") {
+			scriptPath = asset
+		}
+		if strings.HasSuffix(asset, ".css") {
+			stylePath = asset
 		}
 	}
-	for _, marker := range []string{"memoryKernelMap", "relationshipPulseView"} {
-		if !strings.Contains(string(body), marker) {
-			t.Fatalf("management UI missing memory-kernel marker %q", marker)
+	if scriptPath == "" || stylePath == "" {
+		t.Fatalf("modern asset paths not found: %v", assets)
+	}
+
+	checkAsset := func(path string, markers []string) string {
+		t.Helper()
+		response, requestErr := http.Get(gateway.URL + path)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if response.StatusCode != http.StatusOK || response.Header.Get("ETag") == "" {
+			t.Fatalf("asset %s = %d, etag %q", path, response.StatusCode, response.Header.Get("ETag"))
+		}
+		content := string(body)
+		for _, marker := range markers {
+			if !strings.Contains(content, marker) {
+				t.Fatalf("asset %s missing %q", path, marker)
+			}
+		}
+		return content
+	}
+	script := checkAsset(scriptPath, []string{
+		"二呆智能体", "受信任适配器", "外观库", "快捷开关", "第 ",
+		"/api/v1/plugins/readiness",
+		"/api/v1/appearance-libraries", "/api/v1/runtime/media-quotas",
+	})
+	for _, removed := range []string{"CAPABILITIES / PLUGINS", "ERDAI_WEBUI_MODE"} {
+		if strings.Contains(script, removed) {
+			t.Fatalf("modern WebUI still contains retired marker %q", removed)
 		}
 	}
-	if strings.Contains(script, "只读元数据") {
-		t.Fatal("embedded app.js still contains the legacy read-only tools UI")
+	checkAsset(stylePath, []string{".visual-library-actions", ".persona-modern-grid", ".module-table-pager", ".plugin-quick-toggle", "data-ui-theme=anime"})
+	for _, match := range regexp.MustCompile(`limit=([0-9]+)`).FindAllStringSubmatch(script, -1) {
+		limit, parseErr := strconv.Atoi(match[1])
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if limit > 100 {
+			t.Fatalf("WebUI requests unsupported page limit %d", limit)
+		}
 	}
-}
 
-func TestEmbeddedWebAssetsUseConditionalCaching(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-
-	response, err := http.Get(gateway.URL + "/app.js")
+	first, err := http.Get(gateway.URL + scriptPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	etag := response.Header.Get("ETag")
-	response.Body.Close()
-	if etag == "" {
-		t.Fatal("embedded web asset is missing an ETag")
-	}
-	if got := response.Header.Get("Cache-Control"); !strings.Contains(got, "must-revalidate") {
-		t.Fatalf("embedded web asset cache-control = %q", got)
-	}
-
-	request, _ := http.NewRequest(http.MethodGet, gateway.URL+"/app.js", nil)
+	etag := first.Header.Get("ETag")
+	first.Body.Close()
+	request, _ := http.NewRequest(http.MethodGet, gateway.URL+scriptPath, nil)
 	request.Header.Set("If-None-Match", etag)
 	cached, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cached.Body.Close()
+	cached.Body.Close()
 	if cached.StatusCode != http.StatusNotModified {
 		t.Fatalf("conditional asset status = %d", cached.StatusCode)
-	}
-}
-
-func TestPersonaMemoryManagementUIIsEmbedded(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-	response, err := http.Get(gateway.URL + "/app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := string(body)
-	for _, marker := range []string{
-		`async function memoriesView()`, `data-form="persona-memory"`, `/api/v1/memories`,
-		`persona-memories`, `edit-memory`, `delete-memory`,
-	} {
-		if !strings.Contains(script, marker) {
-			t.Fatalf("embedded memory UI missing %s", marker)
-		}
-	}
-}
-
-func TestKnowledgeOwnsVectorAndDocumentConfiguration(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-	response, err := http.Get(gateway.URL + "/app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := string(body)
-	for _, form := range []string{`data-form="retrieval-policy"`, `data-form="document-policy"`} {
-		if strings.Count(script, form) != 1 {
-			t.Fatalf("configuration form %s must have one owner", form)
-		}
-	}
-	start := strings.Index(script, "async function knowledgeView()")
-	if start < 0 {
-		t.Fatal("knowledge view was not found")
-	}
-	end := strings.Index(script[start:], "function documentForm")
-	if end < 0 {
-		t.Fatal("knowledge view end was not found")
-	}
-	knowledge := script[start : start+end]
-	for _, marker := range []string{"retrievalPolicyCard(retrievalPolicy)", "documentPolicyCard(documentPolicy)"} {
-		if !strings.Contains(knowledge, marker) {
-			t.Fatalf("knowledge view missing %s", marker)
-		}
-	}
-}
-
-func TestEmbeddedUIUsesUnifiedProductIdentity(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-	for _, asset := range []string{"/", "/app.js"} {
-		response, err := http.Get(gateway.URL + asset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, readErr := io.ReadAll(response.Body)
-		response.Body.Close()
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		content := string(body)
-		if !strings.Contains(content, "二呆智能体") {
-			t.Fatalf("%s is missing the unified product name", asset)
-		}
-		for _, legacyName := range []string{"AstrBot", "astrbot", "4.26.8"} {
-			if strings.Contains(content, legacyName) {
-				t.Fatalf("%s exposes legacy product name %q", asset, legacyName)
-			}
-		}
-	}
-}
-
-func TestEmbeddedUIDoesNotRequestUnsupportedPageLimits(t *testing.T) {
-	response := httptest.NewRecorder()
-	NewGateway("").ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/app.js", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("/app.js status = %d", response.Code)
-	}
-	for _, match := range regexp.MustCompile(`limit=([0-9]+)`).FindAllStringSubmatch(response.Body.String(), -1) {
-		limit, err := strconv.Atoi(match[1])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if limit > 100 {
-			t.Fatalf("/app.js requests unsupported page limit %d", limit)
-		}
-	}
-}
-
-func TestCharacterCardAndMediaQuotaUIIsEmbedded(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-	for _, asset := range []string{"/app.js", "/character-card.js", "/styles.css"} {
-		response, err := http.Get(gateway.URL + asset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, readErr := io.ReadAll(response.Body)
-		response.Body.Close()
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("%s status = %d", asset, response.StatusCode)
-		}
-		content := string(body)
-		if asset == "/app.js" {
-			for _, marker := range []string{
-				"import-persona", "export-persona", "export-v2", "avatarDataUri",
-				"/api/v1/runtime/media-quotas", "trustedAdminBypass", "mediaQuotaWhitelist",
-				"visualDirectorEnabled", "visualTimezone", "selfieTypes", "personaDossier",
-			} {
-				if !strings.Contains(content, marker) {
-					t.Fatalf("embedded app.js missing %s", marker)
-				}
-			}
-		}
-		if asset == "/styles.css" && (!strings.Contains(content, ".persona-grid") || !strings.Contains(content, ".persona-dossier") || !strings.Contains(content, ".memory-kernel-map") || !strings.Contains(content, ".relationship-pulse-grid")) {
-			t.Fatal("embedded styles.css missing persona card or dossier layout")
-		}
-	}
-}
-
-func TestUnifiedLeftControlPlaneShellIsEmbedded(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-	checks := map[string][]string{
-		"/": {
-			"topbar-inner", "instance-switch", "sidebar-toggle", "data-domain=\"workbench\"",
-			"data-domain=\"agents\"", "data-domain=\"capabilities\"", "data-domain=\"infrastructure\"",
-			"data-domain=\"governance\"", "data-view=\"roles\"", "data-view=\"operations\"",
-		},
-		"/app.js": {
-			"const DOMAINS", "MESSAGE_COPY_LIBRARY", "moduleGroup", "expand-message-copy",
-			"renderRoleMenu", "data-role-id", "domainForView",
-		},
-		"/styles.css": {
-			"OPS-derived control-plane shell", ".nav-cluster[data-domain=\"agents\"]",
-			".settings-module", ".copy-module-grid", ".role-menu", ".overview-inventory",
-			"r47 control-room composition", ".loading-stage", "workspace-enter", "prefers-reduced-motion",
-		},
-		"/icons/panel-left.svg": {"<svg", "<rect", "M9 3v18"},
-	}
-	for asset, markers := range checks {
-		response, err := http.Get(gateway.URL + asset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, readErr := io.ReadAll(response.Body)
-		response.Body.Close()
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("%s status = %d", asset, response.StatusCode)
-		}
-		content := string(body)
-		if asset == "/" && strings.Contains(content, "workspace-nav") {
-			t.Fatal("top work-domain navigation must be removed")
-		}
-		for _, marker := range markers {
-			if !strings.Contains(content, marker) {
-				t.Fatalf("%s missing %q", asset, marker)
-			}
-		}
-	}
-}
-
-func TestNestedAuthorityCheckboxesKeepTheirNativeWidth(t *testing.T) {
-	gateway := httptest.NewServer(NewGateway(""))
-	defer gateway.Close()
-	response, err := http.Get(gateway.URL + "/styles.css")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	styles := string(body)
-	if strings.Contains(styles, ".field input,") {
-		t.Fatal("nested authority checkboxes must not inherit full-width field input styles")
-	}
-	if !strings.Contains(styles, ".field > input,") {
-		t.Fatal("direct field inputs must retain the standard input styles")
 	}
 }
 

@@ -530,11 +530,44 @@ func TestVideoRouteFallsBackToProviderContentForLocalAssetURL(t *testing.T) {
 	}
 }
 
+func TestVideoRouteAcceptsPaidGrokRequestIDDoneResponse(t *testing.T) {
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/grok/videos/generations":
+			writeJSON(w, http.StatusOK, map[string]any{"request_id": "paid-video-request"})
+		case r.Method == http.MethodGet && r.URL.Path == "/grok/videos/paid-video-request":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "done",
+				"video":  map[string]string{"url": "/grok/videos/paid-video-request/content"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/grok/videos/paid-video-request/content":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(testMP4())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+
+	configPath := videoTestConfig(t, provider.URL+"/grok", 10)
+	runtime := newVideoRuntime(t, configPath, provider.Client(), filepath.Join(t.TempDir(), "media"), time.Microsecond, 1)
+	defer runtime.Close()
+
+	result, err := runtime.generateVideo(context.Background(), runRecord{EventID: "paid-video-response"}, "生成一段短视频")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Attachments) != 1 || result.Attachments[0].Kind != "video" {
+		t.Fatalf("paid Grok video attachments = %+v", result.Attachments)
+	}
+}
+
 func TestVideoPromptOptionsSupportAspectRatioAndResolution(t *testing.T) {
 	cases := []struct {
 		prompt, aspect, resolution string
 	}{
 		{"\u751f\u62109:16\u7ad6\u5c4f\u89c6\u9891 480p", "9:16", "480p"},
+		{"\u6765\u4e00\u4e2a\u4f60\u7684\u81ea\u62cd\u89c6\u9891", "9:16", "720p"},
 		{"\u505a\u4e00\u4e2a\u65b9\u5f62\u89c6\u9891 720p", "1:1", "720p"},
 		{"\u505a\u4e00\u4e2a\u6a2a\u5c4f\u89c6\u9891", "16:9", "720p"},
 	}

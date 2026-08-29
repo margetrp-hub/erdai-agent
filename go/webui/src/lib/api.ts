@@ -42,6 +42,7 @@ export type Observability = {
     embeddingCount?: number;
     queryCount24h?: number;
     embeddingQueryCount24h?: number;
+    fallbackCount24h?: number;
     lastQueryAt?: string;
   };
   memory?: {
@@ -111,6 +112,7 @@ export type Persona = {
   id: string;
   name?: string;
   description?: string;
+  visualDescription?: string;
   avatarDataUri?: string;
 };
 
@@ -126,7 +128,8 @@ export type AgentInstance = {
 
 export type PersonaVisualReference = {
   id: string;
-  personaId: string;
+  personaId?: string;
+  libraryId?: string;
   mediaType?: 'image' | 'video' | string;
   mimeType?: string;
   originalName?: string;
@@ -138,6 +141,21 @@ export type PersonaVisualReference = {
   enabled?: boolean;
   sortOrder?: number;
   contentUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type AppearanceLibrary = {
+  id: string;
+  namespace?: string;
+  name?: string;
+  description?: string;
+  visualDescription?: string;
+  sourcePersonaId?: string;
+  enabled?: boolean;
+  referenceCount?: number;
+  personaCount?: number;
+  previewUrl?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -255,14 +273,21 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
     case 'roles': {
       const personas = await apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100');
       const personaId = preferredPersonaId || personas.items?.[0]?.id || '';
-      const [personaBindings, personaProfiles, visualReferences] = await Promise.all([
+      const [personaBindings, personaProfiles, appearanceLibraries, appearanceBindings] = await Promise.all([
         apiRequest<unknown>('/api/v1/persona-bindings'),
         apiRequest<unknown>('/api/v1/personas/runtime-profiles'),
-        personaId
-          ? apiRequest<{ items?: PersonaVisualReference[] }>(`/api/v1/personas/${encodeURIComponent(personaId)}/visual-references?namespace=default`)
-          : Promise.resolve({ items: [] }),
+        apiRequest<unknown>('/api/v1/appearance-libraries?namespace=default'),
+        Promise.all((personas.items || []).map(async (persona) => [
+          persona.id,
+          await apiRequest<{ libraryId?: string }>(`/api/v1/personas/${encodeURIComponent(persona.id)}/appearance-library?namespace=default`),
+        ] as const)),
       ]);
-      return { personas, personaBindings, personaProfiles, visualReferences, selectedPersonaId: personaId };
+      const appearanceAssignments = Object.fromEntries(appearanceBindings.map(([id, binding]) => [id, binding.libraryId || '']));
+      const selectedAppearanceLibraryId = appearanceAssignments[personaId] || '';
+      const visualReferences = selectedAppearanceLibraryId
+        ? await apiRequest<{ items?: PersonaVisualReference[] }>(`/api/v1/appearance-libraries/${encodeURIComponent(selectedAppearanceLibraryId)}/references?namespace=default`)
+        : { items: [] };
+      return { personas, personaBindings, personaProfiles, appearanceLibraries, appearanceAssignments, visualReferences, selectedAppearanceLibraryId, selectedPersonaId: personaId };
     }
     case 'memories': {
       const personas = await apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100');

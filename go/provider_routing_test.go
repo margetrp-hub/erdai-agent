@@ -422,6 +422,24 @@ func TestChatRoutingRejectsToolEndpointsThatAdvertiseChat(t *testing.T) {
 	}
 }
 
+func TestRoutePriorityCanPreferPaidMediaEndpoint(t *testing.T) {
+	fastLatency := 10
+	slowLatency := 200
+	paid := nativeModelEndpoint{
+		ID: "paid-media", QualityScore: 0.88, Priority: 20,
+		Health: "healthy", LatencyMS: &fastLatency,
+	}
+	fallback := nativeModelEndpoint{
+		ID: "fallback-media", QualityScore: 0.90, Priority: 10,
+		Health: "healthy", LatencyMS: &slowLatency,
+	}
+	paidScore := scoreNativeEndpoint(paid, nil)
+	fallbackScore := scoreNativeEndpoint(fallback, nil)
+	if paidScore.Total <= fallbackScore.Total {
+		t.Fatalf("paid endpoint did not honor priority: paid=%+v fallback=%+v", paidScore, fallbackScore)
+	}
+}
+
 func TestRunTimelineListsRouteAndStageDurations(t *testing.T) {
 	runtime := newIdleRuntime(t)
 	defer runtime.Close()

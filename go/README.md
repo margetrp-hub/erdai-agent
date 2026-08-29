@@ -7,6 +7,6 @@ This directory contains the single Go implementation for runtime ownership and t
 - Persona, worldbook, RAG, routing, tools, MCP, memory, media quotas, Runs and Outbox use the same Core-owned SQLite data.
 - Native Go connectors receive platform events and deliver Outbox messages in this process.
 
-The canonical image, Compose file and release scripts live in the parent directory. The target production topology runs one scratch-based `erdai-agent` container with one Go process. Previous images and data snapshots are retained for rollback until the real QQ cutover gates pass.
+The canonical image, Compose file and release scripts live in the parent directory. The target production topology runs one scratch-based `erdai-agent` container with one Go process. Host-side rollback evidence is managed outside the source tree.
 
-Run `go test ./...` and `go vet ./...` from this directory. QQ connector intake, text delivery and rich-media delivery are covered by Go tests.
+Build `webui/dist` with `npm ci && npm run build` in `webui/` before running `go test ./...` and `go vet ./...` from this directory. A clean checkout can run the same checks with `docker build --target verify ..`. QQ connector intake, text delivery and rich-media delivery are covered by Go tests.

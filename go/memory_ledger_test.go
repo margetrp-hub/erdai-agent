@@ -84,3 +84,20 @@ func TestMemoryLedgerClosedLoop(t *testing.T) {
 		t.Fatalf("prune left %d expired rows", remaining)
 	}
 }
+
+func TestAutoCaptureSkipsProjectMentions(t *testing.T) {
+	runtime := newIdleRuntime(t)
+	defer runtime.Close()
+
+	run := memoryLedgerTestRun("instance-project", "qq-project")
+	runtime.captureStableMemory(context.Background(), run, "我最近在做中山一院肝胆项目")
+
+	var captured int
+	if err := runtime.db.QueryRow(`SELECT count(*) FROM agent_memories
+		WHERE source = 'auto_capture'`).Scan(&captured); err != nil {
+		t.Fatal(err)
+	}
+	if captured != 0 {
+		t.Fatalf("project mention was auto-captured: %d", captured)
+	}
+}

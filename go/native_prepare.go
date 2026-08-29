@@ -130,6 +130,9 @@ type corePreparePayload struct {
 	HasDocument       bool     `json:"hasDocument"`
 	LegacyModel       string   `json:"legacyModel"`
 	IsAdmin           bool     `json:"isAdmin"`
+	// Runtime agent runs inject knowledge through rag_runtime.go so the
+	// compatibility prepare path does not perform a second retrieval.
+	skipKnowledgeInjection bool
 }
 
 var coreRuntimePrepareFields = coreFieldSet(
@@ -462,10 +465,13 @@ func clampNative(value, minimum, maximum float64) float64 {
 func scoreNativeEndpoint(endpoint nativeModelEndpoint, preferred []string) nativeRouteScore {
 	blendedCost := (endpoint.InputCostPerMillion + endpoint.OutputCostPerMillion) / 2
 	breakdown := nativeRouteScoreBreakdown{
-		Quality:  endpoint.QualityScore * 45,
-		Latency:  5,
-		Cost:     15 / (1 + blendedCost/10),
-		Priority: clampNative(endpoint.Priority, -10, 10),
+		Quality: endpoint.QualityScore * 45,
+		Latency: 5,
+		Cost:    15 / (1 + blendedCost/10),
+		// Priority is an operator control. Keep the cap high enough for an
+		// explicitly preferred paid lane to outrank a slightly higher-quality
+		// fallback, while preventing an accidental runaway value from dominating.
+		Priority: clampNative(endpoint.Priority, -50, 50),
 	}
 	if endpoint.Health == "healthy" {
 		errorRate := 0.0
@@ -1129,9 +1135,11 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 		for _, selection := range selections {
 			ragNamespaces = append(ragNamespaces, selection.Namespace)
 		}
-		ragItems, err = s.searchHybridKnowledgeNamespaces(selections, payload.Message, 0)
-		if err != nil {
-			return preparedRuntimeData{}, err
+		if !payload.skipKnowledgeInjection {
+			ragItems, err = s.searchHybridKnowledgeNamespaces(selections, payload.Message, 0)
+			if err != nil {
+				return preparedRuntimeData{}, err
+			}
 		}
 	}
 	authority := "member"
@@ -1241,7 +1249,7 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 	if persona != nil {
 		prepared.ActivePersona = &nativeActivePersona{
 			ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
-			Description: persona.Description, VisualDescription: persona.VisualDescription,
+			Description: persona.Description, VisualDescription: s.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
 			VisualPromptOverride:  personaProfile.VisualPromptOverride,
 			VisualReferencePrompt: s.personaVisualReferencePrompt(persona.ID),
 			CharacterVersion:      persona.CharacterVersion,

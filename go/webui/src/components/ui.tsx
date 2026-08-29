@@ -33,7 +33,6 @@ export function Panel({
 }
 
 export function PanelHeading({
-  eyebrow,
   title,
   description,
   action,
@@ -46,7 +45,6 @@ export function PanelHeading({
   return (
     <header className="panel-heading">
       <div>
-        {eyebrow ? <span className="panel-eyebrow">{eyebrow}</span> : null}
         <h2>{title}</h2>
         {description ? <p>{description}</p> : null}
       </div>

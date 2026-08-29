@@ -25,7 +25,7 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 		t.Fatalf("schema version = %d", version)
 	}
 	for _, table := range []string{
-		"personas", "persona_visual_references", "worldbook_entries", "persona_samples", "persona_traits", "knowledge_documents", "knowledge_vectors", "runtime_config",
+		"personas", "persona_visual_references", "appearance_libraries", "appearance_library_references", "persona_appearance_libraries", "worldbook_entries", "persona_samples", "persona_traits", "knowledge_documents", "knowledge_vectors", "runtime_config",
 		"admin_directives", "knowledge_candidates", "model_endpoints", "model_health",
 		"routing_control", "routing_lane_profiles", "tools", "skills", "agent_plugins", "trusted_adapters", "trusted_adapter_health", "mcp_servers",
 		"integration_settings", "platform_integrations", "audit_events", "shadow_interactions",

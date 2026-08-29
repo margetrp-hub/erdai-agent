@@ -34,12 +34,11 @@ const (
 	adminTokenHeader       = "X-Erdai-Admin-Token"
 	adminSessionCookie     = "erdai_admin_session"
 	adminSessionTTL        = 8 * time.Hour
-	webAssetETag           = `"erdai-web-r50-trusted-adapters"`
 )
 
 // The UI is embedded so the gateway has no runtime filesystem dependency.
 //
-//go:embed web webui/dist
+//go:embed webui/dist
 var webFiles embed.FS
 
 var allowedMethods = map[string]bool{
@@ -108,10 +107,9 @@ func main() {
 	if err = runtime.StartPlatformConnectors(context.Background()); err != nil {
 		log.Printf("platform connectors unavailable: %v", err)
 	}
-	webRoot := webRootForMode(os.Getenv("ERDAI_WEBUI_MODE"))
-	coreGateway := NewGatewayFromRoot("", webRoot)
+	coreGateway := NewGateway("")
 	coreGateway.runtime = runtime
-	adminGateway := NewGatewayFromRootWithCredentials(adminToken, adminUsername, adminPasswordHash, webRoot)
+	adminGateway := NewGatewayWithCredentials(adminToken, adminUsername, adminPasswordHash)
 	adminGateway.runtime = runtime
 	servers := []*http.Server{
 		{Addr: coreListen, Handler: coreGateway, ReadHeaderTimeout: 10 * time.Second},
@@ -140,13 +138,6 @@ func main() {
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		log.Fatal(serveErr)
 	}
-}
-
-func webRootForMode(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "legacy") {
-		return "web"
-	}
-	return "webui/dist"
 }
 
 func handleCLI(args []string) (bool, error) {
@@ -212,31 +203,23 @@ func envOr(name, fallback string) string {
 }
 
 func NewGateway(adminToken string) *Gateway {
-	return NewGatewayFromRoot(adminToken, "web")
+	return NewGatewayWithCredentials(adminToken, "", "")
 }
 
-func NewGatewayFromRoot(adminToken, root string) *Gateway {
-	return NewGatewayFromRootWithCredentials(adminToken, "", "", root)
-}
-
-func NewGatewayFromRootWithCredentials(adminToken, adminUsername, adminPasswordHash, root string) *Gateway {
+func NewGatewayWithCredentials(adminToken, adminUsername, adminPasswordHash string) *Gateway {
 	adminToken = strings.TrimSpace(adminToken)
 	adminUsername = strings.TrimSpace(adminUsername)
 	adminPasswordHash = strings.TrimSpace(adminPasswordHash)
-	staticFS, err := fs.Sub(webFiles, root)
+	staticFS, err := fs.Sub(webFiles, "webui/dist")
 	if err != nil {
-		staticFS, _ = fs.Sub(webFiles, "web")
-		root = "web"
+		panic(fmt.Sprintf("embedded WebUI unavailable: %v", err))
 	}
-	etag := webAssetETag
-	if root == "webui/dist" {
-		if index, readErr := fs.ReadFile(staticFS, "index.html"); readErr == nil {
-			digest := sha256.Sum256(index)
-			etag = fmt.Sprintf(`"erdai-webui-%x"`, digest[:8])
-		} else {
-			etag = `"erdai-webui-modern"`
-		}
+	index, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		panic(fmt.Sprintf("embedded WebUI index unavailable: %v", err))
 	}
+	digest := sha256.Sum256(index)
+	etag := fmt.Sprintf(`"erdai-webui-%x"`, digest[:8])
 	gateway := &Gateway{static: http.FileServer(http.FS(staticFS)), assetETag: etag, adminToken: adminToken, adminUsername: adminUsername, adminPasswordHash: adminPasswordHash}
 	if adminToken != "" || (adminUsername != "" && adminPasswordHash != "") {
 		gateway.adminSessions = map[string]time.Time{}

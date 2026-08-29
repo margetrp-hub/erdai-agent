@@ -713,6 +713,11 @@ func (a *AgentRuntime) startMemoryPruneWorker(ctx context.Context) {
 	a.workers.Add(1)
 	go func() {
 		defer a.workers.Done()
+		if a.memory != nil {
+			if err := a.memory.PruneExpiredMemories(ctx); err != nil {
+				log.Printf("initial memory prune failed: %v", err)
+			}
+		}
 		ticker := time.NewTicker(6 * time.Hour)
 		defer ticker.Stop()
 		for {
@@ -2083,12 +2088,13 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 		Transport: run.Transport, TransportInstance: run.TransportInstance, ConversationRef: run.ConversationRef,
 		SenderRef: run.SenderRef, Message: message, HasImage: hasImage, HasAudio: hasAudio,
 		HasDocument: hasDocument, IsAdmin: run.IsAdmin,
-		RecentMessages:    personaContext.RecentMessages,
-		RelationshipStage: personaContext.RelationshipStage,
-		RelationshipPulse: personaContext.RelationshipPulse,
-		DetectedEmotion:   personaContext.DetectedEmotion,
-		BotMood:           personaContext.BotMood,
-		TimeOfDay:         timeOfDayLabel(time.Now()),
+		skipKnowledgeInjection: true,
+		RecentMessages:         personaContext.RecentMessages,
+		RelationshipStage:      personaContext.RelationshipStage,
+		RelationshipPulse:      personaContext.RelationshipPulse,
+		DetectedEmotion:        personaContext.DetectedEmotion,
+		BotMood:                personaContext.BotMood,
+		TimeOfDay:              timeOfDayLabel(time.Now()),
 	})
 	if err != nil {
 		return agentReply{}, err
@@ -2102,7 +2108,8 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	}
 	if config, configErr := a.configStore.runtimeConfig(); configErr == nil &&
 		config.KnowledgeInjectionEnabled && strings.TrimSpace(message) != "" {
-		if items, ragErr := a.searchRuntimeKnowledgeForRun(ctx, run.ID, config.KnowledgeNamespace, message); ragErr == nil {
+		if items, ragErr := a.searchRuntimeKnowledgeForRunNamespaces(ctx, run.ID,
+			prepared.Data.RAGContext.Namespaces, message); ragErr == nil {
 			prepared.Data.RAGContext.Items = items
 		}
 	}
@@ -2874,6 +2881,9 @@ func (a *AgentRuntime) runHasMediaTaskEvidence(runID string) bool {
 	var count int
 	if err := a.db.QueryRow(`SELECT count(*) FROM agent_task_steps
 		WHERE run_id = ? AND kind = 'tool'
+		  AND (status = 'running' OR (status = 'succeeded' AND EXISTS (
+			SELECT 1 FROM agent_task_artifacts artifact WHERE artifact.step_id = agent_task_steps.id
+		 )))
 		  AND (name LIKE '%image%' OR name LIKE '%video%' OR name LIKE '%photo%'
 		       OR name LIKE '%document%' OR name LIKE '%office%')`,
 		runID).Scan(&count); err != nil {

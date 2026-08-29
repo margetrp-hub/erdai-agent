@@ -71,7 +71,7 @@ func TestRuntimeKnowledgeRecordsUserRetrievalMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observability.QueryCount24H != 1 || observability.ChunkCount == 0 {
+	if observability.QueryCount24H != 1 || observability.FallbackCount24H != 0 || observability.ChunkCount == 0 {
 		t.Fatalf("retrieval observability = %+v", observability)
 	}
 }

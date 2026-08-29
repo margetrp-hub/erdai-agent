@@ -1,3 +1,11 @@
+FROM node:24-alpine AS webui
+
+WORKDIR /src
+COPY go/webui/package.json go/webui/package-lock.json ./
+RUN npm ci
+COPY go/webui/ ./
+RUN npm run build
+
 FROM golang:1.26.5-alpine AS source
 
 ARG GOPROXY=https://goproxy.cn,direct
@@ -10,6 +18,7 @@ WORKDIR /src
 COPY go/go.mod go/go.sum ./
 RUN /usr/local/go/bin/go mod download
 COPY go/ ./
+COPY --from=webui /src/dist ./webui/dist
 
 FROM source AS verify
 RUN --mount=type=cache,target=/root/.cache/go-build \

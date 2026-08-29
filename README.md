@@ -8,7 +8,7 @@
 
 - One Stable release bundle owns the complete production application: the `erdai-agent` Core image plus pinned local embedding and private monitor-browser images.
 - One Go process owns the control plane, agent loop, durable state, platform connections, Outbox delivery and WebUI.
-- All 18 AstrBot 4.26.8 platform types have native Go connectors for authentication, inbound normalization, Core ownership, Outbox delivery, media and health state. The production Go runtime does not require a Python or AstrBot process.
+- Platform catalog entries have native Go connectors for authentication, inbound normalization, Core ownership, Outbox delivery, media and health state. The production Go runtime does not require a Python or AstrBot process.
 - Two listeners in the same Go process: runtime/API on `6280`, authenticated local management UI on `6282`; the screenshot browser has no published host port.
 - SQLite WAL with FTS5 trigram search, durable runs, media quota accounting and Outbox delivery state.
 - Provider credentials are read from environment variables or the data-volume managed credential file; they are never stored in SQLite or returned by management APIs.
@@ -24,6 +24,7 @@
 - Endpoint execution kinds (`llm`, `tool`, `media`) and adapter references keep model switching separate from tool invocation and media jobs.
 - Deterministic routing: hard capability, health freshness, context, latency and cost filters followed by a visible quality/reliability/latency/cost/priority score. Automatic mode returns ordered fallbacks; manual mode strictly enforces lane locks.
 - Clean-room SillyTavern Character Card V2 conversion. Only known text and worldbook fields are selected; unknown extensions are discarded and never executed.
+- Appearance libraries are independent visual assets that role cards select by reference; one library can be shared by multiple roles without copying files or prompts.
 - Namespace-scoped persona, worldbook and knowledge CRUD, content-hash deduplication, and Chinese retrieval previews through FTS5 trigram. Enabled worldbook entries participate in live context through constant, primary-key and selective secondary-key matching.
 - Health observation and routing-control APIs used by the cockpit.
 - Privacy-minimized shadow routing records for comparing compatibility behavior with Core decisions without storing message text or platform identifiers.
@@ -47,7 +48,7 @@
 sh ./scripts/build-release.sh <release> <schema> <output-dir>
 ```
 
-For source tests, run `go test ./...` and `go vet ./...` from `go/`. The Compose example listens on `6280` and `6282`; persistent state is mounted at the operator-selected data directory.
+For source tests, build the WebUI first with `npm ci && npm run build` in `go/webui/`, then run `go test ./...` and `go vet ./...` from `go/`. The clean-checkout path is `docker build --target verify .`; it builds the WebUI inside Docker. The Compose example listens on `6280` and `6282`; persistent state is mounted at the operator-selected data directory.
 
 An active production instance uses two distinct service tokens of at least 32 characters. `ERDAI_ADMIN_TOKEN` protects the management listener and remains the automation fallback; human login can additionally use the single `ERDAI_ADMIN_USERNAME` plus `ERDAI_ADMIN_PASSWORD` (or its SHA-256 form). Browser login exchanges valid credentials for an eight-hour HttpOnly, SameSite session, while automation uses `X-Erdai-Admin-Token`. Session-authenticated writes also require a same-origin request. `ERDAI_RUNTIME_TOKEN` is accepted as `Authorization: Bearer ...` only for runtime preparation, shadow observations, model-health observations, and transport event/delivery/cancellation calls. A fresh install may leave `ERDAI_RUNTIME_TOKEN` and `ERDAI_MODEL_API_KEY` empty: the authenticated cockpit starts in `setup_required`, rejects runtime bearer requests, and lets the operator fill the business credentials before activation. Tokens and passwords are read from the process environment or the managed data-volume file and are never stored in the Core database or served to the cockpit. The cockpit reports configuration readiness and checks GitHub Releases for Stable versions; upgrade execution remains a host-side operation with backup and health-gated rollback.
 
@@ -89,6 +90,11 @@ PUT  /api/v1/routing/control
 POST /api/v1/routing/simulate
 GET/POST       /api/v1/personas
 GET/PUT/DELETE /api/v1/personas/:id
+GET/POST       /api/v1/appearance-libraries
+GET/PUT/DELETE /api/v1/appearance-libraries/:id
+GET/POST       /api/v1/appearance-libraries/:id/references
+GET/PUT/DELETE /api/v1/appearance-libraries/:id/references/:referenceId
+GET/PUT        /api/v1/personas/:id/appearance-library
 GET/POST       /api/v1/personas/:id/worldbook
 GET/PUT/DELETE /api/v1/personas/:id/worldbook/:entryId
 GET/POST       /api/v1/knowledge/documents
@@ -128,15 +134,15 @@ Example simulation body:
 }
 ```
 
-Simulation does not create a run or mutate health. With `maxHealthAgeMs`, recorded health older than the limit is rejected with an explicit reason. Endpoints with no health record remain eligible at a lower score. Provider credentials are intentionally absent from the schema; later phases should store only references to an external secret store.
+Simulation does not create a run or mutate health. With `maxHealthAgeMs`, recorded health older than the limit is rejected with an explicit reason. Endpoints with no health record remain eligible at a lower score. Provider credentials are intentionally absent from the schema; the management API stores only references while the managed credential file keeps the actual values on the data volume.
 
 ## Boundaries
 
 Core is the source of truth for Persona, protected rules, administrator directives, RAG, memory, routing, platform metadata, provider policy, message policy, quotas and channel policy. It does not store provider credentials or raw platform administrator IDs. Ordinary group members cannot mutate configuration or promote learned material; automatic learning only creates reviewable candidates.
 
-The Go Runtime owns event acceptance, the model/tool loop and connector delivery. It only returns `owned` when the channel policy permits it, persists the Run and outbound progress/terminal deliveries, then leases and acknowledges them through the connector manager. `off` rejects takeover and `shadow` observes without owning the message. Streamable HTTP MCP execution enforces enablement, allow-lists, sender authority, approval mode, timeout, private-network blocking, bounded responses and audit logging. SSE and stdio execution remain disabled.
+The Go Runtime owns event acceptance, the model/tool loop and connector delivery. It only returns `owned` when the channel policy permits it, persists the Run and outbound progress/terminal deliveries, then leases and acknowledges them through the connector manager. `off` rejects takeover and `shadow` observes without owning the message. Streamable HTTP, legacy SSE and controlled stdio MCP execution enforce enablement, allow-lists, sender authority, approval mode, timeout, private-network blocking, bounded responses and audit logging.
 
-The legacy Node runtime has been retired from the active checkout, final image and production process set. The final image explicitly removes the Node.js toolchain inherited from the upstream channel base. Legacy source is retained only in the release archive outside this repository. Production upgrades still require a database backup, real QQ `@豆包` canary, restart/redelivery check and rollback verification.
+The legacy Node/AstrBot runtime and the old static WebUI have been removed from the active checkout and final image. The final image contains one Go process and the built React WebUI. Production upgrades still require a database backup, real QQ `@豆包` canary, restart/redelivery check and rollback verification.
 
 Each release must pass the applicable Go suite, `go vet`, protocol checks, migration checks and a health-gated active rollout. The production verifier also checks the management credential path with a temporary allow-listed secret, confirms no value is returned, and removes the temporary record even on failure. QQ Official requires the group-message intent and reconnect check; real-account canaries for other platforms remain separate acceptance gates. The release bundle records its source revision and schema in a public manifest; private operator records retain deployment evidence. 豆包是用于跑通通用多角色流程的首张角色卡，不是 Core 中写死的唯一角色。
 
@@ -152,6 +158,6 @@ The project studies external agent and role-play systems without treating them a
 - `DeterminFlow` (AGPL-3.0): immutable workflow snapshots, checkpoints, node-level tool permissions, attempt history and token/cost ledgers are useful future reliability patterns. No source or dependency is copied into this project.
 
 The implemented clean-room slices include group participation policy, evidence-linked memory, durable task/Outbox delivery and MCP execution. Future additions must remain Core-owned, configurable, audited and default-deny for group members.
-## Migration
+## Release
 
-活动镜像只包含 Go 可执行文件、CA 证书和浏览器静态资源，不包含 Node、Python 或 AstrBot 运行时。旧兼容源码不参与构建；角色、知识、模型、工具和 MCP 默认资产由 Go Schema 直接建立。迁移与生产验证见 [`GO_MIGRATION.md`](./GO_MIGRATION.md)。
+Stable releases are built from a clean checkout through the Docker `verify` and `build` targets. The image embeds the WebUI and contains no Node, Python or AstrBot runtime. Schema and public release metadata live in [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md); host-specific backup, rollout and rollback evidence stays in the private operator record.

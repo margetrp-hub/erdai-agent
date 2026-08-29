@@ -183,6 +183,136 @@ func TestPersonaVisualReferenceRejectsDisguisedMedia(t *testing.T) {
 	}
 }
 
+func TestAppearanceLibraryCanBeSharedWithoutCopying(t *testing.T) {
+	store, err := openCoreConfigStore(filepath.Join(t.TempDir(), "core.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.mediaDir = filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(store.mediaDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.mediaDir, "doubao-shared.png"), png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.Exec(`INSERT INTO persona_visual_references
+		(id, persona_id, media_type, mime_type, original_name, storage_name, byte_size,
+		 category, label, prompt_notes, is_primary, enabled, sort_order, created_at, updated_at)
+		VALUES ('shared-primary', 'doubao', 'image', 'image/png', 'doubao-shared.png', 'doubao-shared.png', ?,
+		 'identity', '豆包共享主脸', '固定脸型、五官和发型。', 1, 1, 0, ?, ?)`, len(png), now, now); err != nil {
+		t.Fatal(err)
+	}
+	sharedID := "persona-appearance-doubao"
+	if _, err := store.db.Exec("UPDATE appearance_libraries SET visual_description = '豆包共享外貌描述' WHERE id = ?", sharedID); err != nil {
+		t.Fatal(err)
+	}
+	bindRequest := httptest.NewRequest(http.MethodPut, "/api/v1/personas/xiaoman/appearance-library?namespace=default", strings.NewReader(`{"libraryId":"`+sharedID+`"}`))
+	bindRequest.Header.Set("Content-Type", "application/json")
+	bindResponse := httptest.NewRecorder()
+	if err := store.handlePersonaRequest(bindResponse, bindRequest, bindRequest.URL.Path); err != nil {
+		t.Fatal(err)
+	}
+	if bindResponse.Code != http.StatusOK {
+		t.Fatalf("appearance bind status = %d: %s", bindResponse.Code, bindResponse.Body.String())
+	}
+	doubaoURI, err := store.primaryPersonaVisualReferenceDataURI("doubao")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xiaomanURI, err := store.primaryPersonaVisualReferenceDataURI("xiaoman")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doubaoURI == "" || doubaoURI != xiaomanURI {
+		t.Fatalf("shared appearance URI mismatch: doubao=%d xiaoman=%d", len(doubaoURI), len(xiaomanURI))
+	}
+	var libraryCount int
+	if err := store.db.QueryRow("SELECT count(*) FROM appearance_library_references WHERE library_id = ?", sharedID).Scan(&libraryCount); err != nil {
+		t.Fatal(err)
+	}
+	if libraryCount != 0 {
+		t.Fatalf("shared library copied %d assets instead of referencing the persona source", libraryCount)
+	}
+	prompt := store.personaVisualReferencePrompt("xiaoman")
+	if !strings.Contains(prompt, "豆包共享主脸") || !strings.Contains(prompt, "固定脸型") {
+		t.Fatalf("shared appearance prompt = %q", prompt)
+	}
+	if description := store.appearanceLibraryVisualDescription("xiaoman", "小满旧外貌"); description != "豆包共享外貌描述" {
+		t.Fatalf("shared appearance description = %q", description)
+	}
+
+	blankName := "无素材外观库"
+	blankDescription := ""
+	blank, err := store.createAppearanceLibrary("default", appearanceLibraryPayload{Name: &blankName, VisualDescription: &blankDescription})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE personas SET avatar_data_uri = 'data:image/png;base64,eA==', visual_description = '角色卡旧外貌'
+		WHERE id = 'xiaoman'`); err != nil {
+		t.Fatal(err)
+	}
+	blankBindRequest := httptest.NewRequest(http.MethodPut, "/api/v1/personas/xiaoman/appearance-library?namespace=default", strings.NewReader(`{"libraryId":"`+blank.ID+`"}`))
+	blankBindRequest.Header.Set("Content-Type", "application/json")
+	blankBindResponse := httptest.NewRecorder()
+	if err := store.handlePersonaRequest(blankBindResponse, blankBindRequest, blankBindRequest.URL.Path); err != nil {
+		t.Fatal(err)
+	}
+	if blankBindResponse.Code != http.StatusOK {
+		t.Fatalf("blank appearance bind status = %d: %s", blankBindResponse.Code, blankBindResponse.Body.String())
+	}
+	if dataURI, err := store.primaryPersonaVisualReferenceDataURI("xiaoman"); err != nil || dataURI != "" {
+		t.Fatalf("independent library leaked persona avatar: %q, err = %v", dataURI, err)
+	}
+	if description := store.appearanceLibraryVisualDescription("xiaoman", "角色卡旧外貌"); description != "" {
+		t.Fatalf("independent library leaked persona description: %q", description)
+	}
+
+	var uploadBody bytes.Buffer
+	uploadWriter := multipart.NewWriter(&uploadBody)
+	uploadPart, err := uploadWriter.CreateFormFile("file", "xiaoman-primary.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = uploadPart.Write(png)
+	_ = uploadWriter.WriteField("category", "identity")
+	_ = uploadWriter.WriteField("label", "小满独立主脸")
+	_ = uploadWriter.WriteField("promptNotes", "只用于小满外观库。")
+	_ = uploadWriter.WriteField("isPrimary", "true")
+	if err = uploadWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	uploadRequest := httptest.NewRequest(http.MethodPost, "/api/v1/appearance-libraries/"+blank.ID+"/references?namespace=default", &uploadBody)
+	uploadRequest.Header.Set("Content-Type", uploadWriter.FormDataContentType())
+	uploadResponse := httptest.NewRecorder()
+	if err = store.handleAppearanceLibraryRequest(uploadResponse, uploadRequest, uploadRequest.URL.Path); err != nil {
+		t.Fatal(err)
+	}
+	if uploadResponse.Code != http.StatusCreated {
+		t.Fatalf("appearance upload status = %d: %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	if dataURI, err := store.primaryPersonaVisualReferenceDataURI("xiaoman"); err != nil || !strings.HasPrefix(dataURI, "data:image/png;base64,") {
+		t.Fatalf("independent appearance did not become active: %q, err = %v", dataURI, err)
+	}
+	if prompt := store.personaVisualReferencePrompt("xiaoman"); !strings.Contains(prompt, "小满独立主脸") || !strings.Contains(prompt, "只用于小满外观库") {
+		t.Fatalf("independent appearance prompt = %q", prompt)
+	}
+	if _, err := store.db.Exec("UPDATE appearance_libraries SET enabled = 0 WHERE id = ?", blank.ID); err != nil {
+		t.Fatal(err)
+	}
+	if dataURI, err := store.appearanceLibraryPrimaryDataURI("xiaoman"); err != nil || dataURI != "" {
+		t.Fatalf("disabled appearance library remained active: %q, err = %v", dataURI, err)
+	}
+	if prompt := store.appearanceLibraryPrompt("xiaoman"); strings.Contains(prompt, "小满独立主脸") {
+		t.Fatalf("disabled appearance library prompt remained active: %q", prompt)
+	}
+}
+
 func TestPersonaVisualReferenceStylePromptKeepsIdentitySeparate(t *testing.T) {
 	store, err := openCoreConfigStore(filepath.Join(t.TempDir(), "core.sqlite3"))
 	if err != nil {

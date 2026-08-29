@@ -389,12 +389,13 @@ func (a *AgentRuntime) handleCoreConfig(w http.ResponseWriter, r *http.Request, 
 	isConfigLayers := path == "/api/v1/config/layers"
 	isPersonaRuntime := path == "/api/v1/personas/runtime-profiles" || strings.HasPrefix(path, "/api/v1/personas/runtime-profiles/")
 	isPersona := (path == "/api/v1/personas" || strings.HasPrefix(path, "/api/v1/personas/")) && !isPersonaRuntime
+	isAppearanceLibrary := path == "/api/v1/appearance-libraries" || strings.HasPrefix(path, "/api/v1/appearance-libraries/")
 	isPersonaBinding := path == "/api/v1/persona-bindings" || strings.HasPrefix(path, "/api/v1/persona-bindings/")
 	isAgentInstance := path == "/api/v1/agent-policy-templates" || strings.HasPrefix(path, "/api/v1/agent-policy-templates/") ||
 		path == "/api/v1/agent-instances" || strings.HasPrefix(path, "/api/v1/agent-instances/") ||
 		path == "/api/v1/agent-instance-routes" || strings.HasPrefix(path, "/api/v1/agent-instance-routes/") ||
 		path == "/api/v1/agent-instance-capabilities" || strings.HasPrefix(path, "/api/v1/agent-instance-capabilities/")
-	if !isPrepare && !isConfig && !isConfigLayers && !isPersona && !isPersonaRuntime && !isPersonaBinding && !isAgentInstance {
+	if !isPrepare && !isConfig && !isConfigLayers && !isPersona && !isPersonaRuntime && !isPersonaBinding && !isAgentInstance && !isAppearanceLibrary {
 		return false
 	}
 	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
@@ -440,6 +441,8 @@ func (a *AgentRuntime) handleCoreConfig(w http.ResponseWriter, r *http.Request, 
 		err = a.configStore.handleConfigLayers(w, r)
 	case isPersona:
 		err = a.configStore.handlePersonaRequest(w, r, path)
+	case isAppearanceLibrary:
+		err = a.configStore.handleAppearanceLibraryRequest(w, r, path)
 	case isPersonaRuntime:
 		err = a.configStore.handlePersonaRuntimeRequest(w, r, path)
 	case isPersonaBinding:
@@ -514,10 +517,11 @@ func (s *coreConfigStore) handlePersonaRequest(w http.ResponseWriter, r *http.Re
 	parts := strings.Split(remainder, "/")
 	isVisualReferencePath := len(parts) >= 2 && parts[1] == "visual-references" &&
 		(len(parts) == 2 || len(parts) == 3 || len(parts) == 4 && parts[3] == "content")
+	isAppearanceLibraryPath := len(parts) == 2 && parts[1] == "appearance-library"
 	if len(parts) != 1 &&
 		!(len(parts) == 2 && (parts[1] == "worldbook" || parts[1] == "samples" || parts[1] == "traits")) &&
 		!(len(parts) == 3 && (parts[1] == "worldbook" || parts[1] == "samples" || parts[1] == "traits")) &&
-		!isVisualReferencePath {
+		!isVisualReferencePath && !isAppearanceLibraryPath {
 		return &coreAPIError{status: http.StatusNotFound, code: "not_found", message: "route not found"}
 	}
 	personaID, err := parseCorePathID(parts[0])
@@ -581,6 +585,9 @@ func (s *coreConfigStore) handlePersonaRequest(w http.ResponseWriter, r *http.Re
 	}
 	if parts[1] == "visual-references" {
 		return s.handlePersonaVisualReferences(w, r, namespace, personaID, parts[2:])
+	}
+	if parts[1] == "appearance-library" {
+		return s.handlePersonaAppearanceLibrary(w, r, namespace, personaID)
 	}
 	if len(parts) == 2 {
 		switch r.Method {
@@ -841,6 +848,11 @@ func (s *coreConfigStore) createPersona(payload corePersonaPayload) (nativePerso
 		return nativePersona{}, err
 	}
 	value, _, err = s.persona(namespace, id)
+	if err == nil {
+		if ensureErr := s.ensurePersonaAppearanceLibrary(namespace, id, value.Name, value.VisualDescription); ensureErr != nil {
+			return nativePersona{}, ensureErr
+		}
+	}
 	return value, err
 }
 

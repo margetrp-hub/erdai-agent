@@ -343,6 +343,41 @@ func TestEnqueueDeliveryRewritesUnbackedPromise(t *testing.T) {
 	}
 }
 
+func TestMediaPromiseEvidenceRequiresLiveTaskOrArtifact(t *testing.T) {
+	runtime := newIdleRuntime(t)
+	defer runtime.Close()
+	run := insertHonestyTestRun(t, runtime, "promise-evidence-run", "group-promise-evidence", "sender-a", "group", "running", time.Now().UTC())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := runtime.db.Exec(`INSERT INTO agent_task_steps
+		(id, run_id, step_index, kind, name, status, created_at, updated_at)
+		VALUES ('promise-evidence-step', ?, 1, 'tool', 'grok_generate_video', 'failed', ?, ?)`, run.ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.runHasMediaTaskEvidence(run.ID) {
+		t.Fatal("failed media task was treated as promise evidence")
+	}
+	if _, err := runtime.db.Exec("UPDATE agent_task_steps SET status = 'running' WHERE id = 'promise-evidence-step'"); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.runHasMediaTaskEvidence(run.ID) {
+		t.Fatal("running media task was not treated as promise evidence")
+	}
+	if _, err := runtime.db.Exec("UPDATE agent_task_steps SET status = 'succeeded' WHERE id = 'promise-evidence-step'"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.runHasMediaTaskEvidence(run.ID) {
+		t.Fatal("succeeded media task without artifact was treated as promise evidence")
+	}
+	if _, err := runtime.db.Exec(`INSERT INTO agent_task_artifacts
+		(run_id, step_id, kind, local_path, created_at)
+		VALUES (?, 'promise-evidence-step', 'video', '/erdai-media/result.mp4', ?)`, run.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.runHasMediaTaskEvidence(run.ID) {
+		t.Fatal("succeeded media task with artifact was not treated as promise evidence")
+	}
+}
+
 // Later text segments of one reply are scheduled with a typing rhythm instead
 // of becoming eligible instantly.
 func TestEnqueueDeliveryPacesSegments(t *testing.T) {

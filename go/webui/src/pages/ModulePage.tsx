@@ -6,6 +6,7 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Code2,
@@ -46,30 +47,12 @@ import {
   loadModuleData,
   type JsonMap,
   type ModuleData,
+  type AppearanceLibrary,
   type PersonaVisualReference,
 } from '../lib/api';
 
 type Accent = 'cyan' | 'rose' | 'amber' | 'violet' | 'green';
 type TabId = string;
-
-const META: Record<Exclude<ViewId, 'overview'>, { title: string; description: string; kicker: string; accent: Accent }> = {
-  operations: { title: '任务与审计', description: '运行结果、审计轨迹和影子交互统一查看。', kicker: 'WORKBENCH / OPERATIONS', accent: 'cyan' },
-  runtime: { title: '运行实例', description: '把角色、策略、连接器和消息路由放在同一条运行链路上。', kicker: 'RUNTIME / INSTANCES', accent: 'green' },
-  roles: { title: '角色库', description: '角色卡、会话绑定和运行档案分层管理。', kicker: 'AGENTS / PERSONAS', accent: 'rose' },
-  memories: { title: '记忆与关系', description: '事实记忆和关系状态按角色与会话范围隔离。', kicker: 'AGENTS / MEMORY', accent: 'rose' },
-  worldbook: { title: '世界书', description: '世界书条目参与实时上下文编译。', kicker: 'AGENTS / WORLDBOOK', accent: 'violet' },
-  samples: { title: '人格内核', description: '人格特质和场景样本共同决定表达节奏。', kicker: 'AGENTS / EXPRESSION', accent: 'violet' },
-  knowledge: { title: '知识与学习', description: '检索策略、正式文档和候选审核分开管理。', kicker: 'CAPABILITIES / KNOWLEDGE', accent: 'amber' },
-  skills: { title: '技能', description: '技能按触发条件、身份和角色开放。', kicker: 'CAPABILITIES / SKILLS', accent: 'amber' },
-  plugins: { title: '插件中心', description: '把可复用能力包、接入策略和运行检查集中管理。', kicker: 'CAPABILITIES / PLUGINS', accent: 'cyan' },
-  tools: { title: '工具与 MCP', description: '工具目录、审批边界和 MCP 服务集中管理。', kicker: 'CAPABILITIES / TOOLS', accent: 'amber' },
-  integrations: { title: '平台与接入', description: '连接器、消息接管、供应商策略和媒体路由。', kicker: 'INFRASTRUCTURE / INTEGRATIONS', accent: 'violet' },
-  models: { title: '模型与供应商', description: '连接、模型端点、健康和成本各自可追踪。', kicker: 'INFRASTRUCTURE / MODELS', accent: 'violet' },
-  routing: { title: '模型路由', description: '按能力、健康、成本和锁定策略选择模型。', kicker: 'INFRASTRUCTURE / ROUTING', accent: 'violet' },
-  devices: { title: '设备与桌面', description: '可信设备、实时会话和 Companion 入口。', kicker: 'INFRASTRUCTURE / DEVICES', accent: 'green' },
-  security: { title: '安全边界', description: '系统规则、内容边界和管理员指令不可被角色覆盖。', kicker: 'GOVERNANCE / SECURITY', accent: 'green' },
-  system: { title: '系统设置', description: '运行时默认值、媒体额度和配置分层。', kicker: 'GOVERNANCE / SYSTEM', accent: 'green' },
-};
 
 const icons: Record<string, typeof Activity> = {
   activity: Activity,
@@ -254,19 +237,40 @@ function RecordTable({
   columns: Array<{ key: string; label: string }>;
   empty?: string;
 }) {
+  const pageSize = 8;
+  const [page, setPage] = useState(1);
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  useEffect(() => setPage((current) => Math.min(current, pages)), [pages]);
   if (!items.length) return <EmptyState text={empty} />;
+  const visibleItems = items.slice((page - 1) * pageSize, page * pageSize);
   return (
-    <div className="module-table-wrap">
-      <table className="module-table">
-        <thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
-        <tbody>
-          {items.map((item, index) => (
-            <tr key={itemId(item) + index}>
-              {columns.map((column) => <td key={column.key}>{text(item[column.key], '-')}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="module-table-shell">
+      <div className="module-table-wrap">
+        <table className="module-table">
+          <thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
+          <tbody>
+            {visibleItems.map((item, index) => (
+              <tr key={itemId(item) + index}>
+                {columns.map((column) => <td key={column.key}>{text(item[column.key], '-')}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <TablePager page={page} pages={pages} total={items.length} pageSize={pageSize} onPage={setPage} />
+    </div>
+  );
+}
+
+function TablePager({ page, pages, total, pageSize, onPage }: { page: number; pages: number; total: number; pageSize: number; onPage: (page: number) => void }) {
+  if (total <= pageSize) return null;
+  return (
+    <div className="module-table-pager">
+      <span>第 {page} / {pages} 页 · 共 {total} 条</span>
+      <div>
+        <Button variant="ghost" icon={<ChevronLeft size={14} />} aria-label="上一页" title="上一页" disabled={page <= 1} onClick={() => onPage(page - 1)} />
+        <Button variant="ghost" icon={<ChevronRight size={14} />} aria-label="下一页" title="下一页" disabled={page >= pages} onClick={() => onPage(page + 1)} />
+      </div>
     </div>
   );
 }
@@ -351,7 +355,6 @@ export function ModulePage({
   refreshKey?: number;
   onNavigate: (view: ViewId) => void;
 }) {
-  const meta = META[view];
   const [data, setData] = useState<ModuleData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -445,16 +448,6 @@ export function ModulePage({
 
   return (
     <div className="view-stage module-stage">
-      <header className="page-hero">
-        <div>
-          <span className="hero-kicker">{meta.kicker}</span>
-          <h1>{meta.title}</h1>
-          <p>{meta.description}</p>
-        </div>
-        <div className="hero-actions">
-          <Button variant="secondary" icon={<RefreshCw size={15} />} onClick={reload}>刷新模块</Button>
-        </div>
-      </header>
       {notice ? <div className="module-notice"><CheckCircle2 size={15} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="关闭提示"><X size={14} /></button></div> : null}
       {content}
       <JsonEditorDialog editor={editor} onClose={() => setEditor(null)} onSave={saveEditor} saving={saving} />
@@ -597,6 +590,7 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
   const [health, setHealth] = useState<Record<string, JsonMap>>({});
   const [adapterHealth, setAdapterHealth] = useState<Record<string, JsonMap>>({});
   const [readiness, setReadiness] = useState<JsonMap | null>(null);
+  const [pluginPage, setPluginPage] = useState(1);
   const enabledPlugins = plugins.filter((item) => enabled(item.enabled));
   const builtins = plugins.filter((item) => text(item.source, 'builtin') === 'builtin');
   const runCheck = async (plugin: JsonMap) => {
@@ -637,6 +631,10 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
     }
   };
   const blocking = collectionItems<JsonMap>(readiness?.blocking);
+  const pluginPageSize = 8;
+  const pluginPages = Math.max(1, Math.ceil(plugins.length / pluginPageSize));
+  const visiblePlugins = plugins.slice((pluginPage - 1) * pluginPageSize, pluginPage * pluginPageSize);
+  useEffect(() => setPluginPage((current) => Math.min(current, pluginPages)), [pluginPages]);
   return (
     <ModuleShell accent="cyan">
       <MetricRail items={[
@@ -665,8 +663,11 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
             <span>{enabled(readiness.ready) ? `检查时间 ${text(readiness.checkedAt)}` : blocking.map((item) => `${text(item.name, text(item.pluginId))}：${text(item.message, pluginStateLabel(item.state))}`).join('；')}</span>
           </div>
         </div> : null}
-        <div className="plugin-grid">
-          {plugins.map((plugin) => {
+        {plugins.length ? <div className="module-table-shell plugin-table-shell">
+          <div className="module-table-wrap">
+            <table className="module-table plugin-table">
+              <thead><tr><th>插件</th><th>状态</th><th>能力摘要</th><th>快捷开关</th><th>操作</th></tr></thead>
+              <tbody>{visiblePlugins.map((plugin) => {
             const id = itemId(plugin);
             const manifest = asRecord(plugin.manifest);
             const pluginHealth = health[id];
@@ -678,43 +679,27 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
             const resourceCount = pluginHealth?.resourceCount;
             const resourceCounts = asRecord(pluginHealth?.resourceCounts);
             const media = asRecord(pluginHealth?.media);
+            const healthDetails = [
+              text(pluginHealth?.message, ''),
+              pluginHealth?.groupCount !== undefined ? `渠道 ${number(pluginHealth.groupCount)} 组` : '',
+              pluginHealth?.bindingCount !== undefined ? `已绑定 QQ ${number(pluginHealth.bindingCount)} 个` : '',
+              resourceCount !== undefined ? `资源 ${number(resourceCount)} 项${Object.keys(resourceCounts).length ? `（${Object.entries(resourceCounts).map(([key, value]) => `${key} ${number(value)}`).join(' · ')}）` : ''}` : '',
+              Object.keys(media).length ? `真实任务成功 ${number(media.successCount)} / 失败 ${number(media.failureCount)}` : '',
+            ].filter(Boolean).join(' · ');
             return (
-              <article className={`plugin-card ${enabled(plugin.enabled) ? 'is-enabled' : 'is-disabled'}`} key={id}>
-                <div className="plugin-card-header">
-                  <div className="plugin-card-mark"><Blocks size={18} /></div>
-                  <div className="plugin-card-title">
-                    <div className="module-record-title"><strong>{text(plugin.name, id)}</strong><StatusDot tone={pluginTone(state)} /><span className="module-badge">{text(plugin.source, 'builtin') === 'builtin' ? '内置' : '外部'}</span></div>
-                    <small>{text(plugin.version, '未标版本')} · {text(plugin.author, '未知作者')}</small>
-                  </div>
-                  {enabled(plugin.toggleable) ? <Button variant="secondary" icon={<Power size={14} />} aria-label={enabled(plugin.enabled) ? '停用插件' : '启用插件'} onClick={() => ctx.toggle(endpoint('/api/v1/plugins', id), enabled(plugin.enabled))}>
-                    {enabled(plugin.enabled) ? '停用' : '启用'}
-                  </Button> : <span className="plugin-resource-badge">{pluginOwnershipLabel(plugin)}</span>}
-                </div>
-                <p className="plugin-card-description">{text(plugin.description, '暂无插件说明。')}</p>
-                <div className="plugin-state-line"><StatusDot tone={pluginTone(state)} /><strong>{pluginStateLabel(state)}</strong><span>{pluginCategoryLabel(manifest.category)} · {text(plugin.integrationId || asRecord(plugin.adapter).integrationId, '无接入策略')}</span></div>
-                <div className="plugin-chip-row">
-                  {commands.map((command) => <span className="plugin-chip" key={String(command)}>{String(command)}</span>)}
-                  {!commands.length ? <span className="plugin-chip plugin-chip-muted">无命令</span> : null}
-                </div>
-                <div className="plugin-capabilities">
-                  {capabilities.map((capability) => <span key={String(capability)}>{String(capability)}</span>)}
-                </div>
-                {dependencies.length ? <div className="plugin-dependencies">依赖：{dependencies.map(String).join(' · ')}</div> : null}
-                {pluginHealth?.message ? <div className="module-notice plugin-health-notice"><CircleAlert size={14} />{text(pluginHealth.message)}</div> : null}
-                {pluginHealth?.groupCount !== undefined ? <div className="plugin-health-summary">渠道 {number(pluginHealth.groupCount)} 组 · 来源 {text(pluginHealth.source, '运行时')}</div> : null}
-                {pluginHealth?.bindingCount !== undefined ? <div className="plugin-health-summary">已绑定 QQ {number(pluginHealth.bindingCount)} 个</div> : null}
-                {resourceCount !== undefined ? <div className="plugin-health-summary">资源 {number(resourceCount)} 项{Object.keys(resourceCounts).length ? ` · ${Object.entries(resourceCounts).map(([key, value]) => `${key} ${number(value)}`).join(' · ')}` : ''}</div> : null}
-                {Object.keys(media).length ? <div className="plugin-health-summary">真实任务：成功 {number(media.successCount)} · 失败 {number(media.failureCount)} · 连续失败 {number(media.consecutiveFailures)}{media.lastSuccessAt ? ` · 最近成品 ${text(media.lastSuccessAt)}` : ''}</div> : null}
-                <div className="plugin-card-actions">
-                  <Button variant="secondary" icon={checking === id ? <RefreshCw className="spin" size={14} /> : <Play size={14} />} disabled={checking === id} onClick={() => runCheck(plugin)}>运行检查</Button>
-                  <Button variant="secondary" icon={<Settings2 size={14} />} disabled={!configTarget} onClick={() => { if (configTarget) ctx.onNavigate(configTarget); }}>{configTarget ? '能力配置' : '无需配置'}</Button>
-                  <Button variant="secondary" icon={<ArrowUpRight size={14} />} disabled={!collectionItems(manifest.references).length} onClick={() => { const reference = String(collectionItems(manifest.references)[0] || ''); if (reference) window.open(reference, '_blank', 'noopener,noreferrer'); }}>参考项目</Button>
-                </div>
-              </article>
+              <tr key={id} className={enabled(plugin.enabled) ? 'is-enabled' : 'is-disabled'}>
+                <td><div className="plugin-table-name"><div><Blocks size={16} /><strong>{text(plugin.name, id)}</strong><span className="module-badge">{text(plugin.source, 'builtin') === 'builtin' ? '内置' : '外部'}</span></div><span>{text(plugin.version, '未标版本')} · {text(plugin.author, '未知作者')}</span><p title={text(plugin.description)}>{text(plugin.description, '暂无插件说明。')}</p></div></td>
+                <td><div className="plugin-table-state"><div><StatusDot tone={pluginTone(state)} /><strong>{pluginStateLabel(state)}</strong></div><span>{pluginCategoryLabel(manifest.category)} · {text(plugin.integrationId || asRecord(plugin.adapter).integrationId, '无接入策略')}</span>{healthDetails ? <small title={healthDetails}>{healthDetails}</small> : null}</div></td>
+                <td><div className="plugin-table-capabilities"><div>{commands.slice(0, 2).map((command) => <span className="plugin-chip" key={String(command)}>{String(command)}</span>)}</div><p title={capabilities.map(String).join(' · ')}>{capabilities.slice(0, 3).map(String).join(' · ') || '未声明能力'}{capabilities.length > 3 ? ` · +${capabilities.length - 3}` : ''}</p>{dependencies.length ? <small>依赖：{dependencies.map(String).join(' · ')}</small> : null}</div></td>
+                <td>{enabled(plugin.toggleable) ? <button type="button" role="switch" aria-checked={enabled(plugin.enabled)} aria-label={`${enabled(plugin.enabled) ? '停用' : '启用'}${text(plugin.name, id)}`} className={`plugin-quick-toggle ${enabled(plugin.enabled) ? 'is-on' : ''}`} onClick={() => ctx.toggle(endpoint('/api/v1/plugins', id), enabled(plugin.enabled))}><span aria-hidden="true" /><strong>{enabled(plugin.enabled) ? '已开启' : '已关闭'}</strong></button> : <span className="plugin-resource-badge">{pluginOwnershipLabel(plugin)}</span>}</td>
+                <td><div className="plugin-table-actions"><Button variant="ghost" icon={checking === id ? <RefreshCw className="spin" size={14} /> : <Play size={14} />} aria-label="运行检查" title="运行检查" disabled={checking === id} onClick={() => runCheck(plugin)} /><Button variant="ghost" icon={<Settings2 size={14} />} aria-label="能力配置" title={configTarget ? '能力配置' : '无需配置'} disabled={!configTarget} onClick={() => { if (configTarget) ctx.onNavigate(configTarget); }} /><Button variant="ghost" icon={<ArrowUpRight size={14} />} aria-label="参考项目" title="参考项目" disabled={!collectionItems(manifest.references).length} onClick={() => { const reference = String(collectionItems(manifest.references)[0] || ''); if (reference) window.open(reference, '_blank', 'noopener,noreferrer'); }} /></div></td>
+              </tr>
             );
-          })}
-          {!plugins.length ? <EmptyState text="暂无插件。插件注册表为空时不会改变现有 Core 能力。" /> : null}
-        </div>
+          })}</tbody>
+            </table>
+          </div>
+          <TablePager page={pluginPage} pages={pluginPages} total={plugins.length} pageSize={pluginPageSize} onPage={setPluginPage} />
+        </div> : <EmptyState text="暂无插件。插件注册表为空时不会改变现有 Core 能力。" />}
       </Panel>
       <Panel accent="amber">
         <PanelHeading
@@ -828,11 +813,19 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
   const bindings = collectionItems<JsonMap>(data.personaBindings);
   const profiles = collectionItems<JsonMap>(data.personaProfiles);
   const visualReferences = collectionItems<PersonaVisualReference>(data.visualReferences);
+  const appearanceLibraries = collectionItems<AppearanceLibrary>(data.appearanceLibraries);
+  const appearanceAssignments = asRecord(data.appearanceAssignments);
+  const selectedAppearanceLibraryId = text(data.selectedAppearanceLibraryId, '');
   const [uploadingReferences, setUploadingReferences] = useState(false);
   const active = ctx.tab || 'cards';
-  const referencePath = `/api/v1/personas/${encodeURIComponent(ctx.activePersonaId)}/visual-references?namespace=default`;
+  const activePersona = people.find((persona) => text(persona.id) === ctx.activePersonaId);
+  const activePersonaName = text(activePersona?.name, ctx.activePersonaId || '当前角色');
+  const referencePath = selectedAppearanceLibraryId
+    ? `/api/v1/appearance-libraries/${encodeURIComponent(selectedAppearanceLibraryId)}/references`
+    : '';
+  const selectedAppearanceLibrary = appearanceLibraries.find((library) => library.id === selectedAppearanceLibraryId);
   const uploadReferences = async (files: FileList) => {
-    if (!ctx.activePersonaId) return;
+    if (!ctx.activePersonaId || !selectedAppearanceLibraryId) return;
     setUploadingReferences(true);
     try {
       for (const file of Array.from(files)) {
@@ -845,7 +838,7 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
           'promptNotes',
           isVideo
             ? '仅参考动作、镜头、光线、服装和氛围，不复制人物脸部、身份、声音或具体场景。'
-            : '身份锚点：固定小满的脸型、五官、发型、发色和成年感；不复制真实人物身份。',
+            : `身份锚点：固定${activePersonaName}的脸型、五官、发型、发色和成年感；不复制真实人物身份。`,
         );
         await apiRequest(referencePath, { method: 'POST', body: form });
       }
@@ -856,23 +849,53 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
       setUploadingReferences(false);
     }
   };
+  const assignAppearanceLibrary = async (personaId: string, libraryId: string) => {
+    if (!personaId || !libraryId) return;
+    await apiRequest(`/api/v1/personas/${encodeURIComponent(personaId)}/appearance-library?namespace=default`, {
+      method: 'PUT',
+      body: JSON.stringify({ libraryId }),
+    });
+    ctx.reload();
+  };
+  const createAppearanceLibrary = async () => {
+    const name = window.prompt('外观库名称');
+    if (!name?.trim()) return;
+    const visualDescription = window.prompt('外貌描述', text(activePersona?.visualDescription, ''));
+    if (visualDescription === null) return;
+    await apiRequest('/api/v1/appearance-libraries?namespace=default', {
+      method: 'POST',
+      body: JSON.stringify({ name: name.trim(), description: '供角色卡选择的共享外观库。', visualDescription: visualDescription.trim() }),
+    });
+    ctx.reload();
+  };
   return (
     <ModuleShell accent="rose">
-      <MetricRail items={[{ label: '角色卡', value: number(people.length), note: 'personas', accent: 'rose' }, { label: '形象素材', value: number(visualReferences.length), note: 'visual references', accent: 'cyan' }, { label: '启用绑定', value: number(bindings.filter((item) => item.enabled !== false).length), note: 'bindings', accent: 'green' }, { label: '运行档案', value: number(profiles.length), note: 'runtime profiles', accent: 'violet' }]} />
-      <SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'cards', label: '角色卡', count: people.length }, { id: 'visual', label: '形象资源库', count: visualReferences.length }, { id: 'bindings', label: '会话绑定', count: bindings.length }, { id: 'profiles', label: '运行档案', count: profiles.length }]} />
-      {active === 'cards' ? <Panel accent="rose"><PanelHeading eyebrow="PERSONA REGISTRY" title="角色卡" description="角色卡只负责角色本身，不覆盖安全边界。" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新建角色卡', { id: crypto.randomUUID(), namespace: 'default', name: '', description: '', personality: '', scenario: '', systemPrompt: '', enabled: true }, '/api/v1/personas', 'POST')}>新建角色</Button>} /><div className="persona-modern-grid">{people.map((persona) => <PersonaCard key={itemId(persona)} persona={persona} active={text(persona.id) === ctx.activePersonaId} onEdit={() => ctx.openEditor(`编辑角色卡 · ${text(persona.name)}`, persona, `/api/v1/personas/${encodeURIComponent(itemId(persona))}?namespace=default`)} onActivate={() => apiRequest('/api/v1/runtime/config', { method: 'PUT', body: JSON.stringify({ activePersonaId: itemId(persona) }) }).then(ctx.reload)} onDelete={() => ctx.remove(`/api/v1/personas/${encodeURIComponent(itemId(persona))}?namespace=default`, '确定删除这个角色卡？')} />)}</div>{!people.length ? <EmptyState text="暂无角色卡。" /> : null}</Panel> : null}
+      <MetricRail items={[{ label: '角色卡', value: number(people.length), note: 'personas', accent: 'rose' }, { label: '外观库', value: number(appearanceLibraries.length), note: 'shared appearances', accent: 'cyan' }, { label: '启用绑定', value: number(bindings.filter((item) => item.enabled !== false).length), note: 'bindings', accent: 'green' }, { label: '运行档案', value: number(profiles.length), note: 'runtime profiles', accent: 'violet' }]} />
+      <SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'cards', label: '角色卡', count: people.length }, { id: 'visual', label: '外观库', count: appearanceLibraries.length }, { id: 'bindings', label: '会话绑定', count: bindings.length }, { id: 'profiles', label: '运行档案', count: profiles.length }]} />
+      {active === 'cards' ? <Panel accent="rose"><PanelHeading eyebrow="PERSONA REGISTRY" title="角色卡" description="角色卡负责性格与表达，并从独立外观库选择形象。" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新建角色卡', { id: crypto.randomUUID(), namespace: 'default', name: '', description: '', personality: '', scenario: '', systemPrompt: '', enabled: true }, '/api/v1/personas', 'POST')}>新建角色</Button>} /><div className="persona-modern-grid">{people.map((persona) => <PersonaCard key={itemId(persona)} persona={persona} active={text(persona.id) === ctx.activePersonaId} appearanceLibraries={appearanceLibraries} appearanceLibraryId={text(appearanceAssignments[itemId(persona)], '')} onAppearanceChange={(libraryId) => void assignAppearanceLibrary(itemId(persona), libraryId)} onEdit={() => ctx.openEditor(`编辑角色卡 · ${text(persona.name)}`, persona, `/api/v1/personas/${encodeURIComponent(itemId(persona))}?namespace=default`)} onActivate={() => apiRequest('/api/v1/runtime/config', { method: 'PUT', body: JSON.stringify({ activePersonaId: itemId(persona) }) }).then(ctx.reload)} onDelete={() => ctx.remove(`/api/v1/personas/${encodeURIComponent(itemId(persona))}?namespace=default`, '确定删除这个角色卡？')} />)}</div>{!people.length ? <EmptyState text="暂无角色卡。" /> : null}</Panel> : null}
       {active === 'visual' ? (
         <>
           <PersonaSelector data={data} ctx={ctx} />
           <VisualReferenceLibrary
             personaId={ctx.activePersonaId}
+            personaName={activePersonaName}
+            libraries={appearanceLibraries}
+            libraryId={selectedAppearanceLibraryId}
+            onLibraryChange={(libraryId) => void assignAppearanceLibrary(ctx.activePersonaId, libraryId)}
+            onCreateLibrary={() => void createAppearanceLibrary()}
+            onEditLibrary={(library) => ctx.openEditor('编辑外观库', { name: library.name || '', description: library.description || '', visualDescription: library.visualDescription || '', enabled: library.enabled !== false }, `/api/v1/appearance-libraries/${encodeURIComponent(library.id)}?namespace=default`)}
             references={visualReferences}
             uploading={uploadingReferences}
             onUpload={uploadReferences}
-            onEdit={(reference) => ctx.openEditor('编辑形象参考', reference, `/api/v1/personas/${encodeURIComponent(ctx.activePersonaId)}/visual-references/${encodeURIComponent(reference.id)}?namespace=default`)}
-            onSetPrimary={(reference) => apiRequest(`/api/v1/personas/${encodeURIComponent(ctx.activePersonaId)}/visual-references/${encodeURIComponent(reference.id)}?namespace=default`, { method: 'PUT', body: JSON.stringify({ isPrimary: true, enabled: true }) }).then(ctx.reload)}
-            onToggle={(reference) => ctx.toggle(`/api/v1/personas/${encodeURIComponent(ctx.activePersonaId)}/visual-references/${encodeURIComponent(reference.id)}?namespace=default`, reference.enabled !== false)}
-            onDelete={(reference) => ctx.remove(`/api/v1/personas/${encodeURIComponent(ctx.activePersonaId)}/visual-references/${encodeURIComponent(reference.id)}?namespace=default`, '确定删除这份形象参考吗？')}
+            onEdit={(reference) => ctx.openEditor('编辑外观参考', reference, `${referencePath}/${encodeURIComponent(reference.id)}?namespace=default`)}
+            onSetPrimary={(reference) => apiRequest(`${referencePath}/${encodeURIComponent(reference.id)}?namespace=default`, { method: 'PUT', body: JSON.stringify({ isPrimary: true, enabled: true }) }).then(ctx.reload)}
+            onToggle={(reference) => ctx.toggle(`${referencePath}/${encodeURIComponent(reference.id)}?namespace=default`, reference.enabled !== false)}
+            onDelete={(reference) => ctx.remove(
+              `${referencePath}/${encodeURIComponent(reference.id)}?namespace=default`,
+              selectedAppearanceLibrary?.personaCount && selectedAppearanceLibrary.personaCount > 1
+                ? `这个外观库正被 ${selectedAppearanceLibrary.personaCount} 个角色使用，删除素材会同时影响这些角色。确定删除吗？`
+                : '确定删除这份外观参考吗？',
+            )}
           />
         </>
       ) : null}
@@ -882,8 +905,9 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
   );
 }
 
-function PersonaCard({ persona, active, onEdit, onActivate, onDelete }: { persona: JsonMap; active: boolean; onEdit: () => void; onActivate: () => void; onDelete: () => void }) {
-  const avatar = text(persona.avatarDataUri, '');
+function PersonaCard({ persona, active, appearanceLibraries, appearanceLibraryId, onAppearanceChange, onEdit, onActivate, onDelete }: { persona: JsonMap; active: boolean; appearanceLibraries: AppearanceLibrary[]; appearanceLibraryId: string; onAppearanceChange: (libraryId: string) => void; onEdit: () => void; onActivate: () => void; onDelete: () => void }) {
+  const appearance = appearanceLibraries.find((library) => library.id === appearanceLibraryId);
+  const avatar = text(appearance?.previewUrl, text(persona.avatarDataUri, ''));
   return (
     <article className={`persona-modern-card ${active ? 'is-active' : ''}`}>
       <div className="persona-modern-top"><span>ROLE / {itemId(persona)}</span>{active ? <span className="module-pill">当前默认</span> : <span className="module-readonly">未启用</span>}</div>
@@ -892,7 +916,8 @@ function PersonaCard({ persona, active, onEdit, onActivate, onDelete }: { person
         <div><h3>{text(persona.name, itemId(persona))}</h3><p>{text(persona.description, '还没有角色简介')}</p></div>
       </div>
       <div className="persona-modern-meta">{text(persona.tags, '无标签')} · {text(persona.sourceFormat, 'native')}</div>
-      <RowActions><Button variant="ghost" icon={<Pencil size={14} />} onClick={onEdit}>编辑</Button>{active ? null : <Button variant="ghost" icon={<Check size={14} />} onClick={onActivate}>设为当前</Button>}<Button variant="ghost" icon={<Trash2 size={14} />} onClick={onDelete} /></RowActions>
+      <label className="persona-appearance-select"><span>外观库</span><select value={appearanceLibraryId} onChange={(event) => onAppearanceChange(event.target.value)}>{appearanceLibraries.map((library) => <option key={library.id} value={library.id}>{library.name || library.id}</option>)}</select></label>
+      <RowActions><Button variant="ghost" icon={<Pencil size={14} />} onClick={onEdit} aria-label="编辑角色" title="编辑角色" />{active ? null : <Button variant="secondary" icon={<Check size={14} />} onClick={onActivate}>设为当前</Button>}<Button variant="ghost" icon={<Trash2 size={14} />} onClick={onDelete} aria-label="删除角色" title="删除角色" /></RowActions>
     </article>
   );
 }

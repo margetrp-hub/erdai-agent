@@ -147,7 +147,8 @@ func moodStillFresh(updatedAt string, now time.Time) bool {
 	if err != nil {
 		return false
 	}
-	return now.Sub(parsed) <= botMoodTTL
+	age := now.Sub(parsed)
+	return age >= 0 && age <= botMoodTTL
 }
 
 // compileDynamicMoodLine 组装注入 §6 的一行状态;空串表示不注入。

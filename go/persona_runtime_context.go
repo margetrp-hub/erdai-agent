@@ -305,6 +305,10 @@ func (a *AgentRuntime) captureStableMemory(ctx context.Context, run runRecord, m
 		return
 	}
 	for _, candidate := range extractStableMemories(message) {
+		// Project mentions are conversation context, not durable relationship memory.
+		if candidate.Kind == "project" {
+			continue
+		}
 		memoryScope := personaMemoryScope(run.PersonaID, "user", runtimeScopeFromRun(run).userMemoryRef())
 		_, _, err := a.memory.AddMemoryWithMetadata(ctx, memoryScope, candidate.Content, MemoryMetadata{
 			Source: "auto_capture", Kind: candidate.Kind,

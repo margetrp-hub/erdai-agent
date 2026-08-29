@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestOPSCardPageIsPinnedToNinetyMinutes(t *testing.T) {
@@ -24,6 +25,34 @@ func TestOPSCardPageIsPinnedToNinetyMinutes(t *testing.T) {
 		if query.Has(key) {
 			t.Fatalf("card query retained %s filter: %q", key, pageURL.RawQuery)
 		}
+	}
+}
+
+func TestValidOPSCardPageContentRejectsEmptyShell(t *testing.T) {
+	if validOPSCardPageContent(1, "") || validOPSCardPageContent(0, "08/28 12:00\n渠道") {
+		t.Fatal("empty monitor card shell was accepted")
+	}
+	if !validOPSCardPageContent(2, "📡 渠道监控 08/28 12:00\n🟢 ChatGPT 可用 100.0% 0.1x") {
+		t.Fatal("timestamped monitor card content was rejected")
+	}
+	if validOPSCardPageContent(2, "🟢 ChatGPT 可用 100.0% 0.1x\n没有时间戳") {
+		t.Fatal("untimestamped monitor card content was accepted")
+	}
+}
+
+func TestFreshOPSCardPageContentRejectsStaleCards(t *testing.T) {
+	now := time.Date(2026, 8, 28, 13, 40, 0, 0, time.FixedZone("CST", 8*60*60))
+	content := "📡 渠道监控 08/28 13:10\n🟢 ChatGPT 可用率 100.0% 0.1x"
+	if !freshOPSCardPageContent(2, content, now, 90*time.Minute) {
+		t.Fatal("fresh monitor card content was rejected")
+	}
+	stale := "📡 渠道监控 08/28 11:49\n🟢 ChatGPT 可用率 100.0% 0.1x"
+	if freshOPSCardPageContent(2, stale, now, 90*time.Minute) {
+		t.Fatal("stale monitor card content was accepted")
+	}
+	future := "📡 渠道监控 08/28 14:00\n🟢 ChatGPT 可用率 100.0% 0.1x"
+	if freshOPSCardPageContent(2, future, now, 90*time.Minute) {
+		t.Fatal("future monitor card content was accepted")
 	}
 }
 

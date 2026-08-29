@@ -32,6 +32,17 @@ func TestManagementInstallationStatusRedactsCredentialValues(t *testing.T) {
 	}
 }
 
+func TestManagementInstallationStatusExcludesOptionalPlugins(t *testing.T) {
+	runtime := newManagementRuntime(t)
+	runtime.opsToken = "configured-plugin-token"
+	status := runtime.installationStatus()
+	for _, check := range status.Checks {
+		if check.ID == "ops" || strings.Contains(check.Label, "Sub2API") {
+			t.Fatalf("optional plugin appeared in installation checks: %+v", check)
+		}
+	}
+}
+
 // nextStableTestVersion derives a version strictly newer than the running
 // build, so this suite survives every release bump instead of hardcoding one.
 func nextStableTestVersion(t *testing.T) string {

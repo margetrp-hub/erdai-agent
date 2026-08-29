@@ -33,18 +33,20 @@ type knowledgeChunk struct {
 }
 
 type knowledgeSearchMetrics struct {
-	Enabled            bool
-	Mode               string
-	VectorAlgorithm    string
-	VectorSource       string
-	EmbeddingEndpoint  string
-	ChunkCount         int
-	KeywordCandidates  int
-	VectorCandidates   int
-	FinalItems         int
-	EmbeddingAttempted bool
-	EmbeddingSucceeded bool
-	RerankApplied      bool
+	Enabled               bool
+	Mode                  string
+	VectorAlgorithm       string
+	VectorSource          string
+	VectorFallback        bool
+	EmbeddingEndpoint     string
+	EmbeddingFailureClass string
+	ChunkCount            int
+	KeywordCandidates     int
+	VectorCandidates      int
+	FinalItems            int
+	EmbeddingAttempted    bool
+	EmbeddingSucceeded    bool
+	RerankApplied         bool
 }
 
 func (a *AgentRuntime) recordKnowledgeSearchStage(runID string, started time.Time, metrics knowledgeSearchMetrics, searchErr error) {
@@ -52,20 +54,22 @@ func (a *AgentRuntime) recordKnowledgeSearchStage(runID string, started time.Tim
 		return
 	}
 	details := map[string]any{
-		"kind":               "knowledge",
-		"enabled":            metrics.Enabled,
-		"mode":               metrics.Mode,
-		"vectorAlgorithm":    metrics.VectorAlgorithm,
-		"vectorSource":       metrics.VectorSource,
-		"embeddingEndpoint":  metrics.EmbeddingEndpoint,
-		"chunkCount":         metrics.ChunkCount,
-		"keywordCandidates":  metrics.KeywordCandidates,
-		"vectorCandidates":   metrics.VectorCandidates,
-		"finalItems":         metrics.FinalItems,
-		"embeddingAttempted": metrics.EmbeddingAttempted,
-		"embeddingSucceeded": metrics.EmbeddingSucceeded,
-		"rerankApplied":      metrics.RerankApplied,
-		"success":            searchErr == nil,
+		"kind":                  "knowledge",
+		"enabled":               metrics.Enabled,
+		"mode":                  metrics.Mode,
+		"vectorAlgorithm":       metrics.VectorAlgorithm,
+		"vectorSource":          metrics.VectorSource,
+		"vectorFallback":        metrics.VectorFallback,
+		"embeddingEndpoint":     metrics.EmbeddingEndpoint,
+		"chunkCount":            metrics.ChunkCount,
+		"keywordCandidates":     metrics.KeywordCandidates,
+		"vectorCandidates":      metrics.VectorCandidates,
+		"finalItems":            metrics.FinalItems,
+		"embeddingAttempted":    metrics.EmbeddingAttempted,
+		"embeddingSucceeded":    metrics.EmbeddingSucceeded,
+		"embeddingFailureClass": metrics.EmbeddingFailureClass,
+		"rerankApplied":         metrics.RerankApplied,
+		"success":               searchErr == nil,
 	}
 	if searchErr != nil {
 		details["failureClass"] = classifyProviderFailure(searchErr)
@@ -78,10 +82,12 @@ func (a *AgentRuntime) recordEmbeddingQueryStage(runID string, started time.Time
 		return
 	}
 	_ = a.recordRunStage(runID, "embedding_query", started, map[string]any{
-		"kind":       "knowledge",
-		"source":     "user_query",
-		"endpointId": metrics.EmbeddingEndpoint,
-		"succeeded":  metrics.EmbeddingSucceeded,
+		"kind":         "knowledge",
+		"source":       "user_query",
+		"endpointId":   metrics.EmbeddingEndpoint,
+		"succeeded":    metrics.EmbeddingSucceeded,
+		"fallback":     metrics.VectorFallback,
+		"failureClass": metrics.EmbeddingFailureClass,
 	})
 }
 
@@ -123,6 +129,34 @@ func splitKnowledgeContent(content string, size, overlap int) []string {
 func knowledgeChunkHash(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
+}
+
+func normalizeKnowledgeNamespaces(namespaces []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(namespaces))
+	for _, namespace := range namespaces {
+		namespace = strings.TrimSpace(namespace)
+		if namespace == "" {
+			continue
+		}
+		if _, found := seen[namespace]; found {
+			continue
+		}
+		seen[namespace] = struct{}{}
+		result = append(result, namespace)
+	}
+	return result
+}
+
+func knowledgeNamespaceFilter(namespaces []string) (string, []any) {
+	namespaces = normalizeKnowledgeNamespaces(namespaces)
+	placeholders := make([]string, len(namespaces))
+	args := make([]any, len(namespaces))
+	for index, namespace := range namespaces {
+		placeholders[index] = "?"
+		args[index] = namespace
+	}
+	return strings.Join(placeholders, ","), args
 }
 
 func (a *AgentRuntime) syncKnowledgeChunks(ctx context.Context, namespace string, policy retrievalPolicy) error {
@@ -174,6 +208,15 @@ func (a *AgentRuntime) syncKnowledgeChunks(ctx context.Context, namespace string
 			}
 		}
 		if err = tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *AgentRuntime) syncKnowledgeChunksForNamespaces(ctx context.Context, namespaces []string, policy retrievalPolicy) error {
+	for _, namespace := range normalizeKnowledgeNamespaces(namespaces) {
+		if err := a.syncKnowledgeChunks(ctx, namespace, policy); err != nil {
 			return err
 		}
 	}
@@ -234,11 +277,19 @@ func (a *AgentRuntime) semanticEndpoint(id, capability string) (semanticEndpoint
 }
 
 func (a *AgentRuntime) loadKnowledgeChunks(ctx context.Context, namespace string) ([]knowledgeChunk, error) {
+	return a.loadKnowledgeChunksForNamespaces(ctx, []string{namespace})
+}
+
+func (a *AgentRuntime) loadKnowledgeChunksForNamespaces(ctx context.Context, namespaces []string) ([]knowledgeChunk, error) {
+	placeholders, args := knowledgeNamespaceFilter(namespaces)
+	if placeholders == "" {
+		return []knowledgeChunk{}, nil
+	}
 	rows, err := a.configStore.db.QueryContext(ctx, `SELECT chunk.id, chunk.document_id, chunk.namespace,
 		chunk.title, chunk.content, document.source_uri, document.metadata_json,
 		chunk.content_hash || ':' || chunk.ordinal
 		FROM knowledge_chunks chunk JOIN knowledge_documents document ON document.id = chunk.document_id
-		WHERE chunk.namespace = ? ORDER BY chunk.document_id, chunk.ordinal`, namespace)
+		WHERE chunk.namespace IN (`+placeholders+`) ORDER BY chunk.document_id, chunk.ordinal`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -282,9 +333,15 @@ func (a *AgentRuntime) remoteEmbeddings(ctx context.Context, endpoint semanticEn
 			result[item.Index] = item.Embedding
 		}
 	}
+	dimensions := 0
 	for _, vector := range result {
 		if len(vector) == 0 {
 			return nil, errors.New("embedding provider returned incomplete vectors")
+		}
+		if dimensions == 0 {
+			dimensions = len(vector)
+		} else if len(vector) != dimensions {
+			return nil, errors.New("embedding provider returned inconsistent vector dimensions")
 		}
 	}
 	return result, nil
@@ -295,12 +352,13 @@ func (a *AgentRuntime) ensureRemoteChunkEmbeddings(ctx context.Context, endpoint
 	pending := []knowledgeChunk{}
 	for _, chunk := range chunks {
 		var encoded, hash, model string
-		err := a.configStore.db.QueryRowContext(ctx, `SELECT vector_json, content_hash, model
+		var dimensions int
+		err := a.configStore.db.QueryRowContext(ctx, `SELECT vector_json, content_hash, model, dimensions
 			FROM knowledge_chunk_embeddings WHERE chunk_id = ? AND endpoint_id = ?`, chunk.ID, endpoint.ID).
-			Scan(&encoded, &hash, &model)
+			Scan(&encoded, &hash, &model, &dimensions)
 		if err == nil && hash == chunk.Hash && model == endpoint.Model {
 			var vector []float64
-			if json.Unmarshal([]byte(encoded), &vector) == nil && len(vector) > 0 {
+			if json.Unmarshal([]byte(encoded), &vector) == nil && len(vector) > 0 && len(vector) == dimensions {
 				vectors[chunk.ID] = vector
 				continue
 			}
@@ -340,14 +398,26 @@ func (a *AgentRuntime) ensureRemoteChunkEmbeddings(ctx context.Context, endpoint
 }
 
 func (a *AgentRuntime) keywordChunkScores(ctx context.Context, namespace, query string, limit int) map[string]float64 {
+	return a.keywordChunkScoresForNamespaces(ctx, []string{namespace}, query, limit)
+}
+
+func (a *AgentRuntime) keywordChunkScoresForNamespaces(ctx context.Context, namespaces []string, query string, limit int) map[string]float64 {
 	scores := map[string]float64{}
+	placeholders, namespaceArgs := knowledgeNamespaceFilter(namespaces)
+	if placeholders == "" {
+		return scores
+	}
+	ftsArgs := []any{nativeFTSPhrase(query)}
+	ftsArgs = append(ftsArgs, namespaceArgs...)
+	ftsArgs = append(ftsArgs, limit)
 	rows, err := a.configStore.db.QueryContext(ctx, `SELECT chunk_id, bm25(knowledge_chunks_fts)
-		FROM knowledge_chunks_fts WHERE knowledge_chunks_fts MATCH ? AND namespace = ?
-		ORDER BY bm25(knowledge_chunks_fts) LIMIT ?`, nativeFTSPhrase(query), namespace, limit)
+		FROM knowledge_chunks_fts WHERE knowledge_chunks_fts MATCH ? AND namespace IN (`+placeholders+`)
+		ORDER BY bm25(knowledge_chunks_fts) LIMIT ?`, ftsArgs...)
 	if err != nil {
+		likeArgs := append([]any{}, namespaceArgs...)
+		likeArgs = append(likeArgs, "%"+query+"%", "%"+query+"%", limit)
 		rows, err = a.configStore.db.QueryContext(ctx, `SELECT id, 0 FROM knowledge_chunks
-			WHERE namespace = ? AND (title LIKE ? OR content LIKE ?) LIMIT ?`, namespace,
-			"%"+query+"%", "%"+query+"%", limit)
+			WHERE namespace IN (`+placeholders+`) AND (title LIKE ? OR content LIKE ?) LIMIT ?`, likeArgs...)
 	}
 	if err != nil {
 		return scores
@@ -452,6 +522,10 @@ func (a *AgentRuntime) searchRuntimeKnowledge(ctx context.Context, namespace, qu
 }
 
 func (a *AgentRuntime) searchRuntimeKnowledgeForRun(ctx context.Context, runID, namespace, query string) (items []nativeRAGItem, searchErr error) {
+	return a.searchRuntimeKnowledgeForRunNamespaces(ctx, runID, []string{namespace}, query)
+}
+
+func (a *AgentRuntime) searchRuntimeKnowledgeForRunNamespaces(ctx context.Context, runID string, namespaces []string, query string) (items []nativeRAGItem, searchErr error) {
 	started := time.Now()
 	metrics := knowledgeSearchMetrics{VectorSource: "disabled"}
 	defer func() {
@@ -464,15 +538,19 @@ func (a *AgentRuntime) searchRuntimeKnowledgeForRun(ctx context.Context, runID, 
 	if !policy.Enabled || strings.TrimSpace(query) == "" {
 		return []nativeRAGItem{}, nil
 	}
-	if err := a.syncKnowledgeChunks(ctx, namespace, policy); err != nil {
+	namespaces = normalizeKnowledgeNamespaces(namespaces)
+	if len(namespaces) == 0 {
+		return []nativeRAGItem{}, nil
+	}
+	if err := a.syncKnowledgeChunksForNamespaces(ctx, namespaces, policy); err != nil {
 		return nil, err
 	}
-	chunks, err := a.loadKnowledgeChunks(ctx, namespace)
+	chunks, err := a.loadKnowledgeChunksForNamespaces(ctx, namespaces)
 	if err != nil || len(chunks) == 0 {
 		return []nativeRAGItem{}, err
 	}
 	metrics.ChunkCount = len(chunks)
-	keyword := a.keywordChunkScores(ctx, namespace, simplifyNativeKnowledgeQuery(query), policy.CandidateK)
+	keyword := a.keywordChunkScoresForNamespaces(ctx, namespaces, simplifyNativeKnowledgeQuery(query), policy.CandidateK)
 	metrics.KeywordCandidates = len(keyword)
 	vectorScores := map[string]float64{}
 	if policy.Mode != "keyword" {
@@ -480,22 +558,45 @@ func (a *AgentRuntime) searchRuntimeKnowledgeForRun(ctx context.Context, runID, 
 			metrics.EmbeddingAttempted = true
 			embeddingStarted := time.Now()
 			endpoint, endpointErr := a.semanticEndpoint(policy.EmbeddingEndpoint, "embedding")
-			if endpointErr == nil {
+			var embeddingErr error
+			if endpointErr != nil {
+				embeddingErr = endpointErr
+			} else {
 				metrics.EmbeddingEndpoint = endpoint.ID
 				vectors, vectorErr := a.ensureRemoteChunkEmbeddings(ctx, endpoint, chunks)
 				queryVectors, queryErr := a.remoteEmbeddings(ctx, endpoint, []string{query})
+				if vectorErr == nil && queryErr == nil && len(queryVectors) > 0 {
+					queryDimensions := len(queryVectors[0])
+					for _, vector := range vectors {
+						if len(vector) != queryDimensions {
+							vectorErr = errors.New("embedding cache dimension mismatch")
+							break
+						}
+					}
+				}
 				if vectorErr == nil && queryErr == nil {
 					metrics.EmbeddingSucceeded = true
 					metrics.VectorSource = "remote_embedding"
 					for _, chunk := range chunks {
 						vectorScores[chunk.ID] = vectorCosine(queryVectors[0], vectors[chunk.ID])
 					}
+				} else if vectorErr != nil {
+					embeddingErr = vectorErr
+				} else {
+					embeddingErr = queryErr
 				}
+			}
+			if embeddingErr != nil {
+				metrics.EmbeddingFailureClass = classifyProviderFailure(embeddingErr)
 			}
 			a.recordEmbeddingQueryStage(runID, embeddingStarted, metrics)
 		}
 		if len(vectorScores) == 0 {
+			metrics.VectorFallback = policy.VectorAlgorithm == "remote_embedding" && metrics.EmbeddingAttempted && !metrics.EmbeddingSucceeded
 			metrics.VectorSource = "local_hash"
+			if metrics.VectorFallback {
+				metrics.VectorSource = "local_hash_fallback"
+			}
 			queryVector := localHashVector(query, policy.Dimensions)
 			for _, chunk := range chunks {
 				vectorScores[chunk.ID] = vectorCosine(queryVector, localHashVector(chunk.Title+"\n"+chunk.Content, policy.Dimensions))
@@ -547,7 +648,7 @@ func (a *AgentRuntime) searchRuntimeKnowledgeForRun(ctx context.Context, runID, 
 	items = make([]nativeRAGItem, 0, len(ranked))
 	for _, rankedItem := range ranked {
 		score := rankedItem.score
-		items = append(items, nativeRAGItem{ID: rankedItem.chunk.ID, Namespace: namespace,
+		items = append(items, nativeRAGItem{ID: rankedItem.chunk.ID, Namespace: rankedItem.chunk.Namespace,
 			Title: rankedItem.chunk.Title, SourceURI: rankedItem.chunk.SourceURI,
 			Snippet: rankedItem.chunk.Content, Rank: &score, Metadata: rankedItem.chunk.Metadata})
 	}

@@ -28,7 +28,6 @@ services:
       TZ: Asia/Shanghai
       ERDAI_CORE_LISTEN: 0.0.0.0:6280
       ERDAI_ADMIN_LISTEN: 0.0.0.0:6282
-      ERDAI_WEBUI_MODE: ${ERDAI_WEBUI_MODE:-modern}
       ERDAI_CONFIG_DATABASE: /app/data/erdai-agent-core.sqlite3
       ERDAI_RUNTIME_DATABASE: /app/data/erdai-agent-core.sqlite3
       ERDAI_LEGACY_RUNTIME_DATABASE: /app/data/erdai-runtime.sqlite3

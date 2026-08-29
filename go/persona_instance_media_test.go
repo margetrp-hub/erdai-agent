@@ -14,7 +14,7 @@ func TestPersonaMediaPromptUsesRunPersonaInsteadOfGlobalPersona(t *testing.T) {
 	imagePrompt := runtime.personaImagePromptForRun(context.Background(), run, "给我一张你的全身自拍")
 	videoPrompt := runtime.personaVideoPromptForRun(context.Background(), run, "在街边回头看镜头")
 	for kind, prompt := range map[string]string{"image": imagePrompt, "video": videoPrompt} {
-		if !strings.Contains(prompt, "黑色自然长卷发") || !strings.Contains(prompt, "成熟、松弛") {
+		if !strings.Contains(prompt, "黑色长卷发或自然大波浪") || !strings.Contains(prompt, "比豆包更热、更鲜活") {
 			t.Fatalf("%s prompt did not load xiaoman identity: %s", kind, prompt)
 		}
 		if strings.Contains(prompt, "小巧柔和的鹅蛋脸") || strings.Contains(prompt, "身形纤细") {

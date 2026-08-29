@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -492,11 +491,12 @@ func (s *coreConfigStore) clonePersonaVisualReferences(namespace, sourcePersonaI
 	} else if !found {
 		return nil, &coreAPIError{status: http.StatusNotFound, code: "not_found", message: "target persona not found"}
 	}
-	rows, err := s.db.Query(`SELECT r.id, r.media_type, r.mime_type, r.original_name, r.byte_size,
+	query := `SELECT r.id, r.media_type, r.mime_type, r.original_name, r.byte_size,
 		r.category, r.label, r.prompt_notes, r.enabled, r.sort_order, r.storage_name
 		FROM persona_visual_references r JOIN personas p ON p.id = r.persona_id
 		WHERE p.namespace = ? AND r.persona_id = ?
-		ORDER BY r.is_primary DESC, r.sort_order, r.created_at`, namespace, sourcePersonaID)
+		ORDER BY r.is_primary DESC, r.sort_order, r.created_at`
+	rows, err := s.db.Query(query, namespace, sourcePersonaID)
 	if err != nil {
 		return nil, err
 	}
@@ -971,65 +971,9 @@ func (s *coreConfigStore) servePersonaVisualReference(w http.ResponseWriter, r *
 }
 
 func (s *coreConfigStore) primaryPersonaVisualReferenceDataURI(personaID string) (string, error) {
-	if strings.TrimSpace(s.mediaDir) == "" {
-		return "", nil
-	}
-	var storageName, mimeType string
-	err := s.db.QueryRow(`SELECT storage_name, mime_type FROM persona_visual_references
-		WHERE persona_id = ? AND enabled = 1 AND media_type = 'image'
-		ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, personaID).Scan(&storageName, &mimeType)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	name := filepath.Base(storageName)
-	if name == "." || name != storageName {
-		return "", nil
-	}
-	data, err := os.ReadFile(filepath.Join(s.mediaDir, name))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > maxPersonaReferenceImageBytes {
-		return "", coreInvalid("primary image reference exceeds 12 MiB")
-	}
-	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	return s.appearanceLibraryPrimaryDataURI(personaID)
 }
 
 func (s *coreConfigStore) personaVisualReferencePrompt(personaID string) string {
-	rows, err := s.db.Query(`SELECT media_type, category, label, prompt_notes FROM persona_visual_references
-		WHERE persona_id = ? AND enabled = 1 AND trim(prompt_notes) <> ''
-		ORDER BY is_primary DESC, sort_order, created_at LIMIT 8`, personaID)
-	if err != nil {
-		return ""
-	}
-	defer rows.Close()
-	parts := make([]string, 0, 8)
-	seen := make(map[string]struct{}, 8)
-	for rows.Next() {
-		var mediaType, category, label, notes string
-		if rows.Scan(&mediaType, &category, &label, &notes) != nil {
-			continue
-		}
-		prefix := "身份参考"
-		if category == "style" || mediaType == "video" {
-			prefix = "参考风格（仅提取动作、镜头、光线、服装和氛围，不复制人物脸部或身份）"
-		}
-		line := strings.TrimSpace(prefix + " / " + label + ": " + notes)
-		if line == "" {
-			continue
-		}
-		dedupeKey := prefix + "\x00" + strings.TrimSpace(notes)
-		if _, exists := seen[dedupeKey]; exists {
-			continue
-		}
-		seen[dedupeKey] = struct{}{}
-		parts = append(parts, line)
-		if len(parts) >= 6 {
-			break
-		}
-	}
-	return strings.Join(parts, "；")
+	return s.appearanceLibraryPrompt(personaID)
 }

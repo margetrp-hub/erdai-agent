@@ -217,6 +217,18 @@ func (a *AgentRuntime) resolveCoreDirectCommand(ctx context.Context, message str
 	return coreDirectCommand{}, false
 }
 
+// resolveAddressedCoreDirectCommand accepts the same command aliases after a
+// platform has already established that the user explicitly addressed ErDai.
+// This covers adapters such as OneBot that remove the @ segment before Core
+// sees the message, while keeping bare words out of ordinary group chat.
+func (a *AgentRuntime) resolveAddressedCoreDirectCommand(ctx context.Context, message string) (coreDirectCommand, bool) {
+	message = strings.TrimSpace(message)
+	if message == "" || isSlashCommand(message) || strings.ContainsAny(message, "\r\n") || len([]rune(message)) > 120 {
+		return coreDirectCommand{}, false
+	}
+	return a.resolveCoreDirectCommand(ctx, "/"+message)
+}
+
 func (a *AgentRuntime) fetchOPSGroups(ctx context.Context, policy opsPolicy) ([]opsGroup, error) {
 	if a.opsToken == "" {
 		return nil, errors.New("OPS status is not configured")

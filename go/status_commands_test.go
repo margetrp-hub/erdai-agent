@@ -21,6 +21,18 @@ func TestAffiliatePointsQueryAliasRoutesDirectly(t *testing.T) {
 	}
 }
 
+func TestAddressedBareAliasRoutesDirectly(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	command, ok := runtime.resolveAddressedCoreDirectCommand(context.Background(), "雷达")
+	if !ok || command.Kind != directCommandRadar {
+		t.Fatalf("addressed bare radar route = %#v, %v", command, ok)
+	}
+	if _, ok := runtime.resolveAddressedCoreDirectCommand(context.Background(), "雷达呢"); ok {
+		t.Fatal("ordinary addressed sentence was treated as a radar command")
+	}
+}
+
 func TestOPSFormatsAllGroupsAndOneDetailedGroup(t *testing.T) {
 	updated := time.Date(2026, 8, 3, 6, 21, 0, 0, time.UTC)
 	groups := []opsGroup{

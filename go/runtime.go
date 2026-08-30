@@ -2031,7 +2031,11 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	if reply, handled, roleErr := a.roleCommandReply(run, message); handled {
 		return reply, roleErr
 	}
-	if command, ok := a.resolveCoreDirectCommand(ctx, message); ok {
+	command, commandMatched := a.resolveCoreDirectCommand(ctx, message)
+	if !commandMatched && run.IsMentionBot {
+		command, commandMatched = a.resolveAddressedCoreDirectCommand(ctx, message)
+	}
+	if commandMatched {
 		allowed, allowErr := a.coreDirectCommandAllowed(run.PersonaID, run.AgentInstanceID, command)
 		if allowErr != nil {
 			return agentReply{}, allowErr

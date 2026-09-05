@@ -39,6 +39,13 @@ func seedLegacyRuntimeRows(t *testing.T, databasePath string) {
 		`INSERT INTO platform_reply_routes (reply_handle, event_id, route_cipher, created_at, updated_at)
 		 VALUES ('reply-1', 'event-1', X'02', ?, ?)`,
 		`INSERT INTO platform_sent_deliveries (delivery_id, sent_at) VALUES ('delivery-1', ?)`,
+		`INSERT INTO platform_sent_delivery_parts (delivery_id, part_key, sent_at) VALUES ('delivery-1', 'text', ?)`,
+		`INSERT INTO agent_affiliate_bindings VALUES ('qq_official', 'qq', 'member-1', 'ABCD', ?, ?)`,
+		`INSERT INTO agent_affiliate_owners VALUES ('ABCD', 'qq_official', 'qq', 'member-1', ?, 'test evidence')`,
+		`INSERT INTO agent_points_ledger VALUES ('points-1', 'qq_official', 'qq', 'member-1', 'adjustment', 100, 'invite:ABCD:1', 'legacy', ?)`,
+		`INSERT INTO agent_points_catalog VALUES ('catalog-1', 'test prize', '', 100, 1, 0, ?, ?)`,
+		`INSERT INTO agent_search_runs (run_id, query_hash, status, created_at, updated_at) VALUES ('run-1', 'old-query', 'failed', ?, ?)`,
+		`INSERT INTO agent_search_queries (run_id, query_hash, status, created_at, updated_at) VALUES ('run-1', 'old-query', 'failed', ?, ?)`,
 		`INSERT INTO agent_memories (id, scope_digest, content_cipher, content_digest, created_at, updated_at)
 		 VALUES ('memory-1', X'03', X'04', X'05', ?, ?)`,
 		`INSERT INTO conversation_events (id, conversation_digest, sender_digest, role, text_cipher, occurred_at, expires_at)
@@ -102,7 +109,11 @@ func TestLegacyRuntimeDatabaseMergesIntoCoreOnce(t *testing.T) {
 	defer db.Close()
 	for _, table := range unifiedRuntimeTables {
 		var count int
-		if err = db.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != 1 {
+		want := 1
+		if table == "agent_search_runs" {
+			want = 0 // Legacy receipts were moved, not retained for reimport.
+		}
+		if err = db.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != want {
 			t.Fatalf("unified %s count = %d, err = %v", table, count, err)
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"hash/fnv"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,11 @@ type imageVisualDirectorPolicy struct {
 }
 
 var selfieVariationSequence atomic.Uint64
+
+var visualPurpleNegation = regexp.MustCompile(`(?i)(不要|不是|并非|别|不想|不用|不穿|不喜欢|禁止|避免|拒绝|去掉|讨厌|非|\bno\b|\bnot\b|\bwithout\b|\bavoid\b|\bdon't\b|\bdo not\b)[^，。！？；,.!?;]{0,18}(紫色?|purple)`)
+
+var visualDirectiveBoundary = regexp.MustCompile(`(?i)(改成|换成|改为|换为|改穿|换穿|但是|而是|但|\bbut\b|\binstead\b|\bswitch to\b|\buse\b|\bwear\b)`)
+var visualNegationSuffix = regexp.MustCompile(`(?i)(不要|别|不想|不用|不|禁止|避免|拒绝|\bno|\bnot|\bwithout|\bavoid|\bdon't)\s*$`)
 
 var defaultSelfieTypes = []string{
 	"近景自拍", "半身生活照", "全身生活照", "全身穿搭照",
@@ -96,7 +102,7 @@ func nextSelfieVariationSeed(prompt, personaID string, now time.Time) uint64 {
 	return hash.Sum64() ^ uint64(now.UnixNano()) ^ selfieVariationSequence.Add(1)
 }
 
-func visualDirectorPrompt(prompt string, now time.Time, seed uint64, policy imageVisualDirectorPolicy, shortOutfit bool) string {
+func visualDirectorPrompt(prompt string, now time.Time, seed uint64, policy imageVisualDirectorPolicy, shortOutfit bool, outfitLength ...string) string {
 	if !policy.Enabled {
 		return ""
 	}
@@ -121,7 +127,7 @@ func visualDirectorPrompt(prompt string, now time.Time, seed uint64, policy imag
 		"照片类型="+photoType,
 		"场景="+visualScene(local.Hour(), local.Weekday(), seed/7),
 		"妆容="+visualMakeup(seed/11),
-		"穿搭="+visualOutfitForLength(local.Month(), seed/13, shortOutfit),
+		"穿搭="+visualOutfitDefault(prompt, visualOutfitForLength(local.Month(), seed/13, shortOutfit), outfitLength...),
 		"情绪="+visualMood(seed/17),
 		"动作="+visualAction(photoType, seed/19),
 		"光线="+visualLight(local.Hour()),
@@ -130,7 +136,7 @@ func visualDirectorPrompt(prompt string, now time.Time, seed uint64, policy imag
 	return "本次视觉变量向量（用户明确要求优先覆盖默认值）：" + strings.Join(parts, "；") + "。"
 }
 
-func videoDirectorPrompt(prompt string, now time.Time, seed uint64, policy imageVisualDirectorPolicy, shortOutfit bool) string {
+func videoDirectorPrompt(prompt string, now time.Time, seed uint64, policy imageVisualDirectorPolicy, shortOutfit bool, outfitLength ...string) string {
 	if !policy.Enabled {
 		return ""
 	}
@@ -153,9 +159,9 @@ func videoDirectorPrompt(prompt string, now time.Time, seed uint64, policy image
 	parts = append(parts,
 		"视频类型="+videoType,
 		"场景="+videoScene(normalized, local.Hour(), local.Weekday(), seed/7),
-		"服装="+videoOutfitForLength(normalized, seed/13, shortOutfit),
+		"服装="+visualOutfitDefault(prompt, videoOutfitForLength(prompt, seed/13, shortOutfit), outfitLength...),
 	)
-	if videoPurpleRequested(normalized) {
+	if videoPurpleRequested(prompt) {
 		parts = append(parts, "颜色优先级=用户明确指定紫色，允许使用紫色但仍更换款式，不复制服装")
 	} else if videoOutfitChangeRequested(normalized) {
 		parts = append(parts, "换装优先级=必须更换颜色和款式，不得沿用参考图或上一条成片的紫色衣服、同一套衣服")
@@ -172,16 +178,48 @@ func appearanceLibraryRequiresShortOutfit(visualDescription string) bool {
 	return strings.Contains(strings.TrimSpace(visualDescription), "膝盖以上")
 }
 
-func shortOutfitInstruction() string {
-	return "当前外观库的服装长度优先级：短款、膝上；本次变量里的裙装、裤装也必须按膝上短款执行，禁止把普通连衣裙、半裙或长裤扩展成过膝长裙、长款上衣或宽大遮挡。"
+func personaPrefersShortOutfit(prompt string, persona *nativeActivePersona) bool {
+	if persona == nil || visualOutfitLengthSpecified(prompt) {
+		return false
+	}
+	if persona.OutfitLength != "" {
+		return persona.OutfitLength == "short"
+	}
+	return appearanceLibraryRequiresShortOutfit(persona.VisualDescription)
 }
 
-func visualReferenceVariationInstruction(personaID string) string {
-	instruction := "参考图与上一张成片只锁定脸部、发型、年龄感和体态；忽略其中的背景、衣服、颜色、道具、姿势、灯光、镜头和构图。每次生成至少更换场景与服装颜色或款式，不能把参考图或上一张成片当成固定背景或制服，除非用户明确指定。"
-	if strings.EqualFold(strings.TrimSpace(personaID), "xiaoman") {
-		instruction += "小满本次优先使用非紫色的新造型和非窗边场景，禁止复用紫色紧身上衣、牛仔裤、室内窗户或同一套衣服。"
+func visualOutfitLengthSpecified(prompt string) bool {
+	return videoHasAny(normalizeVisualPrompt(prompt), "长裙", "长裤", "短裙", "短裤", "短款", "长款", "膝上", "膝下", "过膝", "short", "long")
+}
+
+func longOutfitInstruction(prompt string, persona *nativeActivePersona) string {
+	if persona.OutfitLength == "long" && !visualOutfitLengthSpecified(prompt) {
+		return "当前外观库默认服装长度为长款，颜色或款式变化时仍使用长裙或长裤；用户明确指定长度时以用户为准。"
 	}
-	return instruction
+	return ""
+}
+
+func visualOutfitSpecified(prompt string) bool {
+	return videoHasAny(normalizeVisualPrompt(prompt), "裙", "裤", "上衣", "夹克", "外套", "衣服", "换装", "换套", "换一套", "换颜色", "dress", "outfit", "wear", "purple")
+}
+
+func visualOutfitDefault(prompt, fallback string, outfitLength ...string) string {
+	if visualOutfitSpecified(prompt) {
+		return "按用户本次明确的衣着要求执行，未指定的细节再变化；否定的颜色或款式不得出现"
+	}
+	if len(outfitLength) > 0 && outfitLength[0] == "long" {
+		return "合身长款连衣裙或长裤，随场景变化颜色和材质"
+	}
+	return fallback
+}
+
+func shortOutfitInstruction() string {
+	return "当前外观库的服装长度优先级：短款、膝上；用户没有指定长度时，本次变量里的裙装、裤装按膝上短款执行，不扩展成过膝长裙或宽大遮挡；用户明确指定的服装长度优先。"
+}
+
+func visualReferenceVariationInstruction(_ string) string {
+	instruction := "参考图与上一张成片只锁定脸部、发型、年龄感和体态；忽略其中的背景、衣服、颜色、道具、姿势、灯光、镜头和构图。每次生成至少更换场景与服装颜色或款式，不能把参考图或上一张成片当成固定背景或制服，除非用户明确指定。"
+	return instruction + "外观只按当前选中的外观库和参考图确定，不按角色名字推断另一套形象。服装和场景优先级：用户本次明确要求（否定约束优先） > 当前外观库偏好 > 默认视觉变量。"
 }
 
 func normalizeVisualPrompt(prompt string) string {
@@ -206,7 +244,30 @@ func videoOutfitChangeRequested(prompt string) bool {
 }
 
 func videoPurpleRequested(prompt string) bool {
-	return videoHasAny(prompt, "换成紫色", "改成紫色", "穿紫色", "紫色衣服", "紫色裙", "紫色上衣", "purple")
+	if visualPurpleRejected(prompt) {
+		return false
+	}
+	return videoHasAny(normalizeVisualPrompt(prompt), "换成紫色", "改成紫色", "穿紫色", "紫色衣服", "紫色裙", "紫色上衣", "purple")
+}
+
+func visualPurpleRejected(prompt string) bool {
+	// Split positive replacements, but keep "不要改成紫色" and "do not use purple" intact.
+	var clauses strings.Builder
+	previous := 0
+	for _, boundary := range visualDirectiveBoundary.FindAllStringIndex(prompt, -1) {
+		clauses.WriteString(prompt[previous:boundary[0]])
+		if !visualNegationSuffix.MatchString(prompt[previous:boundary[0]]) {
+			clauses.WriteString("；")
+		}
+		clauses.WriteString(prompt[boundary[0]:boundary[1]])
+		previous = boundary[1]
+	}
+	clauses.WriteString(prompt[previous:])
+	if visualPurpleNegation.MatchString(clauses.String()) {
+		return true
+	}
+	prompt = normalizeVisualPrompt(prompt)
+	return videoHasAny(prompt, "老是紫", "总是紫", "一直紫", "一直都是紫", "怎么永远是紫", "notpurple", "nopurple", "withoutpurple", "avoidpurple", "don'twearpurple", "donotwearpurple")
 }
 
 func videoOutfit(prompt string, seed uint64) string {

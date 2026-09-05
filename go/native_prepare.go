@@ -108,6 +108,7 @@ type nativeActivePersona struct {
 	Name                  string `json:"name"`
 	Description           string `json:"description"`
 	VisualDescription     string `json:"visualDescription"`
+	OutfitLength          string `json:"outfitLength,omitempty"`
 	VisualPromptOverride  string `json:"visualPromptOverride,omitempty"`
 	VisualReferencePrompt string `json:"visualReferencePrompt,omitempty"`
 	CharacterVersion      string `json:"characterVersion"`
@@ -318,7 +319,7 @@ func explicitWebSearchIntent(message string) bool {
 		return true
 	}
 	if strings.ContainsAny(message, "？?") && containsAnyText(message, []string{
-		"是谁", "哪家", "多少", "什么时候", "最新", "现在", "目前", "来源", "出处", "官网", "价格",
+		"哪家", "什么时候发布", "最新", "现在", "目前", "来源", "出处", "官网", "价格",
 	}) {
 		return true
 	}
@@ -1112,6 +1113,19 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 		specializedLane = false
 		canPreferSceneModel = true
 	}
+	// Search is executed by a tool. Its absence must not select an untracked
+	// legacy provider for the model that plans the tool call.
+	if lane == "search" && route.Selected == nil && route.OperatorMode != "manual" && companion.EnableModelRouting {
+		chatRoute, chatErr := s.simulateNativeRoute("chat")
+		if chatErr != nil {
+			return preparedRuntimeData{}, chatErr
+		}
+		if chatRoute.Selected != nil {
+			route.Selected = chatRoute.Selected
+			route.Fallbacks = chatRoute.Fallbacks
+			route.Explanation += " Using the eligible chat route to plan search tools."
+		}
+	}
 	personaModelLane := personaRuntimeModelLane(lane, payload.Message, complexThreshold)
 	if endpointID := personaRuntimeEndpoint(personaProfile, personaModelLane); endpointID != "" && canPreferSceneModel {
 		// A persona endpoint is a scene preference. Automatic routing must still
@@ -1256,7 +1270,8 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 	}
 	if persona != nil {
 		prepared.ActivePersona = &nativeActivePersona{
-			ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
+			OutfitLength: s.appearanceLibraryOutfitLength(persona.ID),
+			ID:           persona.ID, Namespace: persona.Namespace, Name: persona.Name,
 			Description: persona.Description, VisualDescription: s.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
 			VisualPromptOverride:  personaProfile.VisualPromptOverride,
 			VisualReferencePrompt: s.personaVisualReferencePrompt(persona.ID),

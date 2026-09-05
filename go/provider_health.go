@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -31,6 +32,9 @@ func (a *AgentRuntime) checkProviderHealth(ctx context.Context) {
 	if a == nil || a.configStore == nil {
 		return
 	}
+	if err := a.configStore.pruneProviderHealthSamples(ctx, time.Now()); err != nil {
+		log.Printf("provider health retention failed: %v", err)
+	}
 	rows, err := a.configStore.db.Query(`SELECT endpoint.id, endpoint.provider, endpoint.model,
 		endpoint.execution_kind, endpoint.capabilities_json
 		FROM model_endpoints endpoint WHERE endpoint.enabled = 1`)
@@ -46,7 +50,9 @@ func (a *AgentRuntime) checkProviderHealth(ctx context.Context) {
 		}
 		endpoints = append(endpoints, value)
 	}
-	if rows.Err() != nil || rows.Close() != nil {
+	rowErr := rows.Err()
+	closeErr := rows.Close()
+	if rowErr != nil || closeErr != nil {
 		return
 	}
 	for _, value := range endpoints {
@@ -57,15 +63,12 @@ func (a *AgentRuntime) checkProviderHealth(ctx context.Context) {
 func (a *AgentRuntime) checkOneProvider(parent context.Context, endpointID, provider, model, executionKind, capabilities string) error {
 	connection, ok, err := a.providerConnectionForEndpoint(endpointID, provider)
 	if err != nil {
-		return err
+		return a.recordProviderHealth(endpointID, false, 0, err.Error())
 	}
 	if !ok || strings.TrimSpace(connection.APIBase) == "" {
 		return a.recordProviderHealth(endpointID, false, 0, "provider connection is not configured")
 	}
-	key := a.modelAPIKey
-	if value := getenv(connection.CredentialRef); value != "" {
-		key = value
-	}
+	key := a.providerCredential(connection.CredentialRef)
 	if strings.TrimSpace(key) == "" {
 		return a.recordProviderHealth(endpointID, false, 0, "provider credential is not configured")
 	}
@@ -194,5 +197,12 @@ func (a *AgentRuntime) recordProviderHealth(endpointID string, healthy bool, lat
 	_, err = a.configStore.db.Exec(`INSERT INTO model_health_samples
 		(endpoint_id, healthy, latency_ms, error_rate, status_message, checked_at)
 		VALUES (?, ?, ?, ?, ?, ?)`, endpointID, boolInt(healthy), latency, errorRate, message, now)
+	return err
+}
+
+func (s *coreConfigStore) pruneProviderHealthSamples(ctx context.Context, now time.Time) error {
+	cutoff := now.UTC().Add(-14 * 24 * time.Hour).Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM model_health_samples WHERE id IN
+		(SELECT id FROM model_health_samples WHERE checked_at < ? ORDER BY checked_at, id LIMIT 1000)`, cutoff)
 	return err
 }

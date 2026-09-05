@@ -33,6 +33,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "schema=$schema" >> "$GITHUB_OUTPUT"
 
+      - name: Check deployment rollback failure paths
+        run: python3 scripts/test-deploy.py
+
+      - name: Race-check critical regressions
+        run: docker build --target verify-race --progress plain .
+
       - name: Build verified release archive
         shell: bash
         run: |

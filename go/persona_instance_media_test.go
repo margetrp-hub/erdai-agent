@@ -19,7 +19,7 @@ func TestPersonaMediaPromptUsesRunPersonaInsteadOfGlobalPersona(t *testing.T) {
 	for kind, prompt := range map[string]string{"image": imagePrompt, "video": videoPrompt} {
 		if !strings.Contains(prompt, "黑色长卷发或自然大波浪") || !strings.Contains(prompt, "比豆包更热、更鲜活") ||
 			!strings.Contains(prompt, "裙摆或裤脚明确在膝盖以上") || !strings.Contains(prompt, "膝上短款") ||
-			!strings.Contains(prompt, "至少更换场景与服装颜色或款式") || !strings.Contains(prompt, "非窗边场景") {
+			!strings.Contains(prompt, "至少更换场景与服装颜色或款式") || !strings.Contains(prompt, "外观只按当前选中的外观库和参考图确定") {
 			t.Fatalf("%s prompt did not load xiaoman identity: %s", kind, prompt)
 		}
 		if strings.Contains(prompt, "小巧柔和的鹅蛋脸") || strings.Contains(prompt, "身形纤细") {

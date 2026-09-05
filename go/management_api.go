@@ -12,8 +12,8 @@ func (a *AgentRuntime) handleNativeManagement(w http.ResponseWriter, r *http.Req
 	if a.configStore == nil || !isNativeManagementPath(path) {
 		return false
 	}
-	sensitiveRead := r.Method == http.MethodGet &&
-		strings.HasPrefix(path, "/api/v1/platforms/") && (strings.HasSuffix(path, "/login-qr") || strings.HasSuffix(path, "/telegram-user/auth/status"))
+	sensitiveRead := r.Method == http.MethodGet && (path == "/api/v1/affiliate/ownership" ||
+		strings.HasPrefix(path, "/api/v1/platforms/") && (strings.HasSuffix(path, "/login-qr") || strings.HasSuffix(path, "/telegram-user/auth/status")))
 	if sensitiveRead && !tokenMatches(r.Header.Get(adminTokenHeader), a.adminToken) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": map[string]string{"code": "unauthorized", "message": "administrator service token required"},
@@ -46,6 +46,7 @@ func (a *AgentRuntime) handleNativeManagement(w http.ResponseWriter, r *http.Req
 
 func isNativeManagementPath(path string) bool {
 	for _, exact := range []string{
+		"/api/v1/affiliate/ownership",
 		"/api/v1/overview", "/api/v1/observability", "/api/v1/audit", "/api/v1/shadow/interactions",
 		"/api/v1/installation/status", "/api/v1/update/check", "/api/v1/update/status", "/api/v1/update/request",
 		"/api/v1/credentials",
@@ -92,6 +93,8 @@ func isNativeManagementPath(path string) bool {
 
 func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.ResponseWriter, r *http.Request, path string) error {
 	switch {
+	case path == "/api/v1/affiliate/ownership":
+		return a.handleAffiliateOwnership(w, r)
 	case path == "/api/v1/installation/status":
 		return a.handleManagementInstallation(w, r)
 	case path == "/api/v1/update/check":

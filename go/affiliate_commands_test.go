@@ -114,6 +114,11 @@ func TestAffiliateCommandFlow(t *testing.T) {
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Exec(`CREATE TABLE agent_affiliate_owners (
+		affiliate_code TEXT PRIMARY KEY COLLATE NOCASE, transport TEXT NOT NULL,
+		transport_instance TEXT NOT NULL, sender_ref TEXT NOT NULL, verified_at TEXT NOT NULL, evidence TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
 	runtime := &AgentRuntime{
 		db:       db,
 		opsToken: "test-token",
@@ -152,6 +157,9 @@ func TestAffiliateCommandFlow(t *testing.T) {
 	})
 	if err != nil || !strings.Contains(link.Text, "https://ohlaoo.com/register?aff=ABCD") {
 		t.Fatalf("link = %q, %v", link.Text, err)
+	}
+	if _, err := db.Exec(`INSERT INTO agent_affiliate_owners VALUES ('ABCD', 'aiocqhttp', 'qq-main', '123456', 'now', 'test ownership evidence')`); err != nil {
+		t.Fatal(err)
 	}
 	points, err := runtime.handleAffiliateCommand(context.Background(), run, coreDirectCommand{
 		Kind: directCommandAffiliatePoints, AffiliatePolicy: policy,

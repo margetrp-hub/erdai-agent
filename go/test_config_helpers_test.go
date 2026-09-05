@@ -83,6 +83,23 @@ func insertTestEndpoint(
 	}
 }
 
+func bindTestModelConnection(t *testing.T, db *sql.DB, endpointID, apiBase string) {
+	t.Helper()
+	if err := migrateCoreConfig(db); err != nil {
+		t.Fatal(err)
+	}
+	id := "test-bound-" + endpointID
+	if _, err := db.Exec(`INSERT INTO provider_connections
+		(id, provider, api_base, credential_ref, created_at, updated_at)
+		VALUES (?, ?, ?, 'ERDAI_MODEL_API_KEY', 'now', 'now')`, id, id, apiBase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_endpoint_connections VALUES (?, ?, 'now')
+		ON CONFLICT(endpoint_id) DO UPDATE SET connection_id = excluded.connection_id`, endpointID, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func insertTestTool(t *testing.T, db *sql.DB, id, name, adapterRef string) {
 	t.Helper()
 	config, err := json.Marshal(map[string]any{

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 82
+const nativeCoreSchemaVersion = 84
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -676,6 +676,15 @@ CREATE TABLE IF NOT EXISTS agent_points_ledger (
   UNIQUE (transport, transport_instance, sender_ref, reference_key)
 );
 
+CREATE TABLE IF NOT EXISTS agent_affiliate_owners (
+  affiliate_code TEXT PRIMARY KEY COLLATE NOCASE,
+  transport TEXT NOT NULL,
+  transport_instance TEXT NOT NULL,
+  sender_ref TEXT NOT NULL,
+  verified_at TEXT NOT NULL,
+  evidence TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_points_catalog (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -689,6 +698,8 @@ CREATE TABLE IF NOT EXISTS agent_points_catalog (
 `
 
 const nativeCoreIndexes = `
+CREATE INDEX IF NOT EXISTS idx_model_health_samples_endpoint ON model_health_samples(endpoint_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_health_samples_checked ON model_health_samples(checked_at, id);
 CREATE INDEX IF NOT EXISTS idx_personas_namespace ON personas(namespace, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_worldbook_persona ON worldbook_entries(persona_id, enabled, priority DESC);
 CREATE INDEX IF NOT EXISTS idx_persona_samples_persona ON persona_samples(persona_id, enabled, weight DESC);
@@ -765,6 +776,7 @@ func migrateCoreConfig(db *sql.DB) error {
 		{"personas", "namespace", "TEXT NOT NULL DEFAULT 'default'"},
 		{"personas", "avatar_data_uri", "TEXT NOT NULL DEFAULT ''"},
 		{"personas", "visual_description", "TEXT NOT NULL DEFAULT ''"},
+		{"appearance_libraries", "outfit_length", "TEXT NOT NULL DEFAULT 'auto' CHECK (outfit_length IN ('auto', 'short', 'long'))"},
 		{"model_endpoints", "execution_kind", "TEXT NOT NULL DEFAULT 'llm' CHECK (execution_kind IN ('llm', 'tool', 'media'))"},
 		{"model_endpoints", "adapter_ref", "TEXT NOT NULL DEFAULT ''"},
 		{"model_endpoints", "pricing_source", "TEXT NOT NULL DEFAULT ''"},
@@ -2031,6 +2043,12 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	if previousVersion < 82 {
 		if err := migrateCodexRadarSourceV82(tx, now); err != nil {
 			return err
+		}
+	}
+	if previousVersion < 83 {
+		if _, err := tx.Exec(`UPDATE appearance_libraries SET outfit_length = 'short'
+			WHERE outfit_length = 'auto' AND instr(visual_description, '膝盖以上') > 0`); err != nil {
+			return fmt.Errorf("migrate appearance outfit length for v83: %w", err)
 		}
 	}
 	if _, err := tx.Exec(`

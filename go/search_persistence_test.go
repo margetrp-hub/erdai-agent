@@ -19,7 +19,7 @@ func seedSearchRun(t *testing.T, runtime *AgentRuntime, id string) runRecord {
 	return runRecord{ID: id, ConversationRef: "group:one", SenderRef: "member-a", PersonaID: "doubao", ThreadKey: "thread-a"}
 }
 
-func TestSearchRunReusesTheFirstResult(t *testing.T) {
+func TestSearchRunReusesIdenticalQueryResult(t *testing.T) {
 	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	run := seedSearchRun(t, runtime, "run-search-cache")
@@ -27,13 +27,15 @@ func TestSearchRunReusesTheFirstResult(t *testing.T) {
 		t.Fatalf("first reservation handled=%v err=%v", handled, err)
 	}
 	wantSources := []searchSource{{Title: "Result", URL: "https://example.com/result"}}
-	runtime.finishSearchRunSuccess(run.ID, "short answer", wantSources)
-	text, sources, handled, err := runtime.beginSearchRun(&run, "different query")
+	if err := runtime.finishSearchRunSuccess(run.ID, "first query", "short answer", wantSources); err != nil {
+		t.Fatal(err)
+	}
+	text, sources, handled, err := runtime.beginSearchRun(&run, "  First   query ")
 	if err != nil || !handled || text != "short answer" || len(sources) != 1 || sources[0].URL != wantSources[0].URL {
 		t.Fatalf("cached search handled=%v text=%q sources=%+v err=%v", handled, text, sources, err)
 	}
 	var attempts int
-	if err = runtime.db.QueryRow("SELECT count(*) FROM agent_search_runs WHERE run_id = ?", run.ID).Scan(&attempts); err != nil || attempts != 1 {
+	if err = runtime.db.QueryRow("SELECT count(*) FROM agent_search_queries WHERE run_id = ?", run.ID).Scan(&attempts); err != nil || attempts != 1 {
 		t.Fatalf("search attempts=%d err=%v", attempts, err)
 	}
 }
@@ -46,8 +48,10 @@ func TestSearchRunReusesTheFirstFailure(t *testing.T) {
 		t.Fatalf("first reservation handled=%v err=%v", handled, err)
 	}
 	wantErr := errors.New("provider unavailable")
-	runtime.finishSearchRunFailure(run.ID, wantErr)
-	_, _, handled, err := runtime.beginSearchRun(&run, "query again")
+	if err := runtime.finishSearchRunFailure(run.ID, "query", wantErr); err != nil {
+		t.Fatal(err)
+	}
+	_, _, handled, err := runtime.beginSearchRun(&run, "query")
 	if !handled || err == nil || !strings.Contains(err.Error(), wantErr.Error()) {
 		t.Fatalf("cached failure handled=%v err=%v", handled, err)
 	}

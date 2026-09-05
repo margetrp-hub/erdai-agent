@@ -13,11 +13,14 @@ rollback_dir=
 old_container=
 old_image_ref=
 old_image_id=
+old_browser_image_ref=
 old_browser_image_id=
 old_channel_mode=off
 channel_quiesced=0
 swapped_app=0
 rollback_armed=0
+core_install_started=0
+browser_install_started=0
 
 fail() { echo "$*" >&2; exit 1; }
 manifest_value() {
@@ -45,8 +48,8 @@ cleanup() {
   if [ "$status" -ne 0 ] && [ "$rollback_armed" -eq 1 ]; then
     echo "release failed; restoring the temporary rollback point" >&2
     set +e
-    docker rm -f erdai-agent >/dev/null 2>&1 || true
-    docker rm -f erdai-monitor-browser >/dev/null 2>&1 || true
+    if [ "$core_install_started" -eq 1 ]; then docker rm -f erdai-agent >/dev/null 2>&1 || true; fi
+    if [ "$browser_install_started" -eq 1 ]; then docker rm -f erdai-monitor-browser >/dev/null 2>&1 || true; fi
     [ -z "$old_image_ref" ] || docker image tag "$old_image_id" "$old_image_ref" >/dev/null 2>&1 || true
     for database in erdai-agent-core.sqlite3 erdai-runtime.sqlite3; do
       if [ -n "$rollback_dir" ] && [ -f "$rollback_dir/$database" ]; then
@@ -64,15 +67,17 @@ cleanup() {
     fi
     if [ -n "$old_container" ] && docker container inspect "$old_container" >/dev/null 2>&1; then
       docker rename "$old_container" erdai-agent >/dev/null 2>&1 && docker start erdai-agent >/dev/null 2>&1 || true
+    elif [ "$core_install_started" -eq 0 ] && docker container inspect erdai-agent >/dev/null 2>&1; then
+      docker start erdai-agent >/dev/null 2>&1 || true
     elif [ -n "$old_image_ref" ] && [ -f "$root/app/compose.production.yml" ]; then
       ERDAI_RELEASE_IMAGE="$old_image_ref" ERDAI_EMBEDDING_IMAGE="$embedding_image" \
         docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" \
         up -d --no-build --force-recreate erdai-agent >/dev/null 2>&1 || true
     fi
-    if [ -f "$root/app/compose.production.yml" ] &&
-      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" \
+    if [ "$browser_install_started" -eq 1 ] && [ -f "$root/app/compose.production.yml" ] &&
+      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="${old_browser_image_ref:-$browser_image}" \
         docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" config --services 2>/dev/null | grep -qx erdai-monitor-browser; then
-      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" \
+      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="${old_browser_image_ref:-$browser_image}" \
         docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" \
         up -d --no-build --force-recreate erdai-monitor-browser >/dev/null 2>&1 || true
     fi
@@ -93,7 +98,9 @@ cleanup() {
     fi
   fi
   [ -z "$stage" ] || rm -rf "$stage"
-  if [ "$status" -eq 0 ]; then [ -z "$rollback_dir" ] || rm -rf "$rollback_dir"; fi
+  if [ "$status" -eq 0 ] && [ "$mode" = --dry-run ]; then
+    [ -z "$rollback_dir" ] || rm -rf "$rollback_dir"
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -163,6 +170,7 @@ if docker container inspect erdai-agent >/dev/null 2>&1; then
   old_image_id=$(docker container inspect -f '{{.Image}}' erdai-agent)
 fi
 if docker container inspect erdai-monitor-browser >/dev/null 2>&1; then
+  old_browser_image_ref=$(docker container inspect -f '{{.Config.Image}}' erdai-monitor-browser)
   old_browser_image_id=$(docker container inspect -f '{{.Image}}' erdai-monitor-browser)
 fi
 old_channel_mode=$(python3 - "$root/data/erdai-agent-core.sqlite3" <<'PY'
@@ -190,30 +198,36 @@ if docker ps --format '{{.Names}}' | grep -qx erdai-agent; then
   sleep "${ERDAI_DRAIN_SECONDS:-15}"
 fi
 
+# Stop all runtime writers before the snapshot so rollback includes every
+# committed delivery receipt and ledger entry at cutover.
+if docker container inspect erdai-agent >/dev/null 2>&1; then
+  rollback_armed=1
+  docker stop --time 300 erdai-agent >/dev/null
+  docker rename erdai-agent "erdai-agent-rollback-$release-$stamp"
+  old_container=erdai-agent-rollback-$release-$stamp
+fi
+
 python3 - "$root/data/erdai-agent-core.sqlite3" "$rollback_dir/erdai-agent-core.sqlite3" "$root/data/erdai-runtime.sqlite3" "$rollback_dir/erdai-runtime.sqlite3" <<'PY'
+import os
 import sqlite3
 import sys
-for source_path, target_path in zip(sys.argv[1::2], sys.argv[2::2]):
-    try:
-        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
-            with sqlite3.connect(target_path) as target:
-                source.backup(target)
-                assert target.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-    except sqlite3.OperationalError:
-        pass
+for index, (source_path, target_path) in enumerate(zip(sys.argv[1::2], sys.argv[2::2])):
+    if index > 0 and not os.path.exists(source_path):
+        continue
+    with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
+        with sqlite3.connect(target_path + ".partial") as target:
+            source.backup(target)
+            assert target.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    os.replace(target_path + ".partial", target_path)
 PY
 
 rollback_armed=1
-if docker container inspect erdai-agent >/dev/null 2>&1; then
-  old_container=erdai-agent-rollback-$release-$stamp
-  docker stop erdai-agent >/dev/null
-  docker rename erdai-agent "$old_container"
-fi
+swapped_app=1
 if [ -d "$root/app" ]; then mv "$root/app" "$rollback_dir/app"; fi
 mv "$stage" "$root/app"
 stage=
-swapped_app=1
 
+browser_install_started=1
 ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-monitor-browser
 attempt=0
 while [ "$attempt" -lt 90 ]; do
@@ -221,6 +235,7 @@ while [ "$attempt" -lt 90 ]; do
   attempt=$((attempt + 1)); sleep 1
 done
 [ "$attempt" -lt 90 ] || { docker logs --tail 100 erdai-monitor-browser; fail "monitor browser did not become healthy"; }
+core_install_started=1
 ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-agent
 attempt=0
 while [ "$attempt" -lt 180 ]; do
@@ -245,8 +260,9 @@ ERDAI_INSTALL_ROOT="$root" "$root/app/scripts/set-channel-mode.sh" "$old_channel
 channel_quiesced=0
 persist_env_value ERDAI_RELEASE_IMAGE "$release_image"
 persist_env_value ERDAI_MONITOR_BROWSER_IMAGE "$browser_image"
-if [ -n "$old_container" ]; then docker rm "$old_container" >/dev/null 2>&1 || true; fi
-if [ -n "$old_image_id" ] && [ "$old_image_id" != "$core_image_id" ]; then docker image rm "$old_image_id" >/dev/null 2>&1 || true; fi
-if [ -n "$old_browser_image_id" ] && [ "$old_browser_image_id" != "$(docker image inspect -f '{{.Id}}' "$browser_image")" ]; then docker image rm "$old_browser_image_id" >/dev/null 2>&1 || true; fi
+# Keep one usable rollback point; the operator can retire the prior point
+# after checking ownership and completing post-release acceptance.
+printf 'old_container=%s\nold_image_ref=%s\nold_image_id=%s\nold_browser_image_ref=%s\nold_browser_image_id=%s\nold_channel_mode=%s\n' \
+  "$old_container" "$old_image_ref" "$old_image_id" "$old_browser_image_ref" "$old_browser_image_id" "$old_channel_mode" > "$rollback_dir/rollback.env"
 rollback_armed=0
-printf 'release=%s\nimage=%s\nschema=%s\nchannel_mode=%s\n' "$release" "$release_image" "$schema" "$old_channel_mode"
+printf 'release=%s\nimage=%s\nschema=%s\nchannel_mode=%s\nrollback=%s\n' "$release" "$release_image" "$schema" "$old_channel_mode" "$rollback_dir"

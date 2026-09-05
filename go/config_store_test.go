@@ -520,6 +520,7 @@ func TestConfiguredRuntimeDoesNotCallLegacyPrepareOrProviderPolicy(t *testing.T)
 	`, string(providerConfig)); err != nil {
 		t.Fatal(err)
 	}
+	bindTestModelConnection(t, db, "chat", provider.URL+"/v1")
 	_ = db.Close()
 	var legacyCalls atomic.Int32
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

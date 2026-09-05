@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"sort"
@@ -143,8 +145,12 @@ func (m *platformConnectorManager) Start(parent context.Context) {
 	if len(m.connectors) == 0 {
 		return
 	}
-	m.wg.Add(1)
-	go m.deliveryLoop(ctx)
+	// Leasing serializes each conversation; independent conversations can send
+	// concurrently without allowing an upload to stall every connector.
+	for worker := 0; worker < 4; worker++ {
+		m.wg.Add(1)
+		go m.deliveryLoop(ctx)
+	}
 }
 
 func (m *platformConnectorManager) Close() error {
@@ -177,13 +183,27 @@ func (m *platformConnectorManager) deliveryLoop(ctx context.Context) {
 }
 
 func (m *platformConnectorManager) deliverPending(ctx context.Context) {
-	deliveries, err := m.runtime.leaseTransportDeliveries(ctx, "erdai-go-platforms", 10, 30)
-	if err != nil {
-		return
-	}
-	for _, delivery := range deliveries {
-		if m.runtime.platformDeliveryWasSent(ctx, delivery.ID) {
-			_ = m.runtime.ackTransportDelivery(ctx, delivery.ID)
+	for count := 0; count < 10 && ctx.Err() == nil; count++ {
+		// Lease just before sending so queued attachments do not expire while
+		// an earlier delivery is still uploading.
+		deliveries, err := m.runtime.leaseTransportDeliveries(ctx, "erdai-go-platforms", 1, 300)
+		if err != nil {
+			log.Printf("platform delivery lease failed: %s", redactConnectorError(err))
+			return
+		}
+		if len(deliveries) == 0 {
+			return
+		}
+		delivery := deliveries[0]
+		receipt := deliveryLeaseReceipt{LeaseOwner: delivery.LeaseOwner, Attempts: delivery.Attempts}
+		sent, err := m.runtime.platformDeliveryWasSent(ctx, delivery.ID)
+		if err != nil {
+			log.Printf("platform delivery %s receipt read failed: %s", delivery.ID, redactConnectorError(err))
+			m.failDelivery(ctx, delivery, true, "delivery_receipt_read_failed", receipt)
+			return
+		}
+		if sent {
+			m.ackDelivery(ctx, delivery, receipt)
 			continue
 		}
 		route, routeErr := m.runtime.platformRoute(ctx, delivery.ReplyHandle)
@@ -192,11 +212,13 @@ func (m *platformConnectorManager) deliverPending(ctx context.Context) {
 			routeErr = errors.New("connector is not running")
 		}
 		if routeErr != nil {
-			_, _ = m.runtime.failTransportDelivery(ctx, delivery.ID, false, "unknown_reply_handle")
+			m.failDelivery(ctx, delivery, false, "unknown_reply_handle", receipt)
 			continue
 		}
 		sendStarted := time.Now()
-		err = connector.Deliver(ctx, route, delivery)
+		sendContext, cancelSend := context.WithTimeout(ctx, 270*time.Second)
+		err = connector.Deliver(sendContext, route, delivery)
+		cancelSend()
 		_ = m.runtime.recordRunStage(delivery.RunID, "connector_send", sendStarted, map[string]any{
 			"connectorId": route.ConnectorID, "deliveryId": delivery.ID, "error": err != nil,
 		})
@@ -209,14 +231,27 @@ func (m *platformConnectorManager) deliverPending(ctx context.Context) {
 					reason = deliveryErr.Reason
 				}
 			}
-			_, _ = m.runtime.failTransportDelivery(ctx, delivery.ID, retryable, reason)
+			m.failDelivery(ctx, delivery, retryable, reason, receipt)
 			continue
 		}
 		if err = m.runtime.markPlatformDeliverySent(ctx, delivery.ID); err != nil {
-			_, _ = m.runtime.failTransportDelivery(ctx, delivery.ID, true, "delivery_receipt_failed")
+			log.Printf("platform delivery %s receipt write failed: %s", delivery.ID, redactConnectorError(err))
+			m.failDelivery(ctx, delivery, true, "delivery_receipt_failed", receipt)
 			continue
 		}
-		_ = m.runtime.ackTransportDelivery(ctx, delivery.ID)
+		m.ackDelivery(ctx, delivery, receipt)
+	}
+}
+
+func (m *platformConnectorManager) ackDelivery(ctx context.Context, delivery leasedTransportDelivery, receipt deliveryLeaseReceipt) {
+	if err := m.runtime.ackTransportDelivery(ctx, delivery.ID, receipt); err != nil {
+		log.Printf("platform delivery %s ACK failed: %s", delivery.ID, redactConnectorError(err))
+	}
+}
+
+func (m *platformConnectorManager) failDelivery(ctx context.Context, delivery leasedTransportDelivery, retryable bool, reason string, receipt deliveryLeaseReceipt) {
+	if _, err := m.runtime.failTransportDelivery(ctx, delivery.ID, retryable, reason, receipt); err != nil {
+		log.Printf("platform delivery %s FAIL failed: %s", delivery.ID, redactConnectorError(err))
 	}
 }
 
@@ -344,17 +379,42 @@ func (a *AgentRuntime) nextPlatformMessageSequence(ctx context.Context, handle s
 	return current, tx.Commit()
 }
 
-func (a *AgentRuntime) platformDeliveryWasSent(ctx context.Context, deliveryID string) bool {
+func (a *AgentRuntime) platformDeliveryWasSent(ctx context.Context, deliveryID string) (bool, error) {
 	var found int
-	return a.db.QueryRowContext(ctx,
+	err := a.db.QueryRowContext(ctx,
 		"SELECT 1 FROM platform_sent_deliveries WHERE delivery_id = ?", deliveryID,
-	).Scan(&found) == nil
+	).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (a *AgentRuntime) markPlatformDeliverySent(ctx context.Context, deliveryID string) error {
 	_, err := a.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO platform_sent_deliveries (delivery_id, sent_at) VALUES (?, ?)
 	`, deliveryID, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (a *AgentRuntime) platformDeliveryPartSent(ctx context.Context, deliveryID, part string) (bool, error) {
+	if deliveryID == "" {
+		return false, nil
+	}
+	var found int
+	err := a.db.QueryRowContext(ctx, `SELECT 1 FROM platform_sent_delivery_parts WHERE delivery_id = ? AND part_key = ?`, deliveryID, part).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (a *AgentRuntime) markPlatformDeliveryPartSent(ctx context.Context, deliveryID, part string) error {
+	if deliveryID == "" {
+		return nil
+	}
+	_, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO platform_sent_delivery_parts
+		(delivery_id, part_key, sent_at) VALUES (?, ?, ?)`, deliveryID, part, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 

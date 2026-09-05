@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -107,6 +108,9 @@ func (a *AgentRuntime) fetchAffiliateSummary(ctx context.Context, code string, p
 	} else {
 		payload.Data.Code = canonical
 	}
+	if !strings.EqualFold(payload.Data.Code, code) || payload.Data.PaidInviteeCount < 0 || payload.Data.InvitedCount < 0 {
+		return affiliateSummary{}, errors.New("affiliate summary does not match the requested account")
+	}
 	return payload.Data, nil
 }
 
@@ -181,32 +185,71 @@ func (a *AgentRuntime) recordDailyCheckIn(ctx context.Context, run runRecord, po
 
 func (a *AgentRuntime) pointsAccount(ctx context.Context, run runRecord, policy affiliatePolicy) (pointsAccount, error) {
 	account := pointsAccount{}
-	local, err := a.pointsLedgerBalance(ctx, run)
-	if err != nil {
-		return account, err
-	}
-	account.LocalPoints = local
-	account.TotalPoints = local
 	code, err := a.boundAffiliateCode(ctx, run)
-	if errors.Is(err, sql.ErrNoRows) {
-		return account, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return account, err
 	}
-	summary, err := a.fetchAffiliateSummary(ctx, code, policy)
+	if err == nil {
+		verified, syncErr := a.affiliateOwnerVerified(ctx, run, code)
+		if syncErr == nil && !verified {
+			syncErr = errAffiliateOwnershipRequired
+		}
+		var summary affiliateSummary
+		if syncErr == nil {
+			summary, syncErr = a.fetchAffiliateSummary(ctx, code, policy)
+		}
+		if syncErr == nil {
+			syncErr = a.creditInvitePoints(ctx, run, summary, policy)
+			if syncErr == nil {
+				account.Summary = &summary
+			}
+		}
+		account.SyncErr = syncErr
+	}
+	transport, instance, sender := pointsScope(run)
+	err = a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(points), 0),
+		COALESCE(SUM(CASE WHEN entry_type = 'adjustment' AND substr(reference_key, 1, 7) = 'invite:' THEN points ELSE 0 END), 0)
+		FROM agent_points_ledger WHERE transport = ? AND transport_instance = ? AND sender_ref = ?`,
+		transport, instance, sender).Scan(&account.TotalPoints, &account.InvitePoints)
+	account.LocalPoints = account.TotalPoints - account.InvitePoints
+	return account, err
+}
+
+func (a *AgentRuntime) creditInvitePoints(ctx context.Context, run runRecord, summary affiliateSummary, policy affiliatePolicy) error {
+	code, valid := normalizeAffiliateCode(summary.Code)
+	if !valid {
+		return errors.New("invalid affiliate award code")
+	}
+	summary.Code = code
+	verified, err := a.affiliateOwnerVerified(ctx, run, code)
 	if err != nil {
-		account.SyncErr = err
-		return account, nil
+		return err
 	}
-	account.Summary = &summary
-	account.InvitePoints = summary.PaidInviteeCount
-	if account.InvitePoints < 0 {
-		account.InvitePoints = 0
+	if !verified {
+		return errAffiliateOwnershipRequired
 	}
-	account.InvitePoints *= pointsPerInvitee(policy)
-	account.TotalPoints += account.InvitePoints
-	return account, nil
+	rate := pointsPerInvitee(policy)
+	if summary.PaidInviteeCount < 0 || summary.PaidInviteeCount > math.MaxInt64/rate {
+		return errors.New("affiliate points exceed the supported range")
+	}
+	id, err := randomID("points")
+	if err != nil {
+		return err
+	}
+	transport, instance, sender := pointsScope(run)
+	prefix := "invite:" + summary.Code + ":"
+	// A single write computes the high-water mark and credits only new invitees.
+	// Older concurrent responses and temporary count drops cannot claw back awards.
+	_, err = a.db.ExecContext(ctx, `INSERT INTO agent_points_ledger
+		(id, transport, transport_instance, sender_ref, entry_type, points, reference_key, note, created_at)
+		SELECT ?, ?, ?, ?, 'adjustment', (? - awarded_count) * ?, ?, ?, ?
+		FROM (SELECT COALESCE(MAX(CAST(substr(reference_key, length(?) + 1) AS INTEGER)), 0) AS awarded_count
+			FROM agent_points_ledger WHERE entry_type = 'adjustment' AND substr(reference_key, 1, length(?)) = ?)
+		WHERE ? > awarded_count AND EXISTS (SELECT 1 FROM agent_affiliate_owners
+			WHERE affiliate_code = ? AND transport = ? AND transport_instance = ? AND sender_ref = ?)`, id, transport, instance, sender, summary.PaidInviteeCount, rate,
+		fmt.Sprintf("%s%d", prefix, summary.PaidInviteeCount), "邀请奖励同步", time.Now().UTC().Format(time.RFC3339Nano),
+		prefix, prefix, prefix, summary.PaidInviteeCount, code, transport, instance, sender)
+	return err
 }
 
 func pointsAccountText(title string, account pointsAccount) string {
@@ -215,8 +258,10 @@ func pointsAccountText(title string, account pointsAccount) string {
 		lines = append(lines, fmt.Sprintf("邀请码：%s", account.Summary.Code), fmt.Sprintf("已邀请：%d 人", account.Summary.InvitedCount), fmt.Sprintf("已充值：%d 人", account.Summary.PaidInviteeCount))
 	}
 	lines = append(lines, fmt.Sprintf("本地积分：%d 分", account.LocalPoints), fmt.Sprintf("邀请积分：%d 分", account.InvitePoints), fmt.Sprintf("当前积分：%d 分", account.TotalPoints))
-	if account.SyncErr != nil {
-		lines = append(lines, "邀请积分暂未同步，稍后再查。")
+	if errors.Is(account.SyncErr, errAffiliateOwnershipRequired) {
+		lines = append(lines, "邀请码归属待管理员核验；已入账积分保留，签到不受影响，核验后同步新增邀请奖励。")
+	} else if account.SyncErr != nil {
+		lines = append(lines, "邀请数据暂未同步，已入账积分保留；新增奖励稍后再查。")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -252,7 +297,7 @@ func (a *AgentRuntime) handleAffiliateCommand(ctx context.Context, run runRecord
 		existing, err := a.boundAffiliateCode(ctx, run)
 		if err == nil {
 			if strings.EqualFold(existing, code) {
-				return agentReply{Text: "这个 QQ 已绑定邀请码 " + existing + "。"}, nil
+				return agentReply{Text: "这个 QQ 已绑定邀请码 " + existing + "。邀请奖励需管理员核验站点账号归属后同步。"}, nil
 			}
 			return agentReply{Text: "这个 QQ 已绑定邀请码 " + existing + "，如需更换请联系管理员。"}, nil
 		}
@@ -274,7 +319,12 @@ func (a *AgentRuntime) handleAffiliateCommand(ctx context.Context, run runRecord
 		if err != nil {
 			return agentReply{}, err
 		}
-		return agentReply{Text: "绑定成功：" + summary.Code + "\n现在发送 /邀请链接 获取专属链接。"}, nil
+		// Read back after INSERT OR IGNORE: racing requests may bind another code.
+		bound, err := a.boundAffiliateCode(ctx, run)
+		if err != nil {
+			return agentReply{}, err
+		}
+		return agentReply{Text: "绑定成功：" + bound + "\n邀请码归属待管理员核验，核验前不发放邀请奖励。发送 /邀请链接 获取链接。"}, nil
 
 	case directCommandAffiliateLink:
 		code, err := a.boundAffiliateCode(ctx, run)

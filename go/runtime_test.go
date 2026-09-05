@@ -262,6 +262,11 @@ func TestRuntimeOwnsWakeCallsModelAndDeliversThroughOutbox(t *testing.T) {
 		"humanPacingEnabled": false,
 	})
 	insertTestEndpoint(t, configDB, "chat-test", "fake-model", []string{"chat", "vision"}, "llm", "openai")
+	if _, err := configDB.Exec(`INSERT INTO provider_connections (id, provider, api_base, credential_ref, created_at, updated_at)
+		VALUES ('test-chat-connection', 'test', ?, 'ERDAI_MODEL_API_KEY', 'now', 'now');
+		INSERT INTO model_endpoint_connections VALUES ('chat-test', 'test-chat-connection', 'now')`, provider.URL+"/v1"); err != nil {
+		t.Fatal(err)
+	}
 	_ = configDB.Close()
 
 	databasePath := filepath.Join(t.TempDir(), "runtime.sqlite3")
@@ -365,13 +370,13 @@ func TestRuntimeOwnsWakeCallsModelAndDeliversThroughOutbox(t *testing.T) {
 		} `json:"data"`
 	}
 	decodeRecorder(t, lease, &leased)
-	if len(leased.Data) != 2 || leased.Data[0].Status != "sending" || leased.Data[1].Status != "sending" {
+	if len(leased.Data) != 1 || leased.Data[0].Status != "sending" {
 		t.Fatalf("leased delivery = %+v", leased.Data)
 	}
-	if leased.Data[0].Message.Text != "先别急，这个问题能修。" || leased.Data[1].Message.Text != "把报错发来，我继续看。" {
+	if leased.Data[0].Message.Text != "先别急，这个问题能修。" {
 		t.Fatalf("segmented delivery = %+v", leased.Data)
 	}
-	if leased.Data[0].Message.Attachments == nil || leased.Data[1].Message.Attachments == nil {
+	if leased.Data[0].Message.Attachments == nil {
 		t.Fatalf("text delivery attachments must be empty arrays: %+v", leased.Data)
 	}
 	firstAck := runtimeRequest(t, runtime, "/api/v1/transport/deliveries/"+leased.Data[0].ID+"/ack", map[string]any{}, "")
@@ -385,7 +390,14 @@ func TestRuntimeOwnsWakeCallsModelAndDeliversThroughOutbox(t *testing.T) {
 	if state != "responding" {
 		t.Fatalf("run completed before all segments were acknowledged: %s", state)
 	}
-	lastAck := runtimeRequest(t, runtime, "/api/v1/transport/deliveries/"+leased.Data[1].ID+"/ack", map[string]any{}, "")
+	lease = runtimeRequest(t, runtime, "/api/v1/transport/deliveries/lease", map[string]any{
+		"consumerId": "erdai-runtime", "limit": 10, "leaseSeconds": 30,
+	}, "")
+	decodeRecorder(t, lease, &leased)
+	if len(leased.Data) != 1 || leased.Data[0].Status != "sending" || leased.Data[0].Message.Text != "把报错发来，我继续看。" || leased.Data[0].Message.Attachments == nil {
+		t.Fatalf("second segment after first ACK = %+v", leased.Data)
+	}
+	lastAck := runtimeRequest(t, runtime, "/api/v1/transport/deliveries/"+leased.Data[0].ID+"/ack", map[string]any{}, "")
 	if lastAck.Code != http.StatusOK {
 		t.Fatalf("last ack status = %d: %s", lastAck.Code, lastAck.Body.String())
 	}
@@ -469,7 +481,7 @@ func TestRuntimeFallsBackToNextRoutedModel(t *testing.T) {
 		model, _ := payload["model"].(string)
 		models <- model
 		if model == "primary-model" {
-			http.Error(w, "temporary route failure", http.StatusBadGateway)
+			http.Error(w, "temporary route failure", 521)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -490,6 +502,11 @@ func TestRuntimeFallsBackToNextRoutedModel(t *testing.T) {
 	})
 	insertTestEndpoint(t, configDB, "a-primary", "primary-model", []string{"chat"}, "llm", "openai")
 	insertTestEndpoint(t, configDB, "b-fallback", "fallback-model", []string{"chat"}, "llm", "openai")
+	if _, err := configDB.Exec(`INSERT INTO provider_connections (id, provider, api_base, credential_ref, created_at, updated_at)
+		VALUES ('test-route-connection', 'test', ?, 'ERDAI_MODEL_API_KEY', 'now', 'now');
+		INSERT INTO model_endpoint_connections VALUES ('a-primary', 'test-route-connection', 'now'), ('b-fallback', 'test-route-connection', 'now')`, provider.URL+"/v1"); err != nil {
+		t.Fatal(err)
+	}
 	_ = configDB.Close()
 
 	runtime, err := NewAgentRuntime(RuntimeConfig{
@@ -504,7 +521,7 @@ func TestRuntimeFallsBackToNextRoutedModel(t *testing.T) {
 	}
 	defer runtime.Close()
 
-	response := runtimeRequest(t, runtime, "/api/v1/transport/events", testTransportEvent("fallback-event", "你好", true), "fallback-event")
+	response := runtimeRequest(t, runtime, "/api/v1/transport/events", testTransportEvent("fallback-event", "正常人的智力是多少？", true), "fallback-event")
 	var accepted struct {
 		Data struct {
 			RunID string `json:"runId"`
@@ -512,8 +529,15 @@ func TestRuntimeFallsBackToNextRoutedModel(t *testing.T) {
 	}
 	decodeRecorder(t, response, &accepted)
 	waitForDelivery(t, runtime, accepted.Data.RunID)
-	if first, second := <-models, <-models; first != "primary-model" || second != "fallback-model" {
-		t.Fatalf("provider model attempts = %q, %q", first, second)
+	for _, expected := range []string{"primary-model", "fallback-model"} {
+		select {
+		case got := <-models:
+			if got != expected {
+				t.Fatalf("provider model attempt = %q, want %q", got, expected)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("provider model attempt %q never arrived", expected)
+		}
 	}
 	var payloadJSON string
 	if err = runtime.db.QueryRow("SELECT payload_json FROM agent_deliveries WHERE run_id = ?", accepted.Data.RunID).Scan(&payloadJSON); err != nil {

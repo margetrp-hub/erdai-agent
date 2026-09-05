@@ -20,6 +20,7 @@ type appearanceLibrary struct {
 	Name              string `json:"name"`
 	Description       string `json:"description"`
 	VisualDescription string `json:"visualDescription"`
+	OutfitLength      string `json:"outfitLength"`
 	SourcePersonaID   string `json:"sourcePersonaId,omitempty"`
 	Enabled           bool   `json:"enabled"`
 	ReferenceCount    int    `json:"referenceCount"`
@@ -53,11 +54,12 @@ type appearanceLibraryPayload struct {
 	Name              *string `json:"name"`
 	Description       *string `json:"description"`
 	VisualDescription *string `json:"visualDescription"`
+	OutfitLength      *string `json:"outfitLength"`
 	SourcePersonaID   *string `json:"sourcePersonaId"`
 	Enabled           *bool   `json:"enabled"`
 }
 
-var appearanceLibraryFields = coreFieldSet("name", "description", "visualDescription", "sourcePersonaId", "enabled")
+var appearanceLibraryFields = coreFieldSet("name", "description", "visualDescription", "outfitLength", "sourcePersonaId", "enabled")
 
 func (s *coreConfigStore) handleAppearanceLibraryRequest(w http.ResponseWriter, r *http.Request, path string) error {
 	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/appearance-libraries"), "/")
@@ -215,7 +217,7 @@ func coreNotFound(message string) error {
 
 func (s *coreConfigStore) listAppearanceLibraries(namespace string) ([]appearanceLibrary, error) {
 	rows, err := s.db.Query(`SELECT l.id, l.namespace, l.name, l.description, l.visual_description, COALESCE(l.source_persona_id, ''),
-		l.enabled, l.created_at, l.updated_at,
+		l.enabled, l.created_at, l.updated_at, l.outfit_length,
 		(SELECT count(*) FROM appearance_library_references r WHERE r.library_id = l.id) +
 		(SELECT count(*) FROM persona_visual_references r WHERE r.persona_id = l.source_persona_id),
 		(SELECT count(*) FROM persona_appearance_libraries p WHERE p.library_id = l.id)
@@ -229,7 +231,7 @@ func (s *coreConfigStore) listAppearanceLibraries(namespace string) ([]appearanc
 		var item appearanceLibrary
 		var enabled int
 		if err := rows.Scan(&item.ID, &item.Namespace, &item.Name, &item.Description, &item.VisualDescription, &item.SourcePersonaID,
-			&enabled, &item.CreatedAt, &item.UpdatedAt, &item.ReferenceCount, &item.PersonaCount); err != nil {
+			&enabled, &item.CreatedAt, &item.UpdatedAt, &item.OutfitLength, &item.ReferenceCount, &item.PersonaCount); err != nil {
 			return nil, err
 		}
 		item.Enabled = enabled != 0
@@ -251,13 +253,13 @@ func (s *coreConfigStore) appearanceLibrary(namespace, id string) (appearanceLib
 	var item appearanceLibrary
 	var enabled int
 	err := s.db.QueryRow(`SELECT l.id, l.namespace, l.name, l.description, l.visual_description, COALESCE(l.source_persona_id, ''),
-		l.enabled, l.created_at, l.updated_at,
+		l.enabled, l.created_at, l.updated_at, l.outfit_length,
 		(SELECT count(*) FROM appearance_library_references r WHERE r.library_id = l.id) +
 		(SELECT count(*) FROM persona_visual_references r WHERE r.persona_id = l.source_persona_id),
 		(SELECT count(*) FROM persona_appearance_libraries p WHERE p.library_id = l.id)
 		FROM appearance_libraries l WHERE l.namespace = ? AND l.id = ?`, namespace, id).Scan(
 		&item.ID, &item.Namespace, &item.Name, &item.Description, &item.VisualDescription, &item.SourcePersonaID, &enabled,
-		&item.CreatedAt, &item.UpdatedAt, &item.ReferenceCount, &item.PersonaCount)
+		&item.CreatedAt, &item.UpdatedAt, &item.OutfitLength, &item.ReferenceCount, &item.PersonaCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return appearanceLibrary{}, false, nil
 	}
@@ -320,10 +322,14 @@ func (s *coreConfigStore) createAppearanceLibrary(namespace string, payload appe
 	if err != nil {
 		return appearanceLibrary{}, err
 	}
+	outfitLength, err := normalizeOutfitLength(payload.OutfitLength)
+	if err != nil {
+		return appearanceLibrary{}, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err = s.db.Exec(`INSERT INTO appearance_libraries
-		(id, namespace, name, description, visual_description, source_persona_id, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), 1, ?, ?)`, id, namespace, name, description, visualDescription, sourcePersonaID, now, now); err != nil {
+		(id, namespace, name, description, visual_description, source_persona_id, enabled, created_at, updated_at, outfit_length)
+		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), 1, ?, ?, ?)`, id, namespace, name, description, visualDescription, sourcePersonaID, now, now, outfitLength); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return appearanceLibrary{}, coreInvalid("appearance library name already exists")
 		}
@@ -356,12 +362,17 @@ func (s *coreConfigStore) updateAppearanceLibrary(namespace, id string, payload 
 	if payload.Enabled != nil {
 		current.Enabled = *payload.Enabled
 	}
+	if payload.OutfitLength != nil {
+		if current.OutfitLength, err = normalizeOutfitLength(payload.OutfitLength); err != nil {
+			return current, false, err
+		}
+	}
 	if payload.SourcePersonaID != nil {
 		return current, false, coreInvalid("source persona cannot be changed after library creation")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.Exec(`UPDATE appearance_libraries SET name = ?, description = ?, visual_description = ?, enabled = ?, updated_at = ?
-		WHERE namespace = ? AND id = ?`, current.Name, current.Description, current.VisualDescription, boolInt(current.Enabled), now, namespace, id)
+	_, err = s.db.Exec(`UPDATE appearance_libraries SET name = ?, description = ?, visual_description = ?, enabled = ?, updated_at = ?, outfit_length = ?
+		WHERE namespace = ? AND id = ?`, current.Name, current.Description, current.VisualDescription, boolInt(current.Enabled), now, current.OutfitLength, namespace, id)
 	if err != nil {
 		return current, false, err
 	}
@@ -974,6 +985,26 @@ func (s *coreConfigStore) personaHasAppearanceLibrary(personaID string) bool {
 	return s.db.QueryRow(`SELECT count(*) FROM persona_appearance_libraries pal
 		JOIN appearance_libraries l ON l.id = pal.library_id
 		WHERE pal.persona_id = ? AND l.enabled = 1`, personaID).Scan(&count) == nil && count > 0
+}
+
+func normalizeOutfitLength(value *string) (string, error) {
+	if value == nil {
+		return "auto", nil
+	}
+	switch *value {
+	case "auto", "short", "long":
+		return *value, nil
+	default:
+		return "", coreInvalid("outfitLength must be auto, short or long")
+	}
+}
+
+func (s *coreConfigStore) appearanceLibraryOutfitLength(personaID string) string {
+	var value string
+	_ = s.db.QueryRow(`SELECT l.outfit_length FROM appearance_libraries l
+		JOIN persona_appearance_libraries pal ON pal.library_id = l.id
+		WHERE pal.persona_id = ? AND l.enabled = 1`, personaID).Scan(&value)
+	return value
 }
 
 func (s *coreConfigStore) personaVisualReferencePromptLegacy(personaID string) string {

@@ -22,9 +22,9 @@ import (
 	dtomessage "github.com/tencent-connect/botgo/dto/message"
 	"github.com/tencent-connect/botgo/event"
 	"github.com/tencent-connect/botgo/openapi/options"
+	"github.com/tencent-connect/botgo/sessions/local"
 	"github.com/tencent-connect/botgo/token"
 	botgowebsocket "github.com/tencent-connect/botgo/websocket"
-	"github.com/tencent-connect/botgo/sessions/local"
 	"golang.org/x/oauth2"
 )
 
@@ -1011,24 +1011,42 @@ func (c *qqOfficialConnector) Deliver(ctx context.Context, route platformReplyRo
 		return &platformDeliveryError{Retryable: true, Reason: "qq_not_connected"}
 	}
 	if text := strings.TrimSpace(delivery.Message.Text); text != "" {
-		sequence, err := c.runtime.nextPlatformMessageSequence(ctx, delivery.ReplyHandle)
-		if err != nil {
+		if err := c.deliverPart(ctx, delivery.ID, "text", func() error {
+			sequence, err := c.runtime.nextPlatformMessageSequence(ctx, delivery.ReplyHandle)
+			if err != nil {
+				return err
+			}
+			message := &dto.MessageToCreate{
+				Content: text, MsgType: dto.TextMsg, MsgID: route.MessageID, MsgSeq: sequence,
+			}
+			if err = c.sendText(ctx, route, message); err != nil {
+				return &platformDeliveryError{Retryable: true, Reason: "qq_text_send_failed", Cause: err}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-		message := &dto.MessageToCreate{
-			Content: text, MsgType: dto.TextMsg, MsgID: route.MessageID, MsgSeq: sequence,
-		}
-		if err = c.sendText(ctx, route, message); err != nil {
-			return &platformDeliveryError{Retryable: true, Reason: "qq_text_send_failed", Cause: err}
-		}
 	}
-	for _, attachment := range delivery.Message.Attachments {
-		if err := c.sendAttachment(ctx, route, delivery.ReplyHandle, attachment); err != nil {
+	for index, attachment := range delivery.Message.Attachments {
+		if err := c.deliverPart(ctx, delivery.ID, fmt.Sprintf("attachment:%d", index), func() error {
+			return c.sendAttachment(ctx, route, delivery.ReplyHandle, attachment)
+		}); err != nil {
 			return err
 		}
 	}
 	c.markDelivery()
 	return nil
+}
+
+func (c *qqOfficialConnector) deliverPart(ctx context.Context, deliveryID, part string, send func() error) error {
+	sent, err := c.runtime.platformDeliveryPartSent(ctx, deliveryID, part)
+	if err != nil || sent {
+		return err
+	}
+	if err = send(); err != nil {
+		return err
+	}
+	return c.runtime.markPlatformDeliveryPartSent(ctx, deliveryID, part)
 }
 
 func (c *qqOfficialConnector) sendText(ctx context.Context, route platformReplyRoute, message *dto.MessageToCreate) error {

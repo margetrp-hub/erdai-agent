@@ -151,6 +151,7 @@ export type AppearanceLibrary = {
   name?: string;
   description?: string;
   visualDescription?: string;
+  outfitLength?: 'auto' | 'short' | 'long';
   sourcePersonaId?: string;
   enabled?: boolean;
   referenceCount?: number;

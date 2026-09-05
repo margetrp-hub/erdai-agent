@@ -824,6 +824,21 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
     ? `/api/v1/appearance-libraries/${encodeURIComponent(selectedAppearanceLibraryId)}/references`
     : '';
   const selectedAppearanceLibrary = appearanceLibraries.find((library) => library.id === selectedAppearanceLibraryId);
+  const [savingOutfitLength, setSavingOutfitLength] = useState(false);
+  const updateOutfitLength = async (outfitLength: 'auto' | 'short' | 'long') => {
+    if (!selectedAppearanceLibraryId || savingOutfitLength) return;
+    setSavingOutfitLength(true);
+    try {
+      await apiRequest(`/api/v1/appearance-libraries/${encodeURIComponent(selectedAppearanceLibraryId)}?namespace=default`, {
+        method: 'PUT', body: JSON.stringify({ outfitLength }),
+      });
+      ctx.reload();
+    } catch (cause) {
+      window.alert(cause instanceof Error ? cause.message : '服装长度保存失败');
+    } finally {
+      setSavingOutfitLength(false);
+    }
+  };
   const uploadReferences = async (files: FileList) => {
     if (!ctx.activePersonaId || !selectedAppearanceLibraryId) return;
     setUploadingReferences(true);
@@ -883,7 +898,9 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
             libraryId={selectedAppearanceLibraryId}
             onLibraryChange={(libraryId) => void assignAppearanceLibrary(ctx.activePersonaId, libraryId)}
             onCreateLibrary={() => void createAppearanceLibrary()}
-            onEditLibrary={(library) => ctx.openEditor('编辑外观库', { name: library.name || '', description: library.description || '', visualDescription: library.visualDescription || '', enabled: library.enabled !== false }, `/api/v1/appearance-libraries/${encodeURIComponent(library.id)}?namespace=default`)}
+            onEditLibrary={(library) => ctx.openEditor('编辑外观库', { name: library.name || '', description: library.description || '', visualDescription: library.visualDescription || '', outfitLength: library.outfitLength || 'auto', enabled: library.enabled !== false }, `/api/v1/appearance-libraries/${encodeURIComponent(library.id)}?namespace=default`)}
+            onOutfitLengthChange={updateOutfitLength}
+            savingOutfitLength={savingOutfitLength}
             references={visualReferences}
             uploading={uploadingReferences}
             onUpload={uploadReferences}

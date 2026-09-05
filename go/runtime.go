@@ -328,6 +328,13 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 			delivery_id TEXT PRIMARY KEY,
 			sent_at TEXT NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS platform_sent_delivery_parts (
+			delivery_id TEXT NOT NULL,
+			part_key TEXT NOT NULL,
+			sent_at TEXT NOT NULL,
+			PRIMARY KEY (delivery_id, part_key),
+			FOREIGN KEY (delivery_id) REFERENCES agent_deliveries(id) ON DELETE CASCADE
+		);
 		CREATE TABLE IF NOT EXISTS agent_recent_attachments (
 			agent_instance_id TEXT NOT NULL DEFAULT 'legacy-default',
 			transport TEXT NOT NULL,
@@ -483,6 +490,23 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		);
 		CREATE INDEX IF NOT EXISTS agent_search_runs_status_idx
 			ON agent_search_runs(status, updated_at DESC);
+		CREATE TABLE IF NOT EXISTS agent_search_queries (
+			run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+			query_hash TEXT NOT NULL,
+			status TEXT NOT NULL,
+			result_cipher BLOB,
+			sources_cipher BLOB,
+			error_message TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (run_id, query_hash)
+		);
+		CREATE INDEX IF NOT EXISTS agent_deliveries_run_status_idx ON agent_deliveries(run_id, status, created_at);
+		CREATE TABLE IF NOT EXISTS agent_affiliate_owners (
+			affiliate_code TEXT PRIMARY KEY COLLATE NOCASE,
+			transport TEXT NOT NULL, transport_instance TEXT NOT NULL, sender_ref TEXT NOT NULL,
+			verified_at TEXT NOT NULL, evidence TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS agent_transport_events (
 			event_id TEXT PRIMARY KEY,
 			idempotency_key TEXT NOT NULL,
@@ -520,6 +544,10 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		return nil, err
 	}
 	if err = ensureRuntimeColumn(db, "agent_runs", "transport_instance", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS agent_runs_delivery_scope_idx ON agent_runs(transport, transport_instance, conversation_ref)`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -623,18 +651,6 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		db.Close()
 		return nil, err
 	}
-	if _, err = db.Exec(
-		"UPDATE agent_runs SET state = 'queued', updated_at = ? WHERE state = 'running' AND input_cipher IS NOT NULL",
-		time.Now().UTC().Format(time.RFC3339Nano),
-	); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if _, err = db.Exec("UPDATE agent_task_steps SET status = 'pending', updated_at = ? WHERE status = 'running'",
-		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		db.Close()
-		return nil, err
-	}
 	timeout := config.ModelTimeout
 	if timeout <= 0 {
 		timeout = 120 * time.Second
@@ -708,6 +724,9 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		} else {
 			err = mergeLegacyRuntimeDatabase(ctx, db, config.DatabasePath, config.LegacyRuntimeDatabasePath)
 		}
+	}
+	if err == nil {
+		err = recoverInterruptedRuntime(ctx, db)
 	}
 	if err != nil {
 		cancel()
@@ -906,7 +925,7 @@ func (a *AgentRuntime) Handle(w http.ResponseWriter, r *http.Request) bool {
 	case r.Method == http.MethodPost && path == "/api/v1/transport/deliveries/lease":
 		a.leaseDeliveries(w, r)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/ack"):
-		a.ackDelivery(w, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/transport/deliveries/"), "/ack"))
+		a.ackDelivery(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/transport/deliveries/"), "/ack"))
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/fail"):
 		a.failDelivery(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/transport/deliveries/"), "/fail"))
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/cancel"):
@@ -2004,6 +2023,17 @@ func naturalFailureReply(message string, err error) (string, string) {
 		if timedOut {
 			return "这一步等超时了。稍后再来。", "generation_timeout"
 		}
+		switch classifyProviderFailure(err) {
+		case failureClassUpstreamDown:
+			return "回答线路暂时连不上，这条没能答出来。", "provider_unavailable"
+		case failureClassQuota:
+			return "回答线路的额度暂时用完了，这条没能答出来。", "provider_quota_exhausted"
+		case failureClassRateLimit:
+			return "回答线路正忙，这条暂时没能答出来。", "provider_rate_limited"
+		}
+		if strings.Contains(err.Error(), "no eligible provider endpoint") {
+			return "现在没有可用的回答线路，需要管理员检查配置。", "provider_unavailable"
+		}
 		return "刚才那步没做成。我再看看。", "generation_failed"
 	}
 }
@@ -2015,6 +2045,8 @@ func (a *AgentRuntime) naturalFailureReplyForRun(ctx context.Context, run runRec
 
 func failureReplyOptions(code, fallback string) []string {
 	switch code {
+	case "provider_unavailable", "provider_quota_exhausted", "provider_rate_limited":
+		return []string{fallback}
 	case "image_generation_timeout":
 		return []string{fallback, "这张等太久了，没出来。", "这回卡在半路了。", "图片超时了，这次不算。"}
 	case "image_generation_rate_limited":
@@ -2289,18 +2321,18 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	if prepared.Data.RouteDecision.Selected != nil && prepared.Data.RouteDecision.Selected.Endpoint.Provider != "" {
 		provider.ProviderID = prepared.Data.RouteDecision.Selected.Endpoint.Provider
 	}
-	connectionEndpointID := ""
-	if selected := prepared.Data.RouteDecision.Selected; selected != nil {
-		connectionEndpointID = selected.Endpoint.ID
-	}
-	if connection, ok, connectionErr := a.providerConnectionForEndpoint(connectionEndpointID, provider.ProviderID); connectionErr != nil {
-		return agentReply{}, connectionErr
-	} else if ok {
-		provider.APIBase = connection.APIBase
-		provider.CredentialRef = connection.CredentialRef
-		if connection.TimeoutSeconds > 0 {
-			// Per-connection timeout is applied by the request context owner.
-			provider.ToolCallTimeout = minPositive(provider.ToolCallTimeout, connection.TimeoutSeconds)
+	// Routed endpoints resolve their own connections below. A broken selected
+	// binding must not abort before eligible fallbacks are considered.
+	if prepared.Data.RouteDecision.Selected == nil && prepared.Data.RouteDecision.Lane == "" {
+		if connection, ok, connectionErr := a.providerConnection(provider.ProviderID); connectionErr != nil {
+			return agentReply{}, connectionErr
+		} else if ok {
+			provider.APIBase = connection.APIBase
+			provider.CredentialRef = connection.CredentialRef
+			if connection.TimeoutSeconds > 0 {
+				// Per-connection timeout is applied by the request context owner.
+				provider.ToolCallTimeout = minPositive(provider.ToolCallTimeout, connection.TimeoutSeconds)
+			}
 		}
 	}
 	model := ""
@@ -2342,9 +2374,7 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	models := providerModelCandidates(model, provider, prepared.Data.RouteDecision)
 	apiKey := a.modelAPIKey
 	if ref := strings.TrimSpace(provider.CredentialRef); ref != "" {
-		if value, ok := os.LookupEnv(ref); ok && strings.TrimSpace(value) != "" {
-			apiKey = value
-		}
+		apiKey = a.providerCredential(ref)
 	}
 	targets, targetErr := a.providerRouteTargets(prepared.Data.RouteDecision, provider, models, apiBase, apiKey)
 	if targetErr != nil {
@@ -2397,16 +2427,19 @@ func (a *AgentRuntime) providerConnectionForEndpoint(endpointID, provider string
 	if endpointID == "" || a == nil || a.configStore == nil {
 		return a.providerConnection(provider)
 	}
-	var value providerConnectionConfig
-	err := a.configStore.db.QueryRow(`SELECT c.id, c.provider, c.protocol, c.api_base, c.credential_ref, c.timeout_seconds
-		FROM model_endpoint_connections binding
-		JOIN provider_connections c ON c.id = binding.connection_id
-		WHERE binding.endpoint_id = ? AND c.enabled = 1`, endpointID).
-		Scan(&value.ID, &value.Provider, &value.Protocol, &value.APIBase, &value.CredentialRef, &value.TimeoutSeconds)
+	var connectionID string
+	err := a.configStore.db.QueryRow(`SELECT connection_id FROM model_endpoint_connections WHERE endpoint_id = ?`, endpointID).Scan(&connectionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a.providerConnection(provider)
 	}
-	return value, err == nil, err
+	if err != nil {
+		return providerConnectionConfig{}, false, err
+	}
+	value, found, err := a.providerConnectionByID(context.Background(), connectionID)
+	if err == nil && !found {
+		err = fmt.Errorf("endpoint %s has a disabled or missing bound connection", endpointID)
+	}
+	return value, found, err
 }
 
 type runtimeProviderTarget struct {
@@ -2419,6 +2452,27 @@ type runtimeProviderTarget struct {
 	ProviderRetries int
 }
 
+func (a *AgentRuntime) providerCredential(reference string) string {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return ""
+	}
+	if value := strings.TrimSpace(getenv(reference)); value != "" {
+		return value
+	}
+	// Constructor-injected credentials are valid only for their exact reference.
+	switch reference {
+	case "ERDAI_MODEL_API_KEY":
+		return strings.TrimSpace(a.modelAPIKey)
+	case "ERDAI_GROK_API_KEY":
+		return strings.TrimSpace(a.grokAPIKey)
+	case "ERDAI_IMAGE_API_KEY":
+		return strings.TrimSpace(a.imageAPIKey)
+	default:
+		return ""
+	}
+}
+
 func (a *AgentRuntime) providerRouteTargets(
 	route nativeRouteDecision,
 	policy providerPolicyConfig,
@@ -2426,6 +2480,7 @@ func (a *AgentRuntime) providerRouteTargets(
 	legacyAPIBase, legacyAPIKey string,
 ) ([]runtimeProviderTarget, error) {
 	targets := make([]runtimeProviderTarget, 0, 1+len(route.Fallbacks))
+	var configurationErrors []error
 	seen := map[string]bool{}
 	addEndpoint := func(endpoint nativeModelEndpoint) error {
 		if endpoint.ExecutionKind != "llm" || seen[endpoint.ID] {
@@ -2433,19 +2488,18 @@ func (a *AgentRuntime) providerRouteTargets(
 		}
 		connection, ok, err := a.providerConnectionForEndpoint(endpoint.ID, endpoint.Provider)
 		if err != nil {
-			return err
+			configurationErrors = append(configurationErrors, err)
+			return nil
+		}
+		if !ok || strings.TrimSpace(connection.APIBase) == "" || a.providerCredential(connection.CredentialRef) == "" {
+			configurationErrors = append(configurationErrors, fmt.Errorf("endpoint %s has no usable connection or configured credential", endpoint.ID))
+			return nil
 		}
 		target := runtimeProviderTarget{
 			EndpointID: endpoint.ID, Provider: endpoint.Provider, Model: endpoint.Model,
-			APIBase: legacyAPIBase, APIKey: legacyAPIKey,
+			APIBase: strings.TrimRight(strings.TrimSpace(connection.APIBase), "/"), APIKey: a.providerCredential(connection.CredentialRef),
+			TimeoutSeconds:  connection.TimeoutSeconds,
 			ProviderRetries: policy.ProviderRetries,
-		}
-		if ok {
-			target.APIBase = strings.TrimRight(strings.TrimSpace(connection.APIBase), "/")
-			target.TimeoutSeconds = connection.TimeoutSeconds
-			if key := getenv(connection.CredentialRef); key != "" {
-				target.APIKey = key
-			}
 		}
 		seen[endpoint.ID] = true
 		targets = append(targets, target)
@@ -2462,6 +2516,12 @@ func (a *AgentRuntime) providerRouteTargets(
 		}
 	}
 	if len(targets) == 0 {
+		if len(configurationErrors) > 0 {
+			return nil, errors.Join(configurationErrors...)
+		}
+		if route.Lane != "" {
+			return nil, errors.New("no eligible provider endpoint for lane: " + route.Lane)
+		}
 		for _, model := range legacyModels {
 			targets = append(targets, runtimeProviderTarget{
 				Provider: policy.ProviderID, Model: model, APIBase: legacyAPIBase, APIKey: legacyAPIKey,
@@ -2469,7 +2529,7 @@ func (a *AgentRuntime) providerRouteTargets(
 			})
 		}
 	}
-	if len(targets) > 0 && route.Selected == nil {
+	if len(targets) > 0 && route.Selected == nil && route.Lane == "" {
 		for _, model := range legacyModels {
 			found := false
 			for _, target := range targets {
@@ -3000,16 +3060,29 @@ func (a *AgentRuntime) leaseTransportDeliveries(ctx context.Context, consumerID 
 		return nil, err
 	}
 	defer tx.Rollback()
-	_, _ = tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE agent_deliveries
 		SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-		WHERE status = 'sending' AND lease_expires_at < ?
+		WHERE status = 'sending' AND julianday(lease_expires_at) <= julianday(?)
 	`, now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	// SQLite's integer insertion sequence is the outbox FIFO order, including
+	// legacy rows. RFC3339Nano strings have variable precision and cannot sort
+	// timestamps correctly; clock changes must not reorder queued messages.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, run_id, reply_handle, payload_json, phase, attempts, created_at, updated_at
-		FROM agent_deliveries
-		WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-		ORDER BY created_at, rowid LIMIT ?
+		SELECT d.id, d.run_id, d.reply_handle, d.payload_json, d.phase, d.attempts, d.created_at, d.updated_at
+		FROM agent_deliveries d JOIN agent_runs r ON r.id = d.run_id
+		WHERE d.status = 'pending' AND (d.next_attempt_at IS NULL OR julianday(d.next_attempt_at) <= julianday(?))
+		AND NOT EXISTS (
+			SELECT 1 FROM agent_deliveries earlier JOIN agent_runs er ON er.id = earlier.run_id
+			WHERE er.transport = r.transport AND er.transport_instance = r.transport_instance
+			AND er.conversation_ref = r.conversation_ref
+			AND earlier.id <> d.id AND (earlier.status = 'sending' OR
+				(earlier.status = 'pending' AND earlier.rowid < d.rowid))
+		)
+		ORDER BY d.rowid LIMIT ?
 	`, now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, err
@@ -3027,6 +3100,10 @@ func (a *AgentRuntime) leaseTransportDeliveries(ctx context.Context, consumerID 
 			return nil, err
 		}
 		selected = append(selected, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	rows.Close()
 	expires := now.Add(time.Duration(leaseSeconds) * time.Second).UTC().Format(time.RFC3339Nano)
@@ -3061,15 +3138,38 @@ func (a *AgentRuntime) leaseTransportDeliveries(ctx context.Context, consumerID 
 	return output, nil
 }
 
-func (a *AgentRuntime) ackDelivery(w http.ResponseWriter, id string) {
-	if err := a.ackTransportDelivery(context.Background(), id); err != nil {
+type deliveryLeaseReceipt struct {
+	LeaseOwner string `json:"leaseOwner"`
+	Attempts   int    `json:"attempts"`
+}
+
+func deliveryLeaseMatches(owner string, attempts int, expires string, receipts []deliveryLeaseReceipt) bool {
+	deadline, err := time.Parse(time.RFC3339Nano, expires)
+	if err != nil || !deadline.After(time.Now()) {
+		return false
+	}
+	// Older transports may ACK their first attempt without a receipt. Once a
+	// delivery is re-leased, only the exact lease owner and attempt are accepted.
+	if len(receipts) == 0 || (receipts[0].Attempts == 0 && receipts[0].LeaseOwner == "") {
+		return attempts == 1
+	}
+	return receipts[0].Attempts == attempts && receipts[0].LeaseOwner == owner
+}
+
+func (a *AgentRuntime) ackDelivery(w http.ResponseWriter, r *http.Request, id string) {
+	var receipt deliveryLeaseReceipt
+	if err := decodeJSONBody(r, &receipt); err != nil && !errors.Is(err, io.EOF) {
+		runtimeError(w, http.StatusBadRequest, "invalid_ack")
+		return
+	}
+	if err := a.ackTransportDelivery(r.Context(), id, receipt); err != nil {
 		writeTransportRuntimeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": id, "status": "delivered"}})
 }
 
-func (a *AgentRuntime) ackTransportDelivery(ctx context.Context, id string) error {
+func (a *AgentRuntime) ackTransportDelivery(ctx context.Context, id string, receipts ...deliveryLeaseReceipt) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return newTransportRuntimeError(http.StatusNotFound, "delivery_not_found", nil)
@@ -3079,27 +3179,37 @@ func (a *AgentRuntime) ackTransportDelivery(ctx context.Context, id string) erro
 	tx, err := a.db.BeginTx(ctx, nil)
 	var runID, status, phase, conversationRef, senderRef, personaID, payloadJSON string
 	var agentInstanceID, memoryNamespace, transport, transportInstance, threadKey string
+	var leaseOwner, leaseExpires string
+	var attempts int
 	newlyDelivered := false
 	terminalCompleted := false
 	if err == nil {
 		err = tx.QueryRowContext(ctx, `
 			SELECT delivery.run_id, delivery.status, delivery.phase,
 			       run.conversation_ref, run.sender_ref, run.persona_id, delivery.payload_json,
-			       run.agent_instance_id, run.memory_namespace, run.transport, run.transport_instance, run.thread_key
+			       run.agent_instance_id, run.memory_namespace, run.transport, run.transport_instance, run.thread_key,
+			       COALESCE(delivery.lease_owner, ''), COALESCE(delivery.lease_expires_at, ''), delivery.attempts
 			FROM agent_deliveries delivery
 			JOIN agent_runs run ON run.id = delivery.run_id
 			WHERE delivery.id = ?
 		`, id).Scan(&runID, &status, &phase, &conversationRef, &senderRef, &personaID, &payloadJSON,
-			&agentInstanceID, &memoryNamespace, &transport, &transportInstance, &threadKey)
+			&agentInstanceID, &memoryNamespace, &transport, &transportInstance, &threadKey, &leaseOwner, &leaseExpires, &attempts)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		tx.Rollback()
 		return newTransportRuntimeError(http.StatusNotFound, "delivery_not_found", err)
 	}
-	if err == nil && status != "delivered" {
+	if err == nil && status == "delivered" {
+		return tx.Commit()
+	}
+	if err == nil && (status != "sending" || !deliveryLeaseMatches(leaseOwner, attempts, leaseExpires, receipts)) {
+		tx.Rollback()
+		return newTransportRuntimeError(http.StatusConflict, "stale_delivery_lease", nil)
+	}
+	if err == nil {
 		_, err = tx.ExecContext(ctx,
-			"UPDATE agent_deliveries SET status = 'delivered', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL, last_error = NULL, updated_at = ? WHERE id = ?",
-			now, id,
+			"UPDATE agent_deliveries SET status = 'delivered', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'sending' AND attempts = ?",
+			now, id, attempts,
 		)
 		newlyDelivered = err == nil
 	}
@@ -3118,7 +3228,10 @@ func (a *AgentRuntime) ackTransportDelivery(ctx context.Context, id string) erro
 			`, now, now, runID)
 		}
 	}
-	if err != nil || tx.Commit() != nil {
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
 		if tx != nil {
 			tx.Rollback()
 		}
@@ -3153,6 +3266,7 @@ func (a *AgentRuntime) ackTransportDelivery(ctx context.Context, id string) erro
 
 func (a *AgentRuntime) failDelivery(w http.ResponseWriter, r *http.Request, id string) {
 	var input struct {
+		deliveryLeaseReceipt
 		Retryable bool   `json:"retryable"`
 		Reason    string `json:"reason"`
 	}
@@ -3160,7 +3274,7 @@ func (a *AgentRuntime) failDelivery(w http.ResponseWriter, r *http.Request, id s
 		runtimeError(w, http.StatusBadRequest, "invalid_failure")
 		return
 	}
-	status, err := a.failTransportDelivery(r.Context(), id, input.Retryable, input.Reason)
+	status, err := a.failTransportDelivery(r.Context(), id, input.Retryable, input.Reason, input.deliveryLeaseReceipt)
 	if err != nil {
 		writeTransportRuntimeError(w, err)
 		return
@@ -3168,15 +3282,24 @@ func (a *AgentRuntime) failDelivery(w http.ResponseWriter, r *http.Request, id s
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"id": id, "status": status}})
 }
 
-func (a *AgentRuntime) failTransportDelivery(ctx context.Context, id string, retryable bool, reason string) (string, error) {
-	var runID, phase string
+func (a *AgentRuntime) failTransportDelivery(ctx context.Context, id string, retryable bool, reason string, receipts ...deliveryLeaseReceipt) (string, error) {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var runID, phase, currentStatus, leaseOwner, leaseExpires string
 	var attempts int
-	err := a.db.QueryRowContext(ctx, "SELECT run_id, attempts, phase FROM agent_deliveries WHERE id = ?", id).Scan(&runID, &attempts, &phase)
+	err = tx.QueryRowContext(ctx, `SELECT run_id, attempts, phase, status, COALESCE(lease_owner, ''), COALESCE(lease_expires_at, '')
+		FROM agent_deliveries WHERE id = ?`, id).Scan(&runID, &attempts, &phase, &currentStatus, &leaseOwner, &leaseExpires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", newTransportRuntimeError(http.StatusNotFound, "delivery_not_found", err)
 	}
 	if err != nil {
 		return "", newTransportRuntimeError(http.StatusInternalServerError, "failure_update_failed", err)
+	}
+	if currentStatus != "sending" || !deliveryLeaseMatches(leaseOwner, attempts, leaseExpires, receipts) {
+		return "", newTransportRuntimeError(http.StatusConflict, "stale_delivery_lease", nil)
 	}
 	status := "failed"
 	var nextAttempt any
@@ -3185,19 +3308,22 @@ func (a *AgentRuntime) failTransportDelivery(ctx context.Context, id string, ret
 		delay := time.Duration(1<<max(0, attempts-1)) * time.Second
 		nextAttempt = time.Now().Add(min(delay, 30*time.Second)).UTC().Format(time.RFC3339Nano)
 	}
-	_, err = a.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE agent_deliveries
 		SET status = ?, next_attempt_at = ?, lease_owner = NULL, lease_expires_at = NULL, last_error = ?, updated_at = ?
-		WHERE id = ?
-	`, status, nextAttempt, strings.TrimSpace(reason), time.Now().UTC().Format(time.RFC3339Nano), id)
+		WHERE id = ? AND status = 'sending' AND attempts = ?
+	`, status, nextAttempt, strings.TrimSpace(reason), time.Now().UTC().Format(time.RFC3339Nano), id, attempts)
 	if err != nil {
 		return "", newTransportRuntimeError(http.StatusInternalServerError, "failure_update_failed", err)
 	}
 	if status == "failed" && phase == "terminal" {
-		_, _ = a.db.ExecContext(ctx, "UPDATE agent_runs SET state = 'failed', error_code = ?, updated_at = ? WHERE id = ?",
+		_, err = tx.ExecContext(ctx, "UPDATE agent_runs SET state = 'failed', error_code = ?, updated_at = ? WHERE id = ? AND state NOT IN ('delivered', 'cancelled')",
 			strings.TrimSpace(reason), time.Now().UTC().Format(time.RFC3339Nano), runID)
+		if err != nil {
+			return "", err
+		}
 	}
-	return status, nil
+	return status, tx.Commit()
 }
 
 func (a *AgentRuntime) cancelRun(w http.ResponseWriter, id string) {

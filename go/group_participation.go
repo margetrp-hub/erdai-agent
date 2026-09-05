@@ -703,9 +703,9 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 		"stream": false,
 	}
 	var completion chatCompletion
-	apiKey := getenv(connection.CredentialRef)
+	apiKey := a.providerCredential(connection.CredentialRef)
 	if apiKey == "" {
-		apiKey = a.modelAPIKey
+		return false, errors.New("group decision provider credential is not configured")
 	}
 	if err = a.postProviderJSON(decisionContext, apiBase+"/chat/completions", apiKey, payload, &completion); err != nil {
 		return false, err

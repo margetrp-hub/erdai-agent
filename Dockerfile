@@ -35,6 +35,13 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     && ln -s /app/data/media /out/root/erdai-media \
     && chown -R 1000:1000 /out/root/app
 
+FROM source AS verify-race
+RUN apk add --no-cache gcc musl-dev
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=tmpfs,target=/tmp \
+    CGO_ENABLED=1 /usr/local/go/bin/go test -race -p=1 -timeout 20m \
+    -run 'Test(Hardening|Optimization|Repair)' .
+
 FROM scratch AS final
 
 ARG ERDAI_RELEASE_VERSION=dev

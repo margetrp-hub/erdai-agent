@@ -271,9 +271,6 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 	if maxSteps <= 0 || maxSteps > 20 {
 		maxSteps = defaultMaxAgentSteps
 	}
-	// Search is a run-scoped fact lookup. Repeated model tool calls reuse the
-	// first result instead of charging and waiting on the upstream again.
-	searchCache := map[string]toolResult{}
 	for step := 0; step < maxSteps; step++ {
 		payload := map[string]any{"messages": messages, "stream": policy.Streaming}
 		if len(tools) > 0 {
@@ -398,13 +395,7 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 		for _, call := range assistant.ToolCalls {
 			toolUsed = true
 			adapter := normalizeAdapterRef(call.Function.Name)
-			result, cached := searchCache[adapter]
-			if !cached {
-				result = a.executePersistentToolCall(ctx, run, message, policy, mcpRoutes, step, modelStepID, call)
-				if adapter == "grok_web_search" {
-					searchCache[adapter] = result
-				}
-			}
+			result := a.executePersistentToolCall(ctx, run, message, policy, mcpRoutes, step, modelStepID, call)
 			attachments = append(attachments, result.Attachments...)
 			if result.UserMessage != "" {
 				if adapter == "grok_web_search" {
@@ -1516,10 +1507,14 @@ func (a *AgentRuntime) grokResearchForRunWithPrompt(ctx context.Context, run *ru
 		}
 		defer func() {
 			if err != nil {
-				a.finishSearchRunFailure(run.ID, err)
+				if persistErr := a.finishSearchRunFailure(run.ID, originalQuery, err); persistErr != nil {
+					err = errors.Join(err, persistErr)
+				}
 				return
 			}
-			a.finishSearchRunSuccess(run.ID, text, sources)
+			if persistErr := a.finishSearchRunSuccess(run.ID, originalQuery, text, sources); persistErr != nil {
+				err = persistErr
+			}
 		}()
 	}
 	if nativeText, nativeSources, handled, nativeErr := a.grokNativeResearchForRun(ctx, run, originalQuery, systemPrompt); handled && nativeErr == nil {
@@ -1660,28 +1655,42 @@ func searchRetrievalQuery(query string) string {
 	return query
 }
 
-// beginSearchRun reserves one web-search attempt for a run. Repeated tool
-// calls in the same agent loop must reuse the first result or first failure.
+const maxSearchQueriesPerRun = 3
+
+func searchQueryHash(query string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(strings.Join(strings.Fields(query), " ")))))
+}
+
+// Each distinct query has its own receipt. The atomic insert also bounds
+// concurrent callers; repeated queries do not consume additional budget.
 func (a *AgentRuntime) beginSearchRun(run *runRecord, query string) (string, []searchSource, bool, error) {
 	if a == nil || a.db == nil || run == nil || strings.TrimSpace(run.ID) == "" {
 		return "", nil, false, nil
 	}
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(query)))))
+	hash := searchQueryHash(query)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := a.db.Exec(`INSERT OR IGNORE INTO agent_search_runs
-		(run_id, query_hash, status, created_at, updated_at) VALUES (?, ?, 'running', ?, ?)`,
-		run.ID, hash, now, now)
+	result, err := a.db.Exec(`INSERT OR IGNORE INTO agent_search_queries
+		(run_id, query_hash, status, created_at, updated_at) SELECT ?, ?, 'running', ?, ?
+		WHERE (SELECT count(*) FROM agent_search_queries WHERE run_id = ?) < ?`,
+		run.ID, hash, now, now, run.ID, maxSearchQueriesPerRun)
 	if err != nil {
 		return "", nil, true, fmt.Errorf("search state persist failed: %w", err)
 	}
-	if changed, _ := result.RowsAffected(); changed == 1 {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return "", nil, true, fmt.Errorf("search reservation count failed: %w", err)
+	}
+	if changed == 1 {
 		return "", nil, false, nil
 	}
 	var status, errorMessage string
 	var resultCipher, sourcesCipher []byte
 	err = a.db.QueryRow(`SELECT status, result_cipher, sources_cipher, error_message
-		FROM agent_search_runs WHERE run_id = ?`, run.ID).
+		FROM agent_search_queries WHERE run_id = ? AND query_hash = ?`, run.ID, hash).
 		Scan(&status, &resultCipher, &sourcesCipher, &errorMessage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, true, errors.New("search query budget exhausted; summarize available sources or ask the user to narrow the request")
+	}
 	if err != nil {
 		return "", nil, true, fmt.Errorf("search state read failed: %w", err)
 	}
@@ -1699,30 +1708,31 @@ func (a *AgentRuntime) beginSearchRun(run *runRecord, query string) (string, []s
 	}
 }
 
-func (a *AgentRuntime) finishSearchRunSuccess(runID, text string, sources []searchSource) {
+func (a *AgentRuntime) finishSearchRunSuccess(runID, query, text string, sources []searchSource) error {
 	if a == nil || a.db == nil || strings.TrimSpace(runID) == "" {
-		return
+		return nil
 	}
 	resultCipher, err := a.encrypt([]byte(text))
 	if err != nil {
-		return
+		return err
 	}
 	sourcesJSON, err := json.Marshal(sources)
 	if err != nil {
-		return
+		return err
 	}
 	sourcesCipher, err := a.encrypt(sourcesJSON)
 	if err != nil {
-		return
+		return err
 	}
-	_, _ = a.db.Exec(`UPDATE agent_search_runs SET status = 'succeeded', result_cipher = ?,
-		sources_cipher = ?, error_message = '', updated_at = ? WHERE run_id = ?`,
-		resultCipher, sourcesCipher, time.Now().UTC().Format(time.RFC3339Nano), runID)
+	result, err := a.db.Exec(`UPDATE agent_search_queries SET status = 'succeeded', result_cipher = ?,
+		sources_cipher = ?, error_message = '', updated_at = ? WHERE run_id = ? AND query_hash = ? AND status = 'running'`,
+		resultCipher, sourcesCipher, time.Now().UTC().Format(time.RFC3339Nano), runID, searchQueryHash(query))
+	return checkSearchReceiptUpdate(result, err)
 }
 
-func (a *AgentRuntime) finishSearchRunFailure(runID string, searchErr error) {
+func (a *AgentRuntime) finishSearchRunFailure(runID, query string, searchErr error) error {
 	if a == nil || a.db == nil || strings.TrimSpace(runID) == "" {
-		return
+		return nil
 	}
 	message := "web search failed"
 	if searchErr != nil && strings.TrimSpace(searchErr.Error()) != "" {
@@ -1731,8 +1741,23 @@ func (a *AgentRuntime) finishSearchRunFailure(runID string, searchErr error) {
 	if len(message) > 500 {
 		message = message[:500]
 	}
-	_, _ = a.db.Exec(`UPDATE agent_search_runs SET status = 'failed', error_message = ?,
-		updated_at = ? WHERE run_id = ?`, message, time.Now().UTC().Format(time.RFC3339Nano), runID)
+	result, err := a.db.Exec(`UPDATE agent_search_queries SET status = 'failed', error_message = ?,
+		updated_at = ? WHERE run_id = ? AND query_hash = ? AND status = 'running'`, message, time.Now().UTC().Format(time.RFC3339Nano), runID, searchQueryHash(query))
+	return checkSearchReceiptUpdate(result, err)
+}
+
+func checkSearchReceiptUpdate(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("search reservation is no longer running")
+	}
+	return nil
 }
 
 func (a *AgentRuntime) decodeSearchCache(resultCipher, sourcesCipher []byte) (string, []searchSource, error) {
@@ -2194,8 +2219,7 @@ func personaImagePromptAt(
 	variationSeed uint64,
 ) string {
 	prompt = strings.TrimSpace(prompt)
-	if persona == nil || strings.TrimSpace(persona.VisualDescription) == "" ||
-		!nativeSelfImageRequestPattern.MatchString(prompt) {
+	if persona == nil || !nativeSelfImageRequestPattern.MatchString(prompt) {
 		return prompt
 	}
 	parts := []string{
@@ -2205,9 +2229,12 @@ func personaImagePromptAt(
 		"用户这次的场景要求：" + prompt,
 		"场景必须符合现实：季节、天气、时间、地点、光线、衣着和物体相互匹配；炎热夏天穿透气的短袖或轻薄裙装，寒冷天气才穿厚外套。动作、手脚、镜面反射和透视符合真实物理。构图允许轻微歪斜、人物偏一侧、裁切不完美、自然抓拍和一点点运动感，不要每次正面居中看镜头。",
 	}
-	shortOutfit := appearanceLibraryRequiresShortOutfit(persona.VisualDescription)
+	shortOutfit := personaPrefersShortOutfit(prompt, persona)
 	if shortOutfit {
 		parts = append(parts, shortOutfitInstruction())
+	}
+	if instruction := longOutfitInstruction(prompt, persona); instruction != "" {
+		parts = append(parts, instruction)
 	}
 	if override := strings.TrimSpace(persona.VisualPromptOverride); override != "" {
 		parts = append(parts, "当前角色视觉覆盖："+override)
@@ -2215,7 +2242,7 @@ func personaImagePromptAt(
 	if referencePrompt := strings.TrimSpace(persona.VisualReferencePrompt); referencePrompt != "" {
 		parts = append(parts, "已整理的角色参考资料（只用于稳定外观，不照抄场景）："+referencePrompt)
 	}
-	if variation := visualDirectorPrompt(prompt, now, variationSeed, policy, shortOutfit); variation != "" {
+	if variation := visualDirectorPrompt(prompt, now, variationSeed, policy, shortOutfit, persona.OutfitLength); variation != "" {
 		parts = append(parts, variation)
 	}
 	normalized := strings.ToLower(prompt)
@@ -2261,7 +2288,8 @@ func (a *AgentRuntime) activePersonaImagePrompt(ctx context.Context, prompt stri
 	visualPrompt := a.configStore.personaVisualReferencePrompt(persona.ID)
 	profile, _ := a.configStore.personaRuntimeProfile(persona.ID)
 	return a.personaImagePrompt(ctx, prompt, &nativeActivePersona{
-		ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
+		OutfitLength: a.configStore.appearanceLibraryOutfitLength(persona.ID),
+		ID:           persona.ID, Namespace: persona.Namespace, Name: persona.Name,
 		Description: persona.Description, VisualDescription: a.configStore.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
 		VisualPromptOverride: profile.VisualPromptOverride,
 		CharacterVersion:     persona.CharacterVersion, VisualReferencePrompt: visualPrompt,
@@ -2291,7 +2319,8 @@ func (a *AgentRuntime) personaForRun(run runRecord, prompt string) *nativeActive
 	}
 	profile, _ := a.configStore.effectivePersonaRuntimeProfile(persona.ID, run.AgentInstanceID)
 	return &nativeActivePersona{
-		ID: persona.ID, Namespace: persona.Namespace, Name: persona.Name,
+		OutfitLength: a.configStore.appearanceLibraryOutfitLength(persona.ID),
+		ID:           persona.ID, Namespace: persona.Namespace, Name: persona.Name,
 		Description: persona.Description, VisualDescription: a.configStore.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
 		VisualPromptOverride:  profile.VisualPromptOverride,
 		VisualReferencePrompt: a.configStore.personaVisualReferencePrompt(persona.ID),

@@ -129,6 +129,7 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 						"tool_calls": []any{
 							toolCallResponse("search-1", "grok_web_search", `{"query":"today's AI news"}`),
 							toolCallResponse("search-2", "grok_web_search", `{"query":"today's AI news"}`),
+							toolCallResponse("search-3", "grok_web_search", `{"query":"today's robotics news"}`),
 							toolCallResponse("image-1", "grok_generate_image", `{"prompt":"a red square"}`),
 							toolCallResponse("ops-1", "query_ops_status", `{}`),
 						},
@@ -153,7 +154,11 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 				"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": "弄好了，图也在下面。"}}},
 			})
 		case "/grok/responses":
-			xaiCalls.Add(1)
+			searchCall := xaiCalls.Add(1)
+			searchText, searchTitle := "AI news is current.", "AI update"
+			if searchCall == 2 {
+				searchText, searchTitle = "Robotics news is current.", "Robotics update"
+			}
 			if r.Header.Get("Authorization") != "Bearer grok-test-key" {
 				t.Fatal("Grok credential missing")
 			}
@@ -161,8 +166,8 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 				"output": []any{map[string]any{
 					"type": "message",
 					"content": []any{map[string]any{
-						"type": "output_text", "text": "AI news is current.",
-						"annotations": []any{map[string]string{"type": "url_citation", "url": "https://example.test/ai", "title": "AI update"}},
+						"type": "output_text", "text": searchText,
+						"annotations": []any{map[string]string{"type": "url_citation", "url": "https://example.test/ai", "title": searchTitle}},
 					}},
 				}},
 				"usage": map[string]int{"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
@@ -216,7 +221,8 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 	if _, err := configDB.Exec("DELETE FROM tools; DELETE FROM skills"); err != nil {
 		t.Fatal(err)
 	}
-	insertTestEndpoint(t, configDB, "tool-chat", "fake-model", []string{"chat"}, "llm", "openai")
+	insertTestEndpoint(t, configDB, "tool-chat", "fake-model", []string{"chat", "tool_calling"}, "llm", "openai")
+	bindTestModelConnection(t, configDB, "tool-chat", service.URL+"/v1")
 	insertTestTool(t, configDB, "search", "grok_web_search", "core:grok_web_search")
 	insertTestTool(t, configDB, "image", "grok_generate_image", "core:grok_generate_image")
 	insertTestTool(t, configDB, "ops", "query_ops_status", "core:query_ops_status")
@@ -248,8 +254,12 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 	}
 	decodeRecorder(t, response, &accepted)
 	waitForDelivery(t, runtime, accepted.Data.RunID)
-	if modelCalls.Load() != 2 || toolResults.Load() != 4 || xaiCalls.Load() != 1 {
+	if modelCalls.Load() != 2 || toolResults.Load() != 5 || xaiCalls.Load() != 2 {
 		t.Fatalf("model calls = %d, tool results = %d, xai calls = %d, observed = %v", modelCalls.Load(), toolResults.Load(), xaiCalls.Load(), observedToolResults.Load())
+	}
+	observed := observedToolResults.Load().([]string)
+	if !strings.Contains(observed[0], "AI news") || !strings.Contains(observed[1], "AI news") || !strings.Contains(observed[2], "Robotics news") {
+		t.Fatalf("search results crossed query boundaries: %+v", observed)
 	}
 	var payloadJSON string
 	if err := runtime.db.QueryRow("SELECT payload_json FROM agent_deliveries WHERE run_id = ? AND phase = 'terminal'", accepted.Data.RunID).Scan(&payloadJSON); err != nil {
@@ -308,6 +318,7 @@ func TestClearOfficeRequestForcesToolAndEnqueuesDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	insertTestEndpoint(t, configDB, "office-tool-chat", "fake-tool-model", []string{"chat", "tool_calling"}, "llm", "openai")
+	bindTestModelConnection(t, configDB, "office-tool-chat", service.URL+"/v1")
 	insertTestTool(t, configDB, "create-office", "create_office_document", "core:create_office_document")
 	insertTestSkill(t, configDB, "office-create-test", []string{"create_office_document"})
 	_ = configDB.Close()

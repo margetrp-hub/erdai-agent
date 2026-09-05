@@ -424,6 +424,7 @@ func (a *AgentRuntime) activePersonaVideoPrompt(ctx context.Context, prompt stri
 	profile, _ := a.configStore.personaRuntimeProfile(persona.ID)
 	now := time.Now()
 	return personaVideoPromptAt(prompt, &nativeActivePersona{
+		OutfitLength:          a.configStore.appearanceLibraryOutfitLength(persona.ID),
 		ID:                    persona.ID,
 		Namespace:             persona.Namespace,
 		Name:                  persona.Name,
@@ -437,7 +438,7 @@ func (a *AgentRuntime) activePersonaVideoPrompt(ctx context.Context, prompt stri
 
 func (a *AgentRuntime) personaVideoPromptForRun(ctx context.Context, run runRecord, prompt string) string {
 	persona := a.personaForRun(run, prompt)
-	if persona == nil || strings.TrimSpace(persona.VisualDescription) == "" {
+	if persona == nil {
 		return strings.TrimSpace(prompt)
 	}
 	now := time.Now()
@@ -464,9 +465,12 @@ func personaVideoPromptAt(
 		"主脸身份以当前角色的主参考图为准；参考视频只借鉴动作、镜头、光线、服装和氛围，不复制参考视频中的脸部、身份、声音或具体场景。",
 		"角色外观基准：" + strings.TrimSpace(persona.VisualDescription),
 	}
-	shortOutfit := appearanceLibraryRequiresShortOutfit(persona.VisualDescription)
+	shortOutfit := personaPrefersShortOutfit(prompt, persona)
 	if shortOutfit {
 		parts = append(parts, shortOutfitInstruction())
+	}
+	if instruction := longOutfitInstruction(prompt, persona); instruction != "" {
+		parts = append(parts, instruction)
 	}
 	if value := strings.TrimSpace(persona.VisualPromptOverride); value != "" {
 		parts = append(parts, "当前角色视觉覆盖："+value)
@@ -479,7 +483,7 @@ func personaVideoPromptAt(
 		"视频场景必须符合现实世界的季节、天气、地点、光线、服装和物理动作。",
 		visualReferenceVariationInstruction(persona.ID),
 	)
-	if variation := videoDirectorPrompt(prompt, now, variationSeed, policy, shortOutfit); variation != "" {
+	if variation := videoDirectorPrompt(prompt, now, variationSeed, policy, shortOutfit, persona.OutfitLength); variation != "" {
 		parts = append(parts, variation)
 	}
 	parts = append(parts, "用户场景要求："+strings.TrimSpace(prompt))

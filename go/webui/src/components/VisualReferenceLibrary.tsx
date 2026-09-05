@@ -36,6 +36,8 @@ export function VisualReferenceLibrary({
   onLibraryChange,
   onCreateLibrary,
   onEditLibrary,
+  onOutfitLengthChange,
+  savingOutfitLength,
   references,
   onEdit,
   onDelete,
@@ -51,6 +53,8 @@ export function VisualReferenceLibrary({
   onLibraryChange: (libraryId: string) => void;
   onCreateLibrary: () => void;
   onEditLibrary: (library: AppearanceLibrary) => void;
+  onOutfitLengthChange: (length: 'auto' | 'short' | 'long') => Promise<void>;
+  savingOutfitLength: boolean;
   references: PersonaVisualReference[];
   onEdit: (reference: PersonaVisualReference) => void;
   onDelete: (reference: PersonaVisualReference) => void;
@@ -80,6 +84,14 @@ export function VisualReferenceLibrary({
               <span>角色使用</span>
               <select aria-label="选择角色使用的外观库" value={libraryId} onChange={(event) => onLibraryChange(event.target.value)} disabled={!personaId}>
                 {libraries.map((library) => <option value={library.id} key={library.id}>{library.name || library.id}{library.personaCount && library.personaCount > 1 ? ` · ${library.personaCount} 个角色` : ''}</option>)}
+              </select>
+            </label>
+            <label className="module-select visual-library-select">
+              <span>服装长度</span>
+              <select aria-label="外观库服装长度" value={selectedLibrary?.outfitLength || 'auto'} disabled={!selectedLibrary || savingOutfitLength} onChange={(event) => void onOutfitLengthChange(event.target.value as 'auto' | 'short' | 'long')}>
+                <option value="auto">随场景</option>
+                <option value="short">短款 / 膝上</option>
+                <option value="long">长款</option>
               </select>
             </label>
             {selectedLibrary ? <Button variant="secondary" icon={<Pencil size={14} />} onClick={() => onEditLibrary(selectedLibrary)}>编辑外观库</Button> : null}

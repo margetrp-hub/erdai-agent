@@ -2,6 +2,7 @@ data
 lab-assets
 .cache
 .playwright-cli
+output
 *.log
 *.tar
 *.tar.gz

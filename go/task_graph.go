@@ -325,6 +325,10 @@ func (a *AgentRuntime) retryTask(ctx context.Context, runID string) error {
 		WHERE run_id = ? AND phase = 'terminal' AND status != 'delivered'`, runID); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM agent_search_queries
+		WHERE run_id = ? AND status != 'succeeded'`, runID); err != nil {
+		return err
+	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}

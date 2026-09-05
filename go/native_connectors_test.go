@@ -26,7 +26,7 @@ import (
 )
 
 func TestOneBotReverseWebSocketInboundAndOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	connector, err := newOneBotConnector(runtime, mgmtPlatform{
 		ID: "onebot-primary", Type: oneBotTransport,
@@ -111,7 +111,7 @@ func TestOneBotReverseWebSocketInboundAndOutbound(t *testing.T) {
 }
 
 func TestTelegramBotAPIInboundTextMediaAndOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	var sentText string
 	var sentPhoto bool
@@ -390,7 +390,7 @@ func TestOneBotHighConfidenceAdIsRetractedWithoutChatRun(t *testing.T) {
 }
 
 func TestDiscordGatewayInboundAndRESTOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	identified := make(chan map[string]any, 1)
@@ -501,7 +501,7 @@ func TestDiscordGatewayInboundAndRESTOutbound(t *testing.T) {
 }
 
 func TestKookGatewayInboundGroupAndPrivateWithRESTMediaOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	type sentMessage struct {
@@ -665,7 +665,7 @@ func TestKookGatewayInboundGroupAndPrivateWithRESTMediaOutbound(t *testing.T) {
 }
 
 func TestMattermostWebSocketInboundAndRESTMediaOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	authenticated := make(chan map[string]any, 1)
@@ -822,7 +822,7 @@ func TestMattermostWebSocketInboundAndRESTMediaOutbound(t *testing.T) {
 }
 
 func TestMisskeyStreamingInboundAndNotesChatMediaOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	type apiCall struct {
@@ -1010,7 +1010,7 @@ func TestMisskeyStreamingInboundAndNotesChatMediaOutbound(t *testing.T) {
 }
 
 func TestSatoriProtocolInboundAndMessageCreateMediaOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	identified := make(chan map[string]any, 1)
@@ -1157,7 +1157,7 @@ func TestSatoriProtocolInboundAndMessageCreateMediaOutbound(t *testing.T) {
 }
 
 func TestLineSignedWebhookInboundReplyAndMediaProxyOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	sent := make(chan map[string]any, 1)
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1294,7 +1294,7 @@ func TestLineSignedWebhookInboundReplyAndMediaProxyOutbound(t *testing.T) {
 }
 
 func TestQQOfficialWebhookChallengeSignedInboundDedupeAndOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	setTestIntegration(t, runtime.configStore.db, "channel_runtime", map[string]any{
 		"mode": "active", "captureUnaddressedGroups": true,
@@ -1442,7 +1442,7 @@ func TestQQOfficialWebhookChallengeSignedInboundDedupeAndOutbound(t *testing.T) 
 }
 
 func TestWeComEncryptedWebhookAppKFMediaAndOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	type apiCall struct {
 		Path    string
@@ -1608,7 +1608,7 @@ func TestWeComEncryptedWebhookAppKFMediaAndOutbound(t *testing.T) {
 }
 
 func TestWeixinOfficialAccountEncryptedInboundActiveMediaAndPassiveReply(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	type apiCall struct {
 		Path    string
@@ -1784,7 +1784,7 @@ func TestWeixinOfficialAccountEncryptedInboundActiveMediaAndPassiveReply(t *test
 }
 
 func TestSlackSocketWebhookInboundMediaAndExternalUploadOutbound(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	type apiCall struct {
 		Path    string

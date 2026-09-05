@@ -44,7 +44,7 @@ func TestPersonaVideoPromptHonorsOutfitAndStyleFeedback(t *testing.T) {
 	for _, expected := range []string{
 		"参考图与上一张成片只锁定脸部、发型、年龄感和体态",
 		"至少更换场景与服装颜色或款式",
-		"小满本次优先使用非紫色的新造型和非窗边场景",
+		"外观只按当前选中的外观库和参考图确定",
 		"视频类型=韩流/K-pop舞蹈短视频",
 		"换装优先级=必须更换颜色和款式",
 		"不得沿用参考图或上一条成片的紫色衣服、同一套衣服",

@@ -260,6 +260,7 @@ func newNativeMCPConfigStore(t *testing.T, input nativeMCPTestConfig) *coreConfi
 			"apiBase": input.ProviderAPIBase, "defaultModel": "fake-model",
 		})
 		insertTestEndpoint(t, database, "mcp-chat", "fake-model", []string{"chat"}, "llm", "openai")
+		bindTestModelConnection(t, database, "mcp-chat", input.ProviderAPIBase)
 	}
 	return &coreConfigStore{db: database}
 }

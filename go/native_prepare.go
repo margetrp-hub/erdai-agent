@@ -114,10 +114,13 @@ type nativeActivePersona struct {
 }
 
 type corePreparePayload struct {
-	Transport         string   `json:"transport"`
-	TransportInstance string   `json:"transportInstance"`
-	ConversationRef   string   `json:"conversationRef"`
-	SenderRef         string   `json:"senderRef"`
+	Transport         string `json:"transport"`
+	TransportInstance string `json:"transportInstance"`
+	ConversationRef   string `json:"conversationRef"`
+	SenderRef         string `json:"senderRef"`
+	// personaID is an internal run snapshot. The public prepare endpoint still
+	// resolves the active persona from its transport binding.
+	personaID         string
 	Message           string   `json:"message"`
 	RecentMessages    []string `json:"recentMessages"`
 	RelationshipStage string   `json:"relationshipStage"`
@@ -143,7 +146,7 @@ var coreRuntimePrepareFields = coreFieldSet(
 
 var (
 	nativeVideoLanePattern        = regexp.MustCompile(`(?i)(生|生成|制作|做|来|弄).{0,48}(视频|短片)|(视频|短片).{0,24}(生成|制作|做|弄|来|拍)|generate.{0,48}video`)
-	nativeVideoRequestPattern     = regexp.MustCompile(`(?i)(给我|发我|想看|要看|来个|来一段|来条).{0,40}(视频|短片)|(视频|短片).{0,24}(发我|给我|来个|来一段|来条)`)
+	nativeVideoRequestPattern     = regexp.MustCompile(`(?i)(给我|发我|发个|想看|要看|来个|来一段|来条).{0,40}(视频|短片)|(视频|短片).{0,24}(发我|给我|发个|来个|来一段|来条)`)
 	nativeImageLanePattern        = regexp.MustCompile(`(?i)画一|画张|生成.*图|生图|做.*图|image|\b(draw|sketch)\b|\b(generate|create|make).{0,12}(image|picture|photo)\b|(给我|来|拍|发).{0,6}(自拍|照片)|(自拍|照片).{0,6}(来一张|拍一张|发一张)`)
 	nativePhotoRequestPattern     = regexp.MustCompile(`(?i)(给我|来|拍|发).{0,6}(自拍|照片)|(自拍|照片).{0,6}(来一张|拍一张|发一张)`)
 	nativeSelfImageRequestPattern = regexp.MustCompile(`(?i)自拍|你的.{0,6}(照片|相片|样子|画像|头像|全身照|穿搭照|生活照)|你.{0,4}长什么样|拍.{0,4}你|selfie|photo.{0,8}of you|picture.{0,8}of you|your.{0,4}(photo|portrait|picture)`)
@@ -1074,9 +1077,14 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 	if err != nil {
 		return preparedRuntimeData{}, err
 	}
-	resolvedPersonaID, err := s.resolvePersonaIDForInstance(payload.TransportInstance, payload.Transport, payload.ConversationRef, config.ActivePersonaID)
-	if err != nil {
-		return preparedRuntimeData{}, err
+	var resolvedPersonaID *string
+	if value := strings.TrimSpace(payload.personaID); value != "" {
+		resolvedPersonaID = &value
+	} else {
+		resolvedPersonaID, err = s.resolvePersonaIDForInstance(payload.TransportInstance, payload.Transport, payload.ConversationRef, config.ActivePersonaID)
+		if err != nil {
+			return preparedRuntimeData{}, err
+		}
 	}
 	personaProfileID := ""
 	if resolvedPersonaID != nil {

@@ -359,8 +359,8 @@ func seedNativeXiaomanPersona(tx coreSchemaTx, now string) error {
 		'["嗯？","你继续，我听着。","这事有点意思。","先别急着下结论。"]',
 		'["热情熟人","甜妹撒娇","有主见","轻幽默","低打扰"]',
 		'erdai', '1.2.0', 'native', 'go-seed-0.9.3', '',
-		'外观约二十二至二十四岁并明确成年。中国年轻女性，黑色长卷发或自然大波浪、轻薄刘海，五官甜而明艳，眼神灵动有一点小挑衅；以精致淡妆、自然肤质和真实毛发细节为主。身材丰满匀称、腰臀线条健康，对自己的身材很骄傲。她的视觉气质比豆包更热、更鲜活、更会展示穿搭：修身运动装、短裙、长靴、各类丝袜、精致约会装或有设计感的派对装均可，性感来自剪裁、姿态和氛围，不靠裸露。照片保持同一张脸，但场景、机位、动作、妆容、发型细节和穿搭要随时间与话题变化；可用全身、半身、镜面、街拍、楼梯、咖啡店、运动场或夜景。避免白T恤端杯子的通用写真、居家睡衣、企业宣传照、过度磨皮、幼态脸和固定网红模板。不得读取或复用豆包的头像、主参考图、视觉描述和构图习惯。',
-		` + now + `, ` + now + `)`)
+		?,
+		`+now+`, `+now+`)`, canonicalXiaomanVisualDescription)
 	if err != nil {
 		return fmt.Errorf("seed xiaoman persona: %w", err)
 	}
@@ -375,9 +375,9 @@ func seedNativeXiaomanPersona(tx coreSchemaTx, now string) error {
 		tags_json = '[\"热情熟人\",\"甜妹撒娇\",\"有主见\",\"轻幽默\",\"低打扰\"]',
 		character_version = '1.2.0',
 		source_version = 'go-seed-0.9.3',
-		visual_description = '外观约二十二至二十四岁并明确成年。中国年轻女性，黑色长卷发或自然大波浪、轻薄刘海，五官甜而明艳，眼神灵动有一点小挑衅；以精致淡妆、自然肤质和真实毛发细节为主。身材丰满匀称、腰臀线条健康，对自己的身材很骄傲。她的视觉气质比豆包更热、更鲜活、更会展示穿搭：修身运动装、短裙、长靴、各类丝袜、精致约会装或有设计感的派对装均可，性感来自剪裁、姿态和氛围，不靠裸露。照片保持同一张脸，但场景、机位、动作、妆容、发型细节和穿搭要随时间与话题变化；可用全身、半身、镜面、街拍、楼梯、咖啡店、运动场或夜景。避免白T恤端杯子的通用写真、居家睡衣、企业宣传照、过度磨皮、幼态脸和固定网红模板。不得读取或复用豆包的头像、主参考图、视觉描述和构图习惯。',
-		updated_at = ` + now + `
-		WHERE id = 'xiaoman' AND source_version IN ('go-seed-0.9.1', 'go-seed-0.9.2')`); err != nil {
+		visual_description = ?,
+		updated_at = `+now+`
+		WHERE id = 'xiaoman' AND source_version IN ('go-seed-0.9.1', 'go-seed-0.9.2')`, canonicalXiaomanVisualDescription); err != nil {
 		return fmt.Errorf("upgrade xiaoman persona: %w", err)
 	}
 	_, err = tx.Exec(`INSERT OR IGNORE INTO persona_runtime_profiles(persona_id, profile_json, updated_at)

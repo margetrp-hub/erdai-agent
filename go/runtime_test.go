@@ -69,6 +69,7 @@ func TestNativeLaneRecognizesShortMediaCommands(t *testing.T) {
 		"快来段你的自拍视频安慰我一下":              "video",
 		"给我一个你跳舞的视频呀":                 "video",
 		"把你的视频发我":                     "video",
+		"发个你穿的性感一点的跳舞视频给我":            "video",
 		"search, draw, and check OPS": "tools",
 		"帮我做一个word，里面放豆包":             "tools",
 	} {

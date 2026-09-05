@@ -101,6 +101,19 @@ func TestAffiliateCommandFlow(t *testing.T) {
 		PRIMARY KEY (transport, transport_instance, sender_ref))`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Exec(`CREATE TABLE agent_points_ledger (
+		id TEXT PRIMARY KEY, transport TEXT NOT NULL, transport_instance TEXT NOT NULL,
+		sender_ref TEXT NOT NULL, entry_type TEXT NOT NULL, points INTEGER NOT NULL,
+		reference_key TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL,
+		UNIQUE (transport, transport_instance, sender_ref, reference_key))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`CREATE TABLE agent_points_catalog (
+		id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+		cost_points INTEGER NOT NULL, stock INTEGER NOT NULL, enabled INTEGER NOT NULL,
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
 	runtime := &AgentRuntime{
 		db:       db,
 		opsToken: "test-token",
@@ -117,7 +130,8 @@ func TestAffiliateCommandFlow(t *testing.T) {
 	}
 	policy := affiliatePolicy{
 		Enabled: true, SummaryURL: "https://affiliate.test/summary",
-		RegisterBaseURL: "https://ohlaoo.com/register", PointsPerPaidInvitee: 100,
+		RegisterBaseURL: "https://ohlaoo.com/register", PointsPerPaidInvitee: 100, CheckInPoints: 10,
+		LotteryURL: "https://api.ohlao.cfd/game/lottery.html",
 	}
 	run := runRecord{Transport: "aiocqhttp", TransportInstance: "qq-main", SenderRef: "123456"}
 
@@ -145,5 +159,30 @@ func TestAffiliateCommandFlow(t *testing.T) {
 	if err != nil || !strings.Contains(points.Text, "已邀请：4 人") ||
 		!strings.Contains(points.Text, "已充值：2 人") || !strings.Contains(points.Text, "当前积分：200 分") {
 		t.Fatalf("points = %q, %v", points.Text, err)
+	}
+	checkIn, err := runtime.handleAffiliateCommand(context.Background(), run, coreDirectCommand{
+		Kind: directCommandCheckIn, AffiliatePolicy: policy,
+	})
+	if err != nil || !strings.Contains(checkIn.Text, "签到成功，+10 积分") ||
+		!strings.Contains(checkIn.Text, "本地积分：10 分") || !strings.Contains(checkIn.Text, "当前积分：210 分") {
+		t.Fatalf("check-in = %q, %v", checkIn.Text, err)
+	}
+	repeatCheckIn, err := runtime.handleAffiliateCommand(context.Background(), run, coreDirectCommand{
+		Kind: directCommandCheckIn, AffiliatePolicy: policy,
+	})
+	if err != nil || !strings.Contains(repeatCheckIn.Text, "今天已经签到过了") || strings.Contains(repeatCheckIn.Text, "签到成功") {
+		t.Fatalf("repeat check-in = %q, %v", repeatCheckIn.Text, err)
+	}
+	redeem, err := runtime.handleAffiliateCommand(context.Background(), run, coreDirectCommand{
+		Kind: directCommandPointsRedeem, AffiliatePolicy: policy,
+	})
+	if err != nil || !strings.Contains(redeem.Text, "当前积分：210 分") || !strings.Contains(redeem.Text, "奖品暂未上架") {
+		t.Fatalf("redeem = %q, %v", redeem.Text, err)
+	}
+	lottery, err := runtime.handleAffiliateCommand(context.Background(), run, coreDirectCommand{
+		Kind: directCommandLottery, AffiliatePolicy: policy,
+	})
+	if err != nil || !strings.Contains(lottery.Text, "https://api.ohlao.cfd/game/lottery.html") {
+		t.Fatalf("lottery = %q, %v", lottery.Text, err)
 	}
 }

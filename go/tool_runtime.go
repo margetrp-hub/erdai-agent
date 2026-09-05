@@ -2201,8 +2201,13 @@ func personaImagePromptAt(
 	parts := []string{
 		"生成同一位成年女性角色本人的现实世界生活照，保持脸型、五官、发型、发色、年龄、体态和整体气质稳定；这是同一个人，不是换脸。照片像她本人或朋友用手机随手拍到的瞬间，不是为了展示商品而摆拍。",
 		"固定人物外观：" + strings.TrimSpace(persona.VisualDescription),
+		visualReferenceVariationInstruction(persona.ID),
 		"用户这次的场景要求：" + prompt,
 		"场景必须符合现实：季节、天气、时间、地点、光线、衣着和物体相互匹配；炎热夏天穿透气的短袖或轻薄裙装，寒冷天气才穿厚外套。动作、手脚、镜面反射和透视符合真实物理。构图允许轻微歪斜、人物偏一侧、裁切不完美、自然抓拍和一点点运动感，不要每次正面居中看镜头。",
+	}
+	shortOutfit := appearanceLibraryRequiresShortOutfit(persona.VisualDescription)
+	if shortOutfit {
+		parts = append(parts, shortOutfitInstruction())
 	}
 	if override := strings.TrimSpace(persona.VisualPromptOverride); override != "" {
 		parts = append(parts, "当前角色视觉覆盖："+override)
@@ -2210,7 +2215,7 @@ func personaImagePromptAt(
 	if referencePrompt := strings.TrimSpace(persona.VisualReferencePrompt); referencePrompt != "" {
 		parts = append(parts, "已整理的角色参考资料（只用于稳定外观，不照抄场景）："+referencePrompt)
 	}
-	if variation := visualDirectorPrompt(prompt, now, variationSeed, policy); variation != "" {
+	if variation := visualDirectorPrompt(prompt, now, variationSeed, policy, shortOutfit); variation != "" {
 		parts = append(parts, variation)
 	}
 	normalized := strings.ToLower(prompt)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,21 @@ func TestAffiliatePointsQueryAliasRoutesDirectly(t *testing.T) {
 	command, ok := runtime.resolveCoreDirectCommand(context.Background(), "/积分查询")
 	if !ok || command.Kind != directCommandAffiliatePoints {
 		t.Fatalf("/积分查询 route = %#v, %v", command, ok)
+	}
+}
+
+func TestRewardsCommandAliasesRouteDirectly(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	for message, want := range map[string]string{
+		"/签到":   directCommandCheckIn,
+		"/积分兑换": directCommandPointsRedeem,
+		"/抽奖":   directCommandLottery,
+	} {
+		command, ok := runtime.resolveCoreDirectCommand(context.Background(), message)
+		if !ok || command.Kind != want {
+			t.Fatalf("%s route = %#v, %v; want %s", message, command, ok, want)
+		}
 	}
 }
 
@@ -233,7 +249,7 @@ func TestRadarFormattingUsesCodexRadarIntelligenceMetrics(t *testing.T) {
 		"GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.5", "DeepSeek V4 Flash",
 	}}
 
-	text, err := formatRadar(payload, policy, "codexradar.com")
+	text, err := formatRadar(payload, policy, "api.codexradar.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +259,7 @@ func TestRadarFormattingUsesCodexRadarIntelligenceMetrics(t *testing.T) {
 		"GPT-5.6 Terra max  IQ 94.6 · $3.84 · 31分钟 · 47次",
 		"GPT-5.6 Luna max  IQ 92.9 · $0.47 · 33分钟 · 70次",
 		"近24小时 1246 次 · 08-09 12:32",
-		"数据来源：CodexRadar codexradar.com",
+		"数据来源：CodexRadar api.codexradar.com",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("metrics output missing %q:\n%s", expected, text)
@@ -251,6 +267,58 @@ func TestRadarFormattingUsesCodexRadarIntelligenceMetrics(t *testing.T) {
 	}
 	if strings.Contains(text, "Sol low") || strings.Contains(text, "按任务推荐") {
 		t.Fatalf("metrics output contains an inferior effort or inferred recommendation:\n%s", text)
+	}
+}
+
+func TestRadarFormattingIncludesGPT6Astra(t *testing.T) {
+	payload := radarPayload{
+		SourceUpdatedAt: time.Date(2026, 9, 5, 5, 42, 42, 0, time.UTC),
+		Runs24HTotal:    18,
+		Points: []radarModel{{
+			Model: "gpt-6-astra", Effort: "max", IQ: floatPointer(133.33),
+			Total: 18, AveragePriceUSD: floatPointer(5.14), AverageMinutes: floatPointer(24.56), Runs24H: 18,
+		}},
+	}
+	text, err := formatRadar(payload, opsPolicy{
+		RadarMinimumSamples: 5,
+		RadarFamilyOrder:    []string{"GPT-6 Astra"},
+	}, "api.codexradar.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"GPT-6 Astra max", "IQ 133.3", "18题", "api.codexradar.com"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("Astra radar output missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestRadarFormattingUsesBenchmarkCoverageInsteadOfRecentRuns(t *testing.T) {
+	payload := radarPayload{Runs24HTotal: 9, Points: []radarModel{
+		{Model: "gpt-5.6-sol", Effort: "xhigh", IQ: floatPointer(106.4), AveragePriceUSD: floatPointer(6.32), Total: 336, Runs24H: 2},
+		{Model: "gpt-5.6-terra", Effort: "max", IQ: floatPointer(95), AveragePriceUSD: floatPointer(3.84), Total: 336, Runs24H: 3},
+		{Model: "gpt-5.6-luna", Effort: "max", IQ: floatPointer(90), AveragePriceUSD: floatPointer(0.47), Total: 336, Runs24H: 4},
+	}}
+	policy := opsPolicy{RadarMinimumSamples: 5, RadarFamilyOrder: []string{
+		"GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
+	}}
+
+	text, err := formatRadar(payload, policy, "api.codexradar.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"336题", "24h 2次", "🎯 直接结论"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("production-shaped radar output missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestRadarFailureReplyDoesNotExposeTechnicalDetails(t *testing.T) {
+	technical := errors.New("dial tcp 10.0.0.1: secret-token")
+	reply := radarFailureReply(technical)
+	if strings.Contains(reply, "10.0.0.1") || strings.Contains(reply, "secret-token") || strings.Contains(reply, "dial tcp") {
+		t.Fatalf("radar failure reply leaked technical details: %q", reply)
 	}
 }
 

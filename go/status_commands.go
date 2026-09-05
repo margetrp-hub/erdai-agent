@@ -22,6 +22,9 @@ const (
 	directCommandAffiliateBind   = "affiliate_bind"
 	directCommandAffiliateLink   = "affiliate_link"
 	directCommandAffiliatePoints = "affiliate_points"
+	directCommandCheckIn         = "check_in"
+	directCommandPointsRedeem    = "points_redeem"
+	directCommandLottery         = "lottery"
 )
 
 var errCoreDirectCommandDisabled = errors.New("core direct command is disabled for this agent instance")
@@ -64,7 +67,8 @@ func coreDirectCommandToolIDs(command coreDirectCommand) []string {
 		return []string{"ops-status", "query_ops_status", "ops_status"}
 	case directCommandRadar:
 		return []string{"ops-status", "radar", "query_radar", "ops_status"}
-	case directCommandAffiliateBind, directCommandAffiliateLink, directCommandAffiliatePoints:
+	case directCommandAffiliateBind, directCommandAffiliateLink, directCommandAffiliatePoints,
+		directCommandCheckIn, directCommandPointsRedeem, directCommandLottery:
 		return []string{"affiliate"}
 	default:
 		return nil
@@ -76,7 +80,8 @@ func (a *AgentRuntime) coreDirectCommandAllowed(personaID, instanceID string, co
 	if len(toolIDs) == 0 {
 		return false, nil
 	}
-	if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints {
+	if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints ||
+		command.Kind == directCommandCheckIn || command.Kind == directCommandPointsRedeem || command.Kind == directCommandLottery {
 		return command.AffiliatePolicy.Enabled, nil
 	}
 	profile, err := a.configStore.effectivePersonaRuntimeProfile(personaID, instanceID)
@@ -132,7 +137,11 @@ type radarModel struct {
 	IQ              *float64 `json:"iq"`
 	AveragePriceUSD *float64 `json:"average_price_usd"`
 	AverageMinutes  *float64 `json:"average_minutes"`
+	Passed          int      `json:"passed"`
+	Total           int      `json:"total"`
 	Runs24H         int      `json:"runs_24h"`
+	Runs48H         int      `json:"runs_48h"`
+	RunsTotal       int      `json:"runs_total"`
 }
 
 type radarPayload struct {
@@ -183,6 +192,15 @@ func (a *AgentRuntime) resolveCoreDirectCommand(ctx context.Context, message str
 		}
 		if commandAlias(trimmed, affiliate.PointsAliases) {
 			return coreDirectCommand{Kind: directCommandAffiliatePoints, AffiliatePolicy: affiliate}, true
+		}
+		if commandAlias(trimmed, affiliate.CheckInAliases) {
+			return coreDirectCommand{Kind: directCommandCheckIn, AffiliatePolicy: affiliate}, true
+		}
+		if commandAlias(trimmed, affiliate.RedeemAliases) {
+			return coreDirectCommand{Kind: directCommandPointsRedeem, AffiliatePolicy: affiliate}, true
+		}
+		if commandAlias(trimmed, affiliate.LotteryAliases) {
+			return coreDirectCommand{Kind: directCommandLottery, AffiliatePolicy: affiliate}, true
 		}
 	}
 	var policy opsPolicy
@@ -767,6 +785,18 @@ func (a *AgentRuntime) queryRadar(ctx context.Context, policy opsPolicy) (toolRe
 }
 
 func bestRadarModels(payload radarPayload, policy opsPolicy) map[string]radarModel {
+	best := make(map[string]radarModel)
+	for _, model := range eligibleRadarModels(payload, policy) {
+		family := canonicalStatusName(model.Group)
+		current, exists := best[family]
+		if !exists || *model.Average > *current.Average || (*model.Average == *current.Average && model.Count > current.Count) {
+			best[family] = model
+		}
+	}
+	return best
+}
+
+func eligibleRadarModels(payload radarPayload, policy opsPolicy) []radarModel {
 	minimum := policy.RadarMinimumSamples
 	if minimum < 1 {
 		minimum = 5
@@ -775,18 +805,15 @@ func bestRadarModels(payload radarPayload, policy opsPolicy) map[string]radarMod
 	for _, family := range policy.RadarFamilyOrder {
 		allowed[canonicalStatusName(family)] = true
 	}
-	best := make(map[string]radarModel)
+	eligible := make([]radarModel, 0)
 	for _, model := range normalizedRadarModels(payload) {
 		family := canonicalStatusName(model.Group)
 		if model.Average == nil || model.Count < minimum || !allowed[family] {
 			continue
 		}
-		current, exists := best[family]
-		if !exists || *model.Average > *current.Average || (*model.Average == *current.Average && model.Count > current.Count) {
-			best[family] = model
-		}
+		eligible = append(eligible, model)
 	}
-	return best
+	return eligible
 }
 
 func normalizedRadarModels(payload radarPayload) []radarModel {
@@ -799,7 +826,20 @@ func normalizedRadarModels(payload radarPayload) []radarModel {
 		point.Group = family
 		point.Label = strings.TrimSpace(family + " " + point.Effort)
 		point.Average = point.IQ
-		point.Count = point.Runs24H
+		// Schema 3 exposes both benchmark coverage and recent activity. IQ is
+		// based on the benchmark sample, while runs_24h only says how active a
+		// model/effort pair was recently. Using runs_24h as the sample gate made
+		// every point disappear whenever traffic was spread across many pairs.
+		point.Count = point.Total
+		if point.Count == 0 {
+			point.Count = point.RunsTotal
+		}
+		if point.Count == 0 {
+			point.Count = point.Runs48H
+		}
+		if point.Count == 0 {
+			point.Count = point.Runs24H
+		}
 		models = append(models, point)
 	}
 	return models
@@ -807,6 +847,8 @@ func normalizedRadarModels(payload radarPayload) []radarModel {
 
 func radarFamilyName(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-6-astra":
+		return "GPT-6 Astra"
 	case "gpt-5.6-sol":
 		return "GPT-5.6 Sol"
 	case "gpt-5.6-terra":
@@ -830,6 +872,66 @@ func radarModelName(model radarModel) (string, string) {
 	family := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(model.Group), " ", "-"))
 	effort := strings.TrimSpace(strings.TrimPrefix(model.Label, model.Group))
 	return family, effort
+}
+
+func radarMetricRecommendations(models []radarModel) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	strongest := models[0]
+	for _, model := range models[1:] {
+		if model.Average != nil && (strongest.Average == nil || *model.Average > *strongest.Average) {
+			strongest = model
+		}
+	}
+	lines := []string{fmt.Sprintf("· 能力优先：%s（IQ %s）", strongest.Label, formatScore(*strongest.Average))}
+	balancedFloor := *strongest.Average * 0.9
+	if balanced, ok := cheapestRadarModel(models, balancedFloor); ok && balanced.Label != strongest.Label {
+		lines = append(lines, fmt.Sprintf("· 日常均衡：%s（IQ %s · $%s）", balanced.Label,
+			formatScore(*balanced.Average), formatRadarPrice(*balanced.AveragePriceUSD)))
+	}
+	if economical, ok := cheapestRadarModel(models, 80); ok && economical.Label != strongest.Label {
+		duplicate := false
+		for _, line := range lines {
+			duplicate = duplicate || strings.Contains(line, "："+economical.Label+"（")
+		}
+		if !duplicate {
+			lines = append(lines, fmt.Sprintf("· 预算优先：%s（IQ %s · $%s）", economical.Label,
+				formatScore(*economical.Average), formatRadarPrice(*economical.AveragePriceUSD)))
+		}
+	}
+	return lines
+}
+
+func cheapestRadarModel(models []radarModel, minimumIQ float64) (radarModel, bool) {
+	var selected radarModel
+	found := false
+	for _, model := range models {
+		if model.Average == nil || *model.Average < minimumIQ || model.AveragePriceUSD == nil {
+			continue
+		}
+		if !found || *model.AveragePriceUSD < *selected.AveragePriceUSD ||
+			(*model.AveragePriceUSD == *selected.AveragePriceUSD && *model.Average > *selected.Average) {
+			selected = model
+			found = true
+		}
+	}
+	return selected, found
+}
+
+func formatRadarPrice(value float64) string {
+	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(value, 'f', 2, 64), "0"), ".")
+}
+
+func radarFailureReply(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "雷达数据源响应超时了，暂时不拿旧数据糊弄你。"
+	case strings.Contains(strings.ToLower(err.Error()), "no eligible samples"):
+		return "雷达源已连通，但当前没有达到门槛的评测样本，暂时不乱排。"
+	default:
+		return "雷达数据源暂时不可用，等数据恢复后再排；不是你的指令没生效。"
+	}
 }
 
 func formatRadar(payload radarPayload, policy opsPolicy, source string) (string, error) {
@@ -865,13 +967,22 @@ func formatRadar(payload radarPayload, policy opsPolicy, source string) (string,
 			if model.AverageMinutes != nil {
 				details = append(details, formatScore(*model.AverageMinutes)+"分钟")
 			}
-			if model.Count > 0 {
+			if model.Total > 0 {
+				details = append(details, strconv.Itoa(model.Total)+"题")
+				if model.Runs24H > 0 {
+					details = append(details, "24h "+strconv.Itoa(model.Runs24H)+"次")
+				}
+			} else if model.Count > 0 {
 				details = append(details, strconv.Itoa(model.Count)+"次")
 			}
 			if len(details) > 0 {
 				line += " · " + strings.Join(details, " · ")
 			}
 			lines = append(lines, line)
+		}
+		if recommendations := radarMetricRecommendations(eligibleRadarModels(payload, policy)); len(recommendations) > 0 {
+			lines = append(lines, "━━━━━━━━━━━━", "🎯 直接结论")
+			lines = append(lines, recommendations...)
 		}
 		updated := payload.SourceUpdatedAt
 		if updated.IsZero() {

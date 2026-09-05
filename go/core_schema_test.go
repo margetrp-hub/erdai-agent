@@ -30,6 +30,7 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 		"routing_control", "routing_lane_profiles", "tools", "skills", "agent_plugins", "trusted_adapters", "trusted_adapter_health", "mcp_servers",
 		"integration_settings", "platform_integrations", "audit_events", "shadow_interactions",
 		"agent_policy_templates", "agent_instances", "agent_instance_connectors", "agent_instance_routes", "agent_instance_capabilities",
+		"agent_affiliate_bindings", "agent_points_ledger", "agent_points_catalog",
 	} {
 		var name string
 		if err = store.db.QueryRow(
@@ -105,7 +106,7 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 	).Scan(&radarURL); err != nil {
 		t.Fatal(err)
 	}
-	if radarURL != "https://codexradar.com/api/intelligence-efficiency-metrics" {
+	if radarURL != "https://api.codexradar.com/api/v1/intelligence-efficiency?v=20260823-trend-cohort-v1" {
 		t.Fatalf("radar URL = %q", radarURL)
 	}
 	var imageEditModel string
@@ -238,7 +239,7 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 	}
 	if !strings.Contains(postHistory, "最近对话比角色简介更重要") || messageExample != "" ||
 		characterVersion != "1.8.0" || sourceVersion != "go-schema-35" ||
-		!strings.Contains(visualDescription, "二十至二十三岁") || !strings.Contains(visualDescription, "服装随季节") || !strings.Contains(postHistory, "立即执行") {
+		!strings.Contains(visualDescription, "室内咖啡店生活照") || !strings.Contains(visualDescription, "轻薄自然的侧分刘海") || !strings.Contains(postHistory, "立即执行") {
 		t.Fatalf("fresh persona conversation policy = %q / %q / %q / %q", postHistory, messageExample, characterVersion, sourceVersion)
 	}
 	for table, minimum := range map[string]int{
@@ -343,6 +344,119 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 	}
 }
 
+func TestCoreConfigSchemaV79RefreshesOnlyLegacyDoubaoVisualIdentity(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacy := "明确成年的中国年轻女性，约二十至二十三岁；乌黑柔顺的中长发，服装随季节、天气、地点和活动合理变化，可使用米白色交领上衣配浅青色滚边。"
+	if _, err := db.Exec(`UPDATE personas SET visual_description = ? WHERE id = 'doubao';
+		UPDATE appearance_libraries SET visual_description = ? WHERE id = 'persona-appearance-doubao';
+		UPDATE appearance_libraries SET visual_description = '管理员自定义外观' WHERE id = 'persona-appearance-xiaoman';
+		PRAGMA user_version = 78;`, legacy, legacy); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO appearance_libraries
+		(id, namespace, name, description, visual_description, source_persona_id, enabled, created_at, updated_at)
+		VALUES ('doubao-shared-custom', 'default', '豆包共享自定义库', '', ?, 'doubao', 1, '2026-08-31T00:00:00Z', '2026-08-31T00:00:00Z')`, legacy); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var personaVisual, doubaoLibraryVisual, xiaomanLibraryVisual, customLibraryVisual string
+	if err := store.db.QueryRow("SELECT visual_description FROM personas WHERE id = 'doubao'").Scan(&personaVisual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT visual_description FROM appearance_libraries WHERE id = 'persona-appearance-doubao'").Scan(&doubaoLibraryVisual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT visual_description FROM appearance_libraries WHERE id = 'persona-appearance-xiaoman'").Scan(&xiaomanLibraryVisual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT visual_description FROM appearance_libraries WHERE id = 'doubao-shared-custom'").Scan(&customLibraryVisual); err != nil {
+		t.Fatal(err)
+	}
+	if personaVisual != canonicalDoubaoVisualDescription || doubaoLibraryVisual != canonicalDoubaoVisualDescription || xiaomanLibraryVisual != "管理员自定义外观" || customLibraryVisual != legacy {
+		t.Fatalf("v79 visual identity = persona %q, doubao library %q, xiaoman library %q, custom library %q", personaVisual, doubaoLibraryVisual, xiaomanLibraryVisual, customLibraryVisual)
+	}
+}
+
+func TestCoreConfigSchemaV80RefreshesOnlyLegacyXiaomanShorterOutfit(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacy := "明确成年的中国女性，约二十二至二十五岁。黑色自然长卷发或柔和大波浪，轻薄刘海，五官明艳但不网红模板化，眼神稳定、带一点从容的挑衅感；精致淡妆、真实肤质和细致发丝优先。整体气质成熟、松弛、带一点御姐式掌控感，穿搭有审美和边界感，性感来自剪裁、姿态、材质和氛围，不靠裸露。保持同一张脸、五官比例、发型、发色、年龄感和体态；场景、机位、动作、妆容细节和服装随时间与话题自然变化。"
+	if _, err := db.Exec(`UPDATE personas SET visual_description = ?, character_version = '1.3.1', source_version = 'go-schema-74' WHERE id = 'xiaoman';
+		UPDATE appearance_libraries SET visual_description = ? WHERE id = 'persona-appearance-xiaoman';
+		INSERT INTO appearance_libraries (id, namespace, name, description, visual_description, source_persona_id, enabled, created_at, updated_at)
+		VALUES ('xiaoman-custom-short-test', 'default', '小满自定义外观库', '', '管理员自定义外观', 'xiaoman', 1, '2026-08-31T00:00:00Z', '2026-08-31T00:00:00Z');
+		PRAGMA user_version = 79;`, legacy, legacy); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var personaVisual, libraryVisual, customVisual string
+	if err := store.db.QueryRow("SELECT visual_description FROM personas WHERE id = 'xiaoman'").Scan(&personaVisual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT visual_description FROM appearance_libraries WHERE id = 'persona-appearance-xiaoman'").Scan(&libraryVisual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT visual_description FROM appearance_libraries WHERE id = 'xiaoman-custom-short-test'").Scan(&customVisual); err != nil {
+		t.Fatal(err)
+	}
+	if personaVisual != canonicalXiaomanVisualDescription || libraryVisual != canonicalXiaomanVisualDescription || customVisual != "管理员自定义外观" {
+		t.Fatalf("v80 visual identity = persona %q, default library %q, custom library %q", personaVisual, libraryVisual, customVisual)
+	}
+}
+
+func TestCoreConfigSchemaV81OnlyRaisesDefaultGrokPaidChatTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name, input, want string
+	}{
+		{name: "default", input: "10", want: "20"},
+		{name: "custom-short", input: "12", want: "12"},
+		{name: "custom-long", input: "30", want: "30"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path, db := newTestCoreConfig(t)
+			if _, err := db.Exec(`INSERT INTO provider_connections
+				(id, provider, api_base, timeout_seconds, created_at, updated_at)
+				VALUES ('connection-grok-paid-chat', 'grok-paid-chat-migration-test',
+					'https://example.invalid/v1', ?, '2026-09-05T00:00:00Z', '2026-09-05T00:00:00Z');
+				PRAGMA user_version = 80;`, test.input); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := openCoreConfigStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			var timeout string
+			if err = store.db.QueryRow("SELECT timeout_seconds FROM provider_connections WHERE id = 'connection-grok-paid-chat'").Scan(&timeout); err != nil {
+				t.Fatal(err)
+			}
+			if timeout != test.want {
+				t.Fatalf("timeout = %s, want %s", timeout, test.want)
+			}
+		})
+	}
+}
+
 func TestCoreConfigSchemaV73AddsAffiliatePointsAlias(t *testing.T) {
 	path, db := newTestCoreConfig(t)
 	setTestIntegration(t, db, "affiliate_policy", map[string]any{
@@ -365,6 +479,31 @@ func TestCoreConfigSchemaV73AddsAffiliatePointsAlias(t *testing.T) {
 	}
 	if !strings.Contains(raw, "/积分查询") {
 		t.Fatalf("v73 points aliases = %s", raw)
+	}
+}
+
+func TestCoreConfigSchemaV78SeedsRewardsCommands(t *testing.T) {
+	store, err := openCoreConfigStore(filepath.Join(t.TempDir(), "core.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var raw, manifest string
+	if err = store.db.QueryRow("SELECT config_json FROM integration_settings WHERE id = 'affiliate_policy'").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"checkInPoints", "/签到", "/积分兑换", "lotteryUrl", "/抽奖"} {
+		if !strings.Contains(raw, expected) {
+			t.Fatalf("affiliate policy missing %q: %s", expected, raw)
+		}
+	}
+	if err = store.db.QueryRow("SELECT manifest_json FROM agent_plugins WHERE id = 'affiliate-invite'").Scan(&manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"统一积分账户", "/签到", "/积分兑换", "/抽奖"} {
+		if !strings.Contains(manifest, expected) {
+			t.Fatalf("affiliate manifest missing %q: %s", expected, manifest)
+		}
 	}
 }
 
@@ -1095,5 +1234,76 @@ func TestCoreConfigSchemaV74RestoresXiaomanVisualIsolation(t *testing.T) {
 	if persona.CharacterVersion != "1.3.1" || persona.SourceVersion != "go-schema-74" ||
 		!strings.Contains(persona.VisualDescription, "不得读取或复用豆包") {
 		t.Fatalf("xiaoman v74 visual isolation = %+v", persona)
+	}
+}
+
+func TestCoreConfigSchemaV82MigratesCodexRadarWithoutOverwritingCustomFamilies(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		families   any
+		wantURL    string
+		wantFamily string
+	}{
+		{
+			name:       "legacy default",
+			url:        "https://codexradar.com/api/intelligence-efficiency-metrics",
+			families:   []string{"GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.5", "DeepSeek V4 Flash"},
+			wantURL:    "https://api.codexradar.com/api/v1/intelligence-efficiency?v=20260823-trend-cohort-v1",
+			wantFamily: `["GPT-6 Astra","GPT-5.6 Sol","GPT-5.6 Terra","GPT-5.6 Luna","GPT-5.5","DeepSeek V4 Flash"]`,
+		},
+		{
+			name:       "legacy alternate",
+			url:        "https://codex-radar.roixw.com/api/model-ratings?history=14",
+			families:   []string{"GPT-5.6 Sol", "GPT-5.6 Terra"},
+			wantURL:    "https://api.codexradar.com/api/v1/intelligence-efficiency?v=20260823-trend-cohort-v1",
+			wantFamily: `["GPT-5.6 Sol","GPT-5.6 Terra"]`,
+		},
+		{
+			name:       "custom source",
+			url:        "https://radar.example.test/api",
+			families:   []string{"Custom Model"},
+			wantURL:    "https://radar.example.test/api",
+			wantFamily: `["Custom Model"]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path, db := newTestCoreConfig(t)
+			setTestIntegration(t, db, "ops_policy", map[string]any{
+				"radarUrl":         test.url,
+				"radarFamilyOrder": test.families,
+			})
+			if _, err := db.Exec("PRAGMA user_version = 81"); err != nil {
+				db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := openCoreConfigStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			var raw string
+			if err := store.db.QueryRow(`SELECT config_json FROM integration_settings WHERE id = 'ops_policy'`).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var config map[string]any
+			if err := json.Unmarshal([]byte(raw), &config); err != nil {
+				t.Fatal(err)
+			}
+			if config["radarUrl"] != test.wantURL {
+				t.Fatalf("radar URL = %v, want %q", config["radarUrl"], test.wantURL)
+			}
+			familyJSON, err := json.Marshal(config["radarFamilyOrder"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(familyJSON) != test.wantFamily {
+				t.Fatalf("radar family order = %s, want %s", familyJSON, test.wantFamily)
+			}
+		})
 	}
 }

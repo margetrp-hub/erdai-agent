@@ -431,6 +431,30 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		);
 		CREATE INDEX IF NOT EXISTS agent_affiliate_bindings_code_idx
 			ON agent_affiliate_bindings(affiliate_code);
+		CREATE TABLE IF NOT EXISTS agent_points_ledger (
+			id TEXT PRIMARY KEY,
+			transport TEXT NOT NULL,
+			transport_instance TEXT NOT NULL,
+			sender_ref TEXT NOT NULL,
+			entry_type TEXT NOT NULL CHECK (entry_type IN ('check_in', 'redemption', 'adjustment')),
+			points INTEGER NOT NULL CHECK (points <> 0),
+			reference_key TEXT NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			UNIQUE (transport, transport_instance, sender_ref, reference_key)
+		);
+		CREATE INDEX IF NOT EXISTS agent_points_ledger_scope_idx
+			ON agent_points_ledger(transport, transport_instance, sender_ref, created_at DESC);
+		CREATE TABLE IF NOT EXISTS agent_points_catalog (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			cost_points INTEGER NOT NULL CHECK (cost_points > 0),
+			stock INTEGER NOT NULL DEFAULT -1 CHECK (stock >= -1),
+			enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS agent_search_entities (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			agent_instance_id TEXT NOT NULL DEFAULT 'legacy-default',
@@ -2043,7 +2067,8 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 		if !allowed {
 			return agentReply{}, errCoreDirectCommandDisabled
 		}
-		if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints {
+		if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints ||
+			command.Kind == directCommandCheckIn || command.Kind == directCommandPointsRedeem || command.Kind == directCommandLottery {
 			return a.handleAffiliateCommand(ctx, run, command)
 		}
 		if command.Kind == directCommandOPSGroup {
@@ -2072,6 +2097,10 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 			return agentReply{}, errors.New("direct command is invalid")
 		}
 		if err != nil {
+			if command.Kind == directCommandRadar {
+				log.Printf("radar command degraded: %v", err)
+				return agentReply{Text: radarFailureReply(err)}, nil
+			}
 			return agentReply{}, err
 		}
 		var payload struct {
@@ -2092,6 +2121,7 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 		Transport: run.Transport, TransportInstance: run.TransportInstance, ConversationRef: run.ConversationRef,
 		SenderRef: run.SenderRef, Message: message, HasImage: hasImage, HasAudio: hasAudio,
 		HasDocument: hasDocument, IsAdmin: run.IsAdmin,
+		personaID:              run.PersonaID,
 		skipKnowledgeInjection: true,
 		RecentMessages:         personaContext.RecentMessages,
 		RelationshipStage:      personaContext.RelationshipStage,

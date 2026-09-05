@@ -65,7 +65,7 @@ func inferDialogueReasoningState(events []RecalledGroupEvent, currentEventID, me
 
 func classifyDialogueAction(message, previousAssistant string, hasPendingQuestion bool) string {
 	message = strings.TrimSpace(message)
-	if containsAnyText(message, []string{"不对", "不是这个意思", "你理解错", "我说的是", "不是让你", "重来"}) {
+	if looksLikeCorrection(message, previousAssistant) {
 		return "correct_previous_reply"
 	}
 	if hasPendingQuestion && !looksLikeNewRequest(message) && !looksLikeDirectPing(message) {
@@ -106,7 +106,7 @@ func dialogueReasoningHint(events []RecalledGroupEvent, currentEventID, message 
 	case "answer_previous_question":
 		lines = append(lines, "先消费当前答案，再推进原任务；不要重复复述上一问")
 	case "correct_previous_reply":
-		lines = append(lines, "这是对上一轮的纠正；先承认理解偏差，按新信息重算，不要为旧答案辩护")
+		lines = append(lines, "这是对上一轮的纠正；提取本次新增约束并覆盖旧假设，按新信息重算，不要只道歉、辩护或重复承诺；能验证时先执行再回答")
 	case "direct_ping":
 		lines = append(lines, "这是叫角色或催促，不等于新问题；简短回应当前状态，必要时接回最近未完成任务")
 	case "reaction":
@@ -115,6 +115,20 @@ func dialogueReasoningHint(events []RecalledGroupEvent, currentEventID, message 
 		lines = append(lines, "当前没有明确任务；只在能补充关键内容时接话，不要把陈述改写成客服问答")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func looksLikeCorrection(message, previousAssistant string) bool {
+	if containsAnyText(message, []string{
+		"不对", "不是这个意思", "你理解错", "我说的是", "不是让你", "重来", "都说了", "又错了", "根本没",
+	}) {
+		return true
+	}
+	if strings.TrimSpace(previousAssistant) == "" {
+		return false
+	}
+	return containsAnyText(message, []string{
+		"没用", "不好用", "还是不行", "还是没", "怎么还是", "怎么又", "没改", "没听懂", "听不懂", "没按", "跟之前一样", "没有变化",
+	})
 }
 
 func repeatedSpeakerBurst(events []RecalledGroupEvent, currentIndex int, sender string, currentAt time.Time) int {

@@ -28,8 +28,10 @@ func TestXiaomanIsARealSecondPersonaWithoutDoubaoPrompt(t *testing.T) {
 			t.Fatalf("xiaoman prompt missing %q: %s", expected, persona.SystemPrompt)
 		}
 	}
-	if persona.CharacterVersion != "1.3.1" || !strings.Contains(persona.VisualDescription, "明确成年") ||
-		!strings.Contains(persona.VisualDescription, "不得读取或复用豆包") || !strings.Contains(persona.VisualDescription, "场景、机位、动作") {
+	if persona.CharacterVersion != "1.3.2" || !strings.Contains(persona.VisualDescription, "明确成年") ||
+		!strings.Contains(persona.VisualDescription, "不得读取或复用豆包") ||
+		!strings.Contains(persona.VisualDescription, "裙摆或裤脚明确在膝盖以上") ||
+		!strings.Contains(persona.VisualDescription, "场景、机位、动作") {
 		t.Fatalf("xiaoman visual boundary = %s", persona.VisualDescription)
 	}
 	profile, err := store.personaRuntimeProfile("xiaoman")

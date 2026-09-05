@@ -421,25 +421,18 @@ func (a *AgentRuntime) activePersonaVideoPrompt(ctx context.Context, prompt stri
 		return prompt
 	}
 	visualReferencePrompt := a.configStore.personaVisualReferencePrompt(persona.ID)
-	referenceLine := ""
-	if strings.TrimSpace(visualReferencePrompt) != "" {
-		referenceLine = "角色参考资料：" + visualReferencePrompt
-	}
 	profile, _ := a.configStore.personaRuntimeProfile(persona.ID)
-	visualOverrideLine := ""
-	if strings.TrimSpace(profile.VisualPromptOverride) != "" {
-		visualOverrideLine = "当前角色视觉覆盖：" + strings.TrimSpace(profile.VisualPromptOverride)
-	}
-	return strings.Join([]string{
-		"保持当前角色卡是同一位人物，固定脸型、眼睛、发型、发色、年龄感和体态，不要换脸。",
-		"主脸身份以当前角色的主参考图为准；参考视频只借鉴动作、镜头、光线、服装和氛围，不复制参考视频中的脸部、身份、声音或具体场景。",
-		"角色外观基准：" + strings.TrimSpace(persona.VisualDescription),
-		visualOverrideLine,
-		referenceLine,
-		"角色气质：聪明、可爱、带一点嘴硬和冷幽默；一次视频只安排一个主要动作和一组细微表情，动作之间保留自然停顿，避免夸张网红表演和无意义连续舞蹈。",
-		"视频场景必须符合现实世界的季节、天气、地点、光线、服装和物理动作。",
-		"用户场景要求：" + prompt,
-	}, "\n")
+	now := time.Now()
+	return personaVideoPromptAt(prompt, &nativeActivePersona{
+		ID:                    persona.ID,
+		Namespace:             persona.Namespace,
+		Name:                  persona.Name,
+		Description:           persona.Description,
+		VisualDescription:     a.configStore.appearanceLibraryVisualDescription(persona.ID, persona.VisualDescription),
+		VisualPromptOverride:  profile.VisualPromptOverride,
+		VisualReferencePrompt: visualReferencePrompt,
+		CharacterVersion:      persona.CharacterVersion,
+	}, now, a.imageVisualDirectorPolicy(ctx), nextSelfieVariationSeed(prompt, persona.ID, now))
 }
 
 func (a *AgentRuntime) personaVideoPromptForRun(ctx context.Context, run runRecord, prompt string) string {
@@ -447,10 +440,22 @@ func (a *AgentRuntime) personaVideoPromptForRun(ctx context.Context, run runReco
 	if persona == nil || strings.TrimSpace(persona.VisualDescription) == "" {
 		return strings.TrimSpace(prompt)
 	}
-	return personaVideoPrompt(prompt, persona)
+	now := time.Now()
+	return personaVideoPromptAt(prompt, persona, now, a.imageVisualDirectorPolicy(ctx), nextSelfieVariationSeed(prompt, personaID(persona), now))
 }
 
 func personaVideoPrompt(prompt string, persona *nativeActivePersona) string {
+	now := time.Now()
+	return personaVideoPromptAt(prompt, persona, now, defaultImageVisualDirectorPolicy(), nextSelfieVariationSeed(prompt, personaID(persona), now))
+}
+
+func personaVideoPromptAt(
+	prompt string,
+	persona *nativeActivePersona,
+	now time.Time,
+	policy imageVisualDirectorPolicy,
+	variationSeed uint64,
+) string {
 	if persona == nil || strings.TrimSpace(persona.VisualDescription) == "" {
 		return strings.TrimSpace(prompt)
 	}
@@ -458,6 +463,10 @@ func personaVideoPrompt(prompt string, persona *nativeActivePersona) string {
 		"保持当前角色卡是同一位人物，固定脸型、眼睛、发型、发色、年龄感和体态，不要换脸。",
 		"主脸身份以当前角色的主参考图为准；参考视频只借鉴动作、镜头、光线、服装和氛围，不复制参考视频中的脸部、身份、声音或具体场景。",
 		"角色外观基准：" + strings.TrimSpace(persona.VisualDescription),
+	}
+	shortOutfit := appearanceLibraryRequiresShortOutfit(persona.VisualDescription)
+	if shortOutfit {
+		parts = append(parts, shortOutfitInstruction())
 	}
 	if value := strings.TrimSpace(persona.VisualPromptOverride); value != "" {
 		parts = append(parts, "当前角色视觉覆盖："+value)
@@ -468,8 +477,12 @@ func personaVideoPrompt(prompt string, persona *nativeActivePersona) string {
 	parts = append(parts,
 		"一次视频只安排一个主要动作和一组细微表情，动作之间保留自然停顿，避免夸张网红表演和无意义连续舞蹈。",
 		"视频场景必须符合现实世界的季节、天气、地点、光线、服装和物理动作。",
-		"用户场景要求："+strings.TrimSpace(prompt),
+		visualReferenceVariationInstruction(persona.ID),
 	)
+	if variation := videoDirectorPrompt(prompt, now, variationSeed, policy, shortOutfit); variation != "" {
+		parts = append(parts, variation)
+	}
+	parts = append(parts, "用户场景要求："+strings.TrimSpace(prompt))
 	return strings.Join(parts, "\n")
 }
 

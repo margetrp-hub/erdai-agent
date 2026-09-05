@@ -35,6 +35,17 @@ func TestDialogueReasoningRecognizesCorrection(t *testing.T) {
 	}
 }
 
+func TestDialogueReasoningRecognizesComplaintAsCorrectionWithPreviousReply(t *testing.T) {
+	for _, message := range []string{"雷达没用", "还是不行"} {
+		if action := classifyDialogueAction(message, "上一条回复", false); action != "correct_previous_reply" {
+			t.Fatalf("%q action = %q", message, action)
+		}
+	}
+	if action := classifyDialogueAction("这个东西没用", "", false); action == "correct_previous_reply" {
+		t.Fatalf("standalone complaint was misclassified as a correction: %q", action)
+	}
+}
+
 func TestDialogueReasoningCollapsesRepeatedDirectPings(t *testing.T) {
 	now := time.Now().UTC()
 	events := []RecalledGroupEvent{

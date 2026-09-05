@@ -116,7 +116,8 @@ var mgmtIntegrationFields = map[string]map[string]struct{}{
 	),
 	"affiliate_policy": coreFieldSet(
 		"enabled", "summaryUrl", "registerBaseUrl", "credentialRef", "requestTimeoutSeconds",
-		"pointsPerPaidInvitee", "bindAliases", "linkAliases", "pointsAliases",
+		"pointsPerPaidInvitee", "checkInPoints", "bindAliases", "linkAliases", "pointsAliases",
+		"checkInAliases", "redeemAliases", "lotteryUrl", "lotteryAliases",
 	),
 	"image_policy": coreFieldSet(
 		"enabled", "providerId", "model", "credentialRef", "defaultImageCount",
@@ -350,23 +351,24 @@ func mgmtValidateIntegration(id string, current, input map[string]any) (map[stri
 				normalized[slot] = reference
 			}
 			value = normalized
-		case "apiBase", "statusUrl", "radarUrl", "cardPageUrl", "cardBrowserUrl":
+		case "apiBase", "statusUrl", "radarUrl", "cardPageUrl", "cardBrowserUrl", "lotteryUrl":
 			raw, ok := value.(string)
 			if !ok {
 				return nil, coreInvalid(field + " must be a string")
 			}
-			if field == "cardPageUrl" && strings.TrimSpace(raw) == "" {
+			if (field == "cardPageUrl" || field == "lotteryUrl") && strings.TrimSpace(raw) == "" {
 				value = ""
 				break
 			}
 			allowQuery := id == "ops_policy" && (field == "statusUrl" || field == "radarUrl" || field == "cardPageUrl")
 			privateOnly := id == "ops_policy" && field == "cardBrowserUrl"
-			normalized, err := mgmtHTTPURL(raw, field, privateOnly, id == "grok_policy" || id == "ops_policy", allowQuery)
+			securePublic := id == "grok_policy" || id == "ops_policy" || (id == "affiliate_policy" && field == "lotteryUrl")
+			normalized, err := mgmtHTTPURL(raw, field, privateOnly, securePublic, allowQuery)
 			if err != nil {
 				return nil, err
 			}
 			value = normalized
-		case "commandAliases", "radarCommandAliases":
+		case "commandAliases", "radarCommandAliases", "bindAliases", "linkAliases", "pointsAliases", "checkInAliases", "redeemAliases", "lotteryAliases":
 			aliases, err := mgmtStringArray(value, field, 20, 40)
 			if err != nil {
 				return nil, err
@@ -512,6 +514,14 @@ func mgmtValidateIntegration(id string, current, input map[string]any) (map[stri
 		maximumCount, maxOK := next["maxImageCount"].(float64)
 		if defaultOK && maxOK && defaultCount > maximumCount {
 			return nil, coreInvalid("defaultImageCount cannot exceed maxImageCount")
+		}
+	}
+	if id == "affiliate_policy" {
+		for _, field := range []string{"pointsPerPaidInvitee", "checkInPoints"} {
+			value, err := mgmtFiniteNumber(next[field], field)
+			if err != nil || math.Trunc(value) != value || value < 1 || value > 1_000_000_000 {
+				return nil, coreInvalid(field + " must be a positive integer")
+			}
 		}
 	}
 	if id == "companion_policy" {

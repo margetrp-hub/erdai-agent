@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 77
+const nativeCoreSchemaVersion = 82
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -652,6 +652,40 @@ CREATE TABLE IF NOT EXISTS transport_events (
   decision_reason TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_affiliate_bindings (
+  transport TEXT NOT NULL,
+  transport_instance TEXT NOT NULL,
+  sender_ref TEXT NOT NULL,
+  affiliate_code TEXT NOT NULL,
+  bound_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (transport, transport_instance, sender_ref)
+);
+
+CREATE TABLE IF NOT EXISTS agent_points_ledger (
+  id TEXT PRIMARY KEY,
+  transport TEXT NOT NULL,
+  transport_instance TEXT NOT NULL,
+  sender_ref TEXT NOT NULL,
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('check_in', 'redemption', 'adjustment')),
+  points INTEGER NOT NULL CHECK (points <> 0),
+  reference_key TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (transport, transport_instance, sender_ref, reference_key)
+);
+
+CREATE TABLE IF NOT EXISTS agent_points_catalog (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  cost_points INTEGER NOT NULL CHECK (cost_points > 0),
+  stock INTEGER NOT NULL DEFAULT -1 CHECK (stock >= -1),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `
 
 const nativeCoreIndexes = `
@@ -971,10 +1005,10 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 				`{"category":"monitoring","integrationId":"ops_policy","commands":["/渠道","/雷达","/分组名"],"capabilities":["近90分钟真实监控卡片截图","单组详情","模型评分雷达"],"toolIds":["ops-status","query_ops_status"],"references":["https://github.com/lsmallice/astrbot_plugin_sub2api_status","https://github.com/liuwanwan1/astrbot_plugin_sub2api_health"]}`,
 			},
 			{
-				"affiliate-invite", "邀请积分",
-				"绑定 QQ 邀请码，生成邀请链接并查询充值奖励积分。",
+				"affiliate-invite", "积分与活动",
+				"统一签到积分、邀请奖励和活动入口，准备积分兑换。",
 				"1.0.0", "二呆 Core", "affiliate_policy",
-				`{"category":"growth","integrationId":"affiliate_policy","commands":["/绑定 邀请码","/邀请链接","/查询积分","/积分查询"],"capabilities":["QQ 邀请码绑定","专属邀请链接","充值奖励积分"],"references":[]}`,
+				`{"category":"growth","integrationId":"affiliate_policy","commands":["/绑定 邀请码","/邀请链接","/签到","/查询积分","/积分查询","/积分兑换","/抽奖"],"capabilities":["QQ 邀请码绑定","签到积分","统一积分账户","积分兑换入口","薅乐马抽奖入口"],"references":[]}`,
 			},
 		}
 		for _, plugin := range plugins {
@@ -1083,6 +1117,16 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	}
 	if previousVersion < 77 {
 		if err := migrateAppearanceLibrariesV77(tx, now); err != nil {
+			return err
+		}
+	}
+	if previousVersion < 78 {
+		if err := migrateRewardsV78(tx, now); err != nil {
+			return err
+		}
+	}
+	if previousVersion < 79 {
+		if err := migrateDoubaoVisualIdentityV79(tx, now); err != nil {
 			return err
 		}
 	}
@@ -1465,17 +1509,19 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 			visual_description = '明确成年的中国年轻女性，约二十二至二十五岁，小巧柔和的鹅蛋脸，明亮有神的杏眼，乌黑柔顺的中长发，轻薄自然碎发，笑起来有一点俏皮。穿清爽明亮的日常服装，例如浅色针织衫、衬衫或简洁连衣裙。整体可爱、灵动、有亲和力，同时保留聪明克制的气质。真实手机摄影、柔和自然光、生活感，不是商业模特；保持同一张脸、发型和年龄特征。',
 			system_prompt = system_prompt || '\n对话不能只给空泛确认。轻松场景要抓住对方消息里最具体的人、事、情绪或选择，至少带一个贴合上下文的反应、判断、联想或自然追问；仍然保持短，不写客服式扩展。',
 			post_history_instructions = post_history_instructions || ' 优先回应本句独有的细节，避免只说“行”“收到”“看见了”。',
-			character_version = '1.6.0', source_version = 'go-schema-33', updated_at = ` + now + `
+			character_version = '1.6.0', source_version = 'go-schema-33', updated_at = `+now+`
 			WHERE id = 'doubao' AND source_version = 'go-schema-31'
 			AND character_version = '1.5.0'
-			AND visual_description IN (
+			AND (visual_description IN (
 				'二十多岁的中国女性，黑色长发，五官清冷精致，神情聪明克制，穿简洁的深色现代服装，真实摄影质感。',
 				'明确成年的中国年轻女性，约二十二至二十五岁，小巧柔和的鹅蛋脸，明亮有神的杏眼，乌黑柔顺的中长发，轻薄自然碎发，笑起来有一点俏皮。穿清爽明亮的日常服装，例如浅色针织衫、衬衫或简洁连衣裙。整体可爱、灵动、有亲和力，同时保留聪明克制的气质。真实手机摄影、柔和自然光、生活感，不是商业模特；保持同一张脸、发型和年龄特征。',
 				'明确成年的中国年轻女性，约二十二至二十五岁；小巧柔和的鹅蛋脸，明亮有神的杏眼，乌黑柔顺的中长发和轻薄自然碎发，笑起来有一点俏皮。保持同一张脸、发型、发色、年龄和体态；服装随季节、天气、地点和活动合理变化，优先清爽的浅色短袖衬衫、针织开衫或简洁连衣裙，不把夏天画成厚毛衣。整体可爱、灵动、亲近，同时保留聪明克制的气质。现实世界手机摄影，真实皮肤纹理、自然光和合理物理比例，不是商业模特。',
 				'明确成年的中国年轻女性，约二十至二十三岁；小巧柔和的鹅蛋脸，明亮有神的杏眼，乌黑柔顺的中长发和轻薄自然碎发，笑起来有一点俏皮。保持同一张脸、发型、发色、年龄和体态；服装随季节、天气、地点和活动合理变化，优先清爽的浅色短袖衬衫、针织开衫或简洁连衣裙，不把夏天画成厚毛衣。整体可爱、灵动、亲近，但不幼态，保留聪明克制的气质。现实世界手机摄影，真实皮肤纹理、自然光和合理物理比例，不是商业模特。'
 				,
 				'明确成年的中国年轻女性，约二十至二十三岁；小巧柔和的鹅蛋脸，清透自然的浅肤色，深棕色大杏眼，平直自然眉，鼻梁小巧，嘴唇柔和偏粉。乌黑顺直长发，中分并带轻薄自然碎发，发丝贴近脸颊；身形纤细，神态安静时有一点倔，笑起来明亮俏皮。保持同一张脸、五官比例、发型、发色、年龄和体态；服装随季节、天气、地点和活动合理变化，可使用米白色交领上衣配浅青色滚边等清爽穿搭，不把夏天画成厚毛衣。整体年轻、可爱、灵动、亲近，但明确成年且不幼态，保留聪明克制的气质。现实世界手机前置镜头摄影，真实皮肤纹理、自然光、轻微生活感和合理物理比例，不是商业模特，也不是网红模板脸。'
-			)`); err != nil {
+			)
+			OR visual_description = ?
+			)`, canonicalDoubaoVisualDescription); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`UPDATE runtime_config SET
@@ -1972,6 +2018,21 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 			return err
 		}
 	}
+	if previousVersion < 80 {
+		if err := migrateXiaomanShorterOutfitV80(tx, now); err != nil {
+			return err
+		}
+	}
+	if previousVersion < 81 {
+		if err := migrateGrokPaidChatTimeoutV81(tx, now); err != nil {
+			return err
+		}
+	}
+	if previousVersion < 82 {
+		if err := migrateCodexRadarSourceV82(tx, now); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(`
 		INSERT OR IGNORE INTO tools (
 			id, name, description, capabilities_json, risk_level, enabled,
@@ -2078,7 +2139,7 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 func migratePluginContractsV72(tx coreSchemaTx, now string) error {
 	manifests := map[string]string{
 		"sub2api-channel-monitor": `{"manifestSchemaVersion":1,"category":"monitoring","integrationId":"ops_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/ops_policy","healthMode":"live","commands":["/渠道","/雷达","/分组名"],"capabilities":["近90分钟真实监控卡片截图","单组详情","模型评分雷达"],"toolIds":["ops-status"],"references":["https://github.com/lsmallice/astrbot_plugin_sub2api_status","https://github.com/liuwanwan1/astrbot_plugin_sub2api_health"]}`,
-		"affiliate-invite":        `{"manifestSchemaVersion":1,"category":"growth","integrationId":"affiliate_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/affiliate_policy","healthMode":"readiness","commands":["/绑定 邀请码","/邀请链接","/查询积分","/积分查询"],"capabilities":["QQ 邀请码绑定","专属邀请链接","充值奖励积分"],"toolIds":[],"references":[]}`,
+		"affiliate-invite":        `{"manifestSchemaVersion":1,"category":"growth","integrationId":"affiliate_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/affiliate_policy","healthMode":"readiness","commands":["/绑定 邀请码","/邀请链接","/签到","/查询积分","/积分查询","/积分兑换","/抽奖"],"capabilities":["QQ 邀请码绑定","签到积分","统一积分账户","积分兑换入口","薅乐马抽奖入口"],"toolIds":[],"references":[]}`,
 		"group-conversation":      `{"manifestSchemaVersion":1,"category":"conversation","integrationId":"group_chat_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/group_chat_policy","healthMode":"readiness","commands":[],"capabilities":["群聊参与决策","智能批量上下文","主动对话冷却","低价值消息过滤"],"toolIds":[],"dependencies":["companion-context"]}`,
 		"memory-relationship":     `{"manifestSchemaVersion":1,"category":"memory","integrationId":"memory_policy","toggleMode":"policy_field","configView":"memories","configPath":"/api/v1/integrations/memory_policy","healthMode":"readiness","commands":[],"capabilities":["自动记忆采集","关系脉冲","群组记忆隔离","互动反馈"],"toolIds":["memory-recall","memory-remember","memory-forget"]}`,
 		"knowledge-retrieval":     `{"manifestSchemaVersion":1,"category":"knowledge","integrationId":"retrieval_policy","toggleMode":"policy_field","configView":"knowledge","configPath":"/api/v1/integrations/retrieval_policy","healthMode":"readiness","commands":[],"capabilities":["混合检索","Embedding 向量","知识候选审核","相似度阈值"],"toolIds":[]}`,
@@ -2239,6 +2300,123 @@ func migrateAppearanceLibrariesV77(tx coreSchemaTx, now string) error {
 		}
 	}
 	return rows.Err()
+}
+
+func migrateRewardsV78(tx coreSchemaTx, now string) error {
+	var raw string
+	if err := tx.QueryRow("SELECT config_json FROM integration_settings WHERE id = 'affiliate_policy'").Scan(&raw); err != nil {
+		return fmt.Errorf("read affiliate policy for v78: %w", err)
+	}
+	config := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return fmt.Errorf("decode affiliate policy for v78: %w", err)
+	}
+	defaults := map[string]any{
+		"checkInPoints":  float64(10),
+		"checkInAliases": []any{"/签到"},
+		"redeemAliases":  []any{"/积分兑换"},
+		"lotteryUrl":     "https://api.ohlao.cfd/game/lottery.html",
+		"lotteryAliases": []any{"/抽奖"},
+	}
+	changed := false
+	for key, value := range defaults {
+		if _, exists := config[key]; !exists {
+			config[key] = value
+			changed = true
+		}
+	}
+	if changed {
+		if _, err := tx.Exec("UPDATE integration_settings SET config_json = ?, updated_at = ? WHERE id = 'affiliate_policy'", mgmtJSON(config), now); err != nil {
+			return fmt.Errorf("update affiliate policy for v78: %w", err)
+		}
+	}
+	manifest := `{"manifestSchemaVersion":1,"category":"growth","integrationId":"affiliate_policy","toggleMode":"policy_field","configView":"integrations","configPath":"/api/v1/integrations/affiliate_policy","healthMode":"readiness","commands":["/绑定 邀请码","/邀请链接","/签到","/查询积分","/积分查询","/积分兑换","/抽奖"],"capabilities":["QQ 邀请码绑定","签到积分","统一积分账户","积分兑换入口","薅乐马抽奖入口"],"toolIds":[],"references":[]}`
+	if _, err := tx.Exec("UPDATE agent_plugins SET name = '积分与活动', description = '统一签到积分、邀请奖励和活动入口，准备积分兑换。', version = '1.2.0', manifest_json = ?, updated_at = ? WHERE id = 'affiliate-invite' AND source = 'builtin'", manifest, now); err != nil {
+		return fmt.Errorf("update affiliate plugin for v78: %w", err)
+	}
+	return nil
+}
+
+func migrateDoubaoVisualIdentityV79(tx coreSchemaTx, now string) error {
+	legacyPredicate := `(
+		instr(visual_description, '可使用米白色交领上衣配浅青色滚边') > 0 OR
+		(instr(visual_description, '服装随季节、天气、地点和活动合理变化') > 0 AND
+		 instr(visual_description, '乌黑柔顺的中长发') > 0)
+	)`
+	if _, err := tx.Exec(`UPDATE personas SET visual_description = ?, updated_at = ?
+		WHERE id = 'doubao' AND `+legacyPredicate, canonicalDoubaoVisualDescription, now); err != nil {
+		return fmt.Errorf("update Doubao visual identity for v79: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE appearance_libraries SET visual_description = ?, updated_at = ?
+		WHERE id = 'persona-appearance-doubao' AND `+legacyPredicate, canonicalDoubaoVisualDescription, now); err != nil {
+		return fmt.Errorf("update Doubao appearance library for v79: %w", err)
+	}
+	return nil
+}
+
+func migrateXiaomanShorterOutfitV80(tx coreSchemaTx, now string) error {
+	legacyPredicate := `(
+		(
+			instr(visual_description, '修身运动装、短裙、长靴、各类丝袜') > 0 OR
+			instr(visual_description, '穿搭有审美和边界感') > 0 OR
+			instr(visual_description, '场景、天气、时间、机位、表情和衣服随当下变化') > 0 OR
+			instr(visual_description, '服装随时间与话题自然变化') > 0
+		)
+		AND instr(visual_description, '膝盖以上') = 0
+	)`
+	if _, err := tx.Exec(`UPDATE personas SET visual_description = ?, character_version = '1.3.2', source_version = 'go-schema-80', updated_at = ?
+		WHERE id = 'xiaoman' AND source_version IN ('go-seed-0.9.3', 'go-schema-63', 'go-schema-64', 'go-schema-74') AND `+legacyPredicate, canonicalXiaomanVisualDescription, now); err != nil {
+		return fmt.Errorf("update Xiaoman visual identity for v80: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE appearance_libraries SET visual_description = ?, updated_at = ?
+		WHERE id = 'persona-appearance-xiaoman' AND `+legacyPredicate, canonicalXiaomanVisualDescription, now); err != nil {
+		return fmt.Errorf("update Xiaoman appearance library for v80: %w", err)
+	}
+	return nil
+}
+
+func migrateGrokPaidChatTimeoutV81(tx coreSchemaTx, now string) error {
+	if _, err := tx.Exec(`UPDATE provider_connections
+		SET timeout_seconds = 20, updated_at = ?
+		WHERE id = 'connection-grok-paid-chat' AND timeout_seconds = 10`, now); err != nil {
+		return fmt.Errorf("update Grok paid chat timeout for v81: %w", err)
+	}
+	return nil
+}
+
+func migrateCodexRadarSourceV82(tx coreSchemaTx, now string) error {
+	const radarURL = "https://api.codexradar.com/api/v1/intelligence-efficiency?v=20260823-trend-cohort-v1"
+	const legacyFamilyJSON = `["GPT-5.6 Sol","GPT-5.6 Terra","GPT-5.6 Luna","GPT-5.5","DeepSeek V4 Flash"]`
+	var raw string
+	if err := tx.QueryRow(`SELECT config_json FROM integration_settings WHERE id = 'ops_policy'`).Scan(&raw); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("read CodexRadar policy for v82: %w", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return fmt.Errorf("decode CodexRadar policy for v82: %w", err)
+	}
+	currentURL, _ := config["radarUrl"].(string)
+	if currentURL != "https://codexradar.com/api/intelligence-efficiency-metrics" &&
+		currentURL != "https://codex-radar.roixw.com/api/model-ratings?history=14" {
+		return nil
+	}
+	config["radarUrl"] = radarURL
+	if family, ok := config["radarFamilyOrder"].([]any); !ok {
+		config["radarFamilyOrder"] = []string{"GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.5", "DeepSeek V4 Flash"}
+	} else if encoded, err := json.Marshal(family); err == nil && string(encoded) == legacyFamilyJSON {
+		config["radarFamilyOrder"] = []string{"GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.5", "DeepSeek V4 Flash"}
+	}
+	updated, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("encode CodexRadar policy for v82: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE integration_settings SET config_json = ?, updated_at = ? WHERE id = 'ops_policy'`, string(updated), now); err != nil {
+		return fmt.Errorf("update CodexRadar source for v82: %w", err)
+	}
+	return nil
 }
 
 func migrateLegacyPlatformRegistry(tx coreSchemaTx, now string) error {
@@ -2509,9 +2687,9 @@ const nativeOpsPolicyDefaults = `{
   "commandAliases":["/渠道","/ops","/分组","/线路","/ops状态"],"timelinePoints":3,
   "evaluationWindowMinutes":15,"evaluationPollSeconds":60,
   "groupMultipliers":{},"showMultiplierNote":true,
-  "radarEnabled":true,"radarUrl":"https://codexradar.com/api/intelligence-efficiency-metrics",
+  "radarEnabled":true,"radarUrl":"https://api.codexradar.com/api/v1/intelligence-efficiency?v=20260823-trend-cohort-v1",
   "radarCommandAliases":["/雷达","/模型雷达"],"radarMinimumSamples":5,
-  "radarFamilyOrder":["GPT-5.6 Sol","GPT-5.6 Terra","GPT-5.6 Luna","GPT-5.5","DeepSeek V4 Flash"],
+  "radarFamilyOrder":["GPT-6 Astra","GPT-5.6 Sol","GPT-5.6 Terra","GPT-5.6 Luna","GPT-5.5","DeepSeek V4 Flash"],
   "radarRecommendationOrder":["复杂任务","日常开发","轻量任务"],
   "radarRecommendations":{"复杂任务":"GPT-5.6 Terra","日常开发":"GPT-5.6 Sol","轻量任务":"GPT-5.6 Luna"}
 }`
@@ -2519,8 +2697,10 @@ const nativeOpsPolicyDefaults = `{
 const nativeAffiliatePolicyDefaults = `{
   "enabled":true,"summaryUrl":"https://ohlaoo.com/ops-bot/affiliate/summary",
   "registerBaseUrl":"https://ohlaoo.com/register","credentialRef":"ERDAI_OPS_TOKEN",
-  "requestTimeoutSeconds":6,"pointsPerPaidInvitee":100,
-  "bindAliases":["/绑定"],"linkAliases":["/邀请链接"],"pointsAliases":["/查询积分","/积分","/积分查询"]
+  "requestTimeoutSeconds":6,"pointsPerPaidInvitee":100,"checkInPoints":10,
+  "bindAliases":["/绑定"],"linkAliases":["/邀请链接"],"pointsAliases":["/查询积分","/积分","/积分查询"],
+  "checkInAliases":["/签到"],"redeemAliases":["/积分兑换"],
+  "lotteryUrl":"https://api.ohlao.cfd/game/lottery.html","lotteryAliases":["/抽奖"]
 }`
 
 const nativeImagePolicyDefaults = `{

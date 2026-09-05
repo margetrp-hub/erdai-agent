@@ -19,9 +19,14 @@ type affiliatePolicy struct {
 	RegisterBaseURL       string   `json:"registerBaseUrl"`
 	RequestTimeoutSeconds int      `json:"requestTimeoutSeconds"`
 	PointsPerPaidInvitee  int64    `json:"pointsPerPaidInvitee"`
+	CheckInPoints         int64    `json:"checkInPoints"`
 	BindAliases           []string `json:"bindAliases"`
 	LinkAliases           []string `json:"linkAliases"`
 	PointsAliases         []string `json:"pointsAliases"`
+	CheckInAliases        []string `json:"checkInAliases"`
+	RedeemAliases         []string `json:"redeemAliases"`
+	LotteryURL            string   `json:"lotteryUrl"`
+	LotteryAliases        []string `json:"lotteryAliases"`
 }
 
 type affiliateSummary struct {
@@ -113,6 +118,115 @@ func (a *AgentRuntime) boundAffiliateCode(ctx context.Context, run runRecord) (s
 	return code, err
 }
 
+type pointsAccount struct {
+	LocalPoints  int64
+	InvitePoints int64
+	TotalPoints  int64
+	Summary      *affiliateSummary
+	SyncErr      error
+}
+
+func pointsScope(run runRecord) (string, string, string) {
+	return strings.ToLower(strings.TrimSpace(run.Transport)), strings.TrimSpace(run.TransportInstance), strings.TrimSpace(run.SenderRef)
+}
+
+func (a *AgentRuntime) pointsLedgerBalance(ctx context.Context, run runRecord) (int64, error) {
+	transport, instance, sender := pointsScope(run)
+	var balance int64
+	err := a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(points), 0) FROM agent_points_ledger
+		WHERE transport = ? AND transport_instance = ? AND sender_ref = ?`, transport, instance, sender).Scan(&balance)
+	return balance, err
+}
+
+func pointsPerInvitee(policy affiliatePolicy) int64 {
+	if policy.PointsPerPaidInvitee < 1 {
+		return 100
+	}
+	return policy.PointsPerPaidInvitee
+}
+
+func checkInPoints(policy affiliatePolicy) int64 {
+	if policy.CheckInPoints < 1 {
+		return 10
+	}
+	return policy.CheckInPoints
+}
+
+func shanghaiDate(now time.Time) string {
+	return now.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
+}
+
+func (a *AgentRuntime) recordDailyCheckIn(ctx context.Context, run runRecord, policy affiliatePolicy) (bool, int64, error) {
+	transport, instance, sender := pointsScope(run)
+	points := checkInPoints(policy)
+	date := shanghaiDate(time.Now().UTC())
+	id, err := randomID("points")
+	if err != nil {
+		return false, 0, err
+	}
+	result, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO agent_points_ledger
+		(id, transport, transport_instance, sender_ref, entry_type, points, reference_key, note, created_at)
+		VALUES (?, ?, ?, ?, 'check_in', ?, ?, ?, ?)`, id, transport, instance, sender, points,
+		"check-in:"+date, "每日签到", time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return false, 0, err
+	}
+	awarded, err := result.RowsAffected()
+	if err != nil {
+		return false, 0, err
+	}
+	balance, err := a.pointsLedgerBalance(ctx, run)
+	return awarded > 0, balance, err
+}
+
+func (a *AgentRuntime) pointsAccount(ctx context.Context, run runRecord, policy affiliatePolicy) (pointsAccount, error) {
+	account := pointsAccount{}
+	local, err := a.pointsLedgerBalance(ctx, run)
+	if err != nil {
+		return account, err
+	}
+	account.LocalPoints = local
+	account.TotalPoints = local
+	code, err := a.boundAffiliateCode(ctx, run)
+	if errors.Is(err, sql.ErrNoRows) {
+		return account, nil
+	}
+	if err != nil {
+		return account, err
+	}
+	summary, err := a.fetchAffiliateSummary(ctx, code, policy)
+	if err != nil {
+		account.SyncErr = err
+		return account, nil
+	}
+	account.Summary = &summary
+	account.InvitePoints = summary.PaidInviteeCount
+	if account.InvitePoints < 0 {
+		account.InvitePoints = 0
+	}
+	account.InvitePoints *= pointsPerInvitee(policy)
+	account.TotalPoints += account.InvitePoints
+	return account, nil
+}
+
+func pointsAccountText(title string, account pointsAccount) string {
+	lines := []string{title}
+	if account.Summary != nil {
+		lines = append(lines, fmt.Sprintf("邀请码：%s", account.Summary.Code), fmt.Sprintf("已邀请：%d 人", account.Summary.InvitedCount), fmt.Sprintf("已充值：%d 人", account.Summary.PaidInviteeCount))
+	}
+	lines = append(lines, fmt.Sprintf("本地积分：%d 分", account.LocalPoints), fmt.Sprintf("邀请积分：%d 分", account.InvitePoints), fmt.Sprintf("当前积分：%d 分", account.TotalPoints))
+	if account.SyncErr != nil {
+		lines = append(lines, "邀请积分暂未同步，稍后再查。")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *AgentRuntime) pointsCatalogCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := a.db.QueryRowContext(ctx, `SELECT count(*) FROM agent_points_catalog WHERE enabled = 1`).Scan(&count)
+	return count, err
+}
+
 func affiliateRegisterLink(baseURL, code string) (string, error) {
 	endpoint, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
@@ -126,7 +240,7 @@ func affiliateRegisterLink(baseURL, code string) (string, error) {
 
 func (a *AgentRuntime) handleAffiliateCommand(ctx context.Context, run runRecord, command coreDirectCommand) (agentReply, error) {
 	if !qqAffiliateTransport(run.Transport) || strings.TrimSpace(run.SenderRef) == "" {
-		return agentReply{Text: "邀请绑定目前只支持 QQ 用户。"}, nil
+		return agentReply{Text: "积分与活动目前只支持 QQ 用户。"}, nil
 	}
 	policy := command.AffiliatePolicy
 	switch command.Kind {
@@ -177,23 +291,50 @@ func (a *AgentRuntime) handleAffiliateCommand(ctx context.Context, run runRecord
 		return agentReply{Text: "你的专属邀请链接：\n" + link + "\n好友通过链接注册并充值后，会计入你的积分。"}, nil
 
 	case directCommandAffiliatePoints:
-		code, err := a.boundAffiliateCode(ctx, run)
-		if errors.Is(err, sql.ErrNoRows) {
-			return agentReply{Text: "还没有绑定邀请码，请先发送：/绑定 邀请码"}, nil
-		}
+		account, err := a.pointsAccount(ctx, run, policy)
 		if err != nil {
 			return agentReply{}, err
 		}
-		summary, err := a.fetchAffiliateSummary(ctx, code, policy)
+		return agentReply{Text: pointsAccountText("🎁 积分账户", account)}, nil
+
+	case directCommandCheckIn:
+		awarded, _, err := a.recordDailyCheckIn(ctx, run, policy)
 		if err != nil {
-			return agentReply{Text: "积分暂时查不到，稍后再试。"}, nil
+			return agentReply{}, err
 		}
-		pointsPerInvitee := policy.PointsPerPaidInvitee
-		if pointsPerInvitee < 1 {
-			pointsPerInvitee = 100
+		account, err := a.pointsAccount(ctx, run, policy)
+		if err != nil {
+			return agentReply{}, err
 		}
-		points := summary.PaidInviteeCount * pointsPerInvitee
-		return agentReply{Text: fmt.Sprintf("🎁 邀请积分\n邀请码：%s\n已邀请：%d 人\n已充值：%d 人\n当前积分：%d 分", summary.Code, summary.InvitedCount, summary.PaidInviteeCount, points)}, nil
+		if awarded {
+			return agentReply{Text: fmt.Sprintf("签到成功，+%d 积分\n%s", checkInPoints(policy), pointsAccountText("🎁 积分账户", account))}, nil
+		}
+		return agentReply{Text: "今天已经签到过了。\n" + pointsAccountText("🎁 积分账户", account)}, nil
+
+	case directCommandPointsRedeem:
+		account, err := a.pointsAccount(ctx, run, policy)
+		if err != nil {
+			return agentReply{}, err
+		}
+		catalogCount, err := a.pointsCatalogCount(ctx)
+		if err != nil {
+			return agentReply{}, err
+		}
+		if catalogCount == 0 {
+			return agentReply{Text: "🛍 积分兑换\n" + pointsAccountText("🎁 积分账户", account) + "\n兑换中心已准备，奖品暂未上架，后续会在这里开放。"}, nil
+		}
+		return agentReply{Text: fmt.Sprintf("🛍 积分兑换\n%s\n当前有 %d 个奖品，兑换流程正在准备中。", pointsAccountText("🎁 积分账户", account), catalogCount)}, nil
+
+	case directCommandLottery:
+		lotteryURL := strings.TrimSpace(policy.LotteryURL)
+		if lotteryURL == "" {
+			return agentReply{Text: "抽奖入口暂未配置好，请联系管理员。"}, nil
+		}
+		endpoint, err := url.Parse(lotteryURL)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
+			return agentReply{Text: "抽奖入口暂未配置好，请联系管理员。"}, nil
+		}
+		return agentReply{Text: "🎰 抽奖活动\n打开现有薅乐马抽奖页：\n" + lotteryURL}, nil
 	default:
 		return agentReply{}, errors.New("affiliate command is invalid")
 	}

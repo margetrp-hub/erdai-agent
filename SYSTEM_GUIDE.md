@@ -546,6 +546,8 @@ Run 输入、附件引用、工具输出、搜索结果、任务产物和投递�
 
 Stable 发布从干净源码检出开始，由 Docker 构建 WebUI、执行 Go 测试与静态检查，再生成正式镜像。生产主机身份和部署路径属于私有运维记录，不写死在公开项目说明中。
 
+Docker 默认使用 `https://proxy.golang.org,direct` 下载 Go 模块；受限网络可通过 `--build-arg GOPROXY=...` 显式选择可达来源。依赖下载失败属于构建失败，不能跳过测试后发布。
+
 ```text
 备份 SQLite 与 Compose
   -> 构建 verify 镜像

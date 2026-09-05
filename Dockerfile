@@ -8,7 +8,7 @@ RUN npm run build
 
 FROM golang:1.26.5-alpine AS source
 
-ARG GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 ENV GOGC=100 \
 	GOMEMLIMIT=600MiB \

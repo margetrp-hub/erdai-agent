@@ -80,6 +80,7 @@ func main() {
 		ConfigDatabasePath:        envOr("ERDAI_CONFIG_DATABASE", "/data/erdai-agent-core.sqlite3"),
 		LegacyRuntimeDatabasePath: strings.TrimSpace(os.Getenv("ERDAI_LEGACY_RUNTIME_DATABASE")),
 		AdminToken:                adminToken,
+		PointsReadToken:           strings.TrimSpace(os.Getenv("ERDAI_POINTS_READ_TOKEN")),
 		RuntimeToken:              os.Getenv("ERDAI_RUNTIME_TOKEN"),
 		ModelAPIKey:               os.Getenv("ERDAI_MODEL_API_KEY"),
 		GrokAPIKey:                os.Getenv("ERDAI_GROK_API_KEY"),
@@ -246,6 +247,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if g.runtime != nil && g.runtime.localMCP != nil &&
 		g.runtime.localMCP.handleHTTP(w, r, cleanPath(r.URL.Path), g.runtime.authorized(r)) {
+		return
+	}
+	if g.runtime != nil && g.runtime.handlePointsReadBridge(w, r) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {

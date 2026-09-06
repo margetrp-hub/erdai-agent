@@ -40,7 +40,7 @@ RUN apk add --no-cache gcc musl-dev
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=tmpfs,target=/tmp \
     CGO_ENABLED=1 /usr/local/go/bin/go test -race -p=1 -timeout 20m \
-    -run 'Test(Hardening|Optimization|Repair)' .
+    -run 'Test(Hardening|Optimization|Repair|Points)' .
 
 FROM scratch AS final
 

@@ -5,6 +5,7 @@ import {
   Cable,
   ChevronDown,
   Cpu,
+  Coins,
   Database,
   LayoutDashboard,
   LibraryBig,
@@ -26,6 +27,7 @@ import { Button, StatusDot } from './ui';
 export type ViewId =
   | 'overview'
   | 'operations'
+  | 'points'
   | 'runtime'
   | 'roles'
   | 'memories'
@@ -61,6 +63,7 @@ const navGroups: NavGroup[] = [
     items: [
       { id: 'overview', label: '总览', icon: LayoutDashboard },
       { id: 'operations', label: '任务与审计', icon: ListChecks },
+      { id: 'points', label: '积分与活动', icon: Coins },
     ],
   },
   {

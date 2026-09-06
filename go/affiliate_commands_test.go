@@ -119,6 +119,9 @@ func TestAffiliateCommandFlow(t *testing.T) {
 		transport_instance TEXT NOT NULL, sender_ref TEXT NOT NULL, verified_at TEXT NOT NULL, evidence TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
+	if err = initPointsAccounts(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
 	runtime := &AgentRuntime{
 		db:       db,
 		opsToken: "test-token",

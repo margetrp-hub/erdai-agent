@@ -6,9 +6,11 @@ import { Button } from './components/ui';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { ModulePage } from './pages/ModulePage';
 import { OverviewPage } from './pages/OverviewPage';
+import { PointsPage } from './pages/PointsPage';
 import { ApiError, getSession, loadDashboard, login, logout, type DashboardData } from './lib/api';
 import { initializeUiTheme } from './theme';
 import './styles.css';
+import './points.css';
 
 initializeUiTheme();
 
@@ -107,6 +109,8 @@ function App() {
     >
       {activeView === 'overview' ? (
         <OverviewPage data={data} activeInstanceId={activeInstanceId} onNavigate={setActiveView} />
+      ) : activeView === 'points' ? (
+        <PointsPage refreshKey={refreshNonce} />
       ) : (
         <ModulePage
           key={activeView}

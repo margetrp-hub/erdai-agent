@@ -18,7 +18,9 @@ func (a *AgentRuntime) affiliateOwnerVerified(ctx context.Context, run runRecord
 	err := a.db.QueryRowContext(ctx, `SELECT 1 FROM agent_affiliate_owners o
 		JOIN agent_affiliate_bindings b ON b.affiliate_code = o.affiliate_code COLLATE NOCASE
 		AND b.transport = o.transport AND b.transport_instance = o.transport_instance AND b.sender_ref = o.sender_ref
-		WHERE o.affiliate_code = ? AND o.transport = ? AND o.transport_instance = ? AND o.sender_ref = ?`,
+		JOIN agent_points_identities owner ON owner.transport = o.transport AND owner.transport_instance = o.transport_instance AND owner.sender_ref = o.sender_ref
+		JOIN agent_points_identities actor ON actor.account_id = owner.account_id
+		WHERE o.affiliate_code = ? AND actor.transport = ? AND actor.transport_instance = ? AND actor.sender_ref = ?`,
 		code, transport, instance, sender).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -45,10 +47,13 @@ func (a *AgentRuntime) handleAffiliateOwnership(w http.ResponseWriter, r *http.R
 			return coreInvalid("status must be pending, verified or conflict")
 		}
 		query := `SELECT * FROM (SELECT b.transport, b.transport_instance, b.sender_ref, b.affiliate_code,
-			CASE WHEN o.sender_ref IS NULL THEN 'pending' WHEN o.transport = b.transport
-			AND o.transport_instance = b.transport_instance AND o.sender_ref = b.sender_ref THEN 'verified' ELSE 'conflict' END AS status,
-			b.bound_at
+			CASE WHEN o.sender_ref IS NULL THEN 'pending' WHEN (o.transport = b.transport
+			AND o.transport_instance = b.transport_instance AND o.sender_ref = b.sender_ref)
+			OR (actor.account_id IS NOT NULL AND actor.account_id = owner.account_id) THEN 'verified' ELSE 'conflict' END AS status,
+			b.bound_at, COALESCE(actor.account_id, ''), COALESCE(o.verified_at, ''), COALESCE(o.evidence, '')
 			FROM agent_affiliate_bindings b LEFT JOIN agent_affiliate_owners o ON o.affiliate_code = b.affiliate_code COLLATE NOCASE
+			LEFT JOIN agent_points_identities actor ON actor.transport = b.transport AND actor.transport_instance = b.transport_instance AND actor.sender_ref = b.sender_ref
+			LEFT JOIN agent_points_identities owner ON owner.transport = o.transport AND owner.transport_instance = o.transport_instance AND owner.sender_ref = o.sender_ref
 			) WHERE 1 = 1`
 		args := []any{}
 		for _, filter := range []struct{ parameter, column string }{
@@ -69,11 +74,12 @@ func (a *AgentRuntime) handleAffiliateOwnership(w http.ResponseWriter, r *http.R
 		defer rows.Close()
 		items := []map[string]string{}
 		for rows.Next() {
-			var transport, instance, sender, code, status, boundAt string
-			if err := rows.Scan(&transport, &instance, &sender, &code, &status, &boundAt); err != nil {
+			var transport, instance, sender, code, status, boundAt, accountID, verifiedAt, evidence string
+			if err := rows.Scan(&transport, &instance, &sender, &code, &status, &boundAt, &accountID, &verifiedAt, &evidence); err != nil {
 				return err
 			}
-			items = append(items, map[string]string{"transport": transport, "transportInstance": instance, "senderRef": sender, "affiliateCode": code, "status": status})
+			items = append(items, map[string]string{"transport": transport, "transportInstance": instance, "senderRef": sender, "affiliateCode": code, "status": status,
+				"boundAt": boundAt, "accountId": accountID, "verifiedAt": verifiedAt, "evidence": evidence})
 		}
 		if err := rows.Err(); err != nil {
 			return err
@@ -116,6 +122,9 @@ func (a *AgentRuntime) handleAffiliateOwnership(w http.ResponseWriter, r *http.R
 	}
 	if !strings.EqualFold(bound, code) {
 		return coreInvalid("account is not bound to the requested invite code")
+	}
+	if _, err = a.pointsIdentityAccount(r.Context(), run); err != nil {
+		return err
 	}
 	_, err = a.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO agent_affiliate_owners
 		(affiliate_code, transport, transport_instance, sender_ref, verified_at, evidence)

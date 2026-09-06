@@ -119,6 +119,14 @@ func (a *AgentRuntime) boundAffiliateCode(ctx context.Context, run runRecord) (s
 	err := a.db.QueryRowContext(ctx, `SELECT affiliate_code FROM agent_affiliate_bindings
 		WHERE transport = ? AND transport_instance = ? AND sender_ref = ?`,
 		strings.ToLower(strings.TrimSpace(run.Transport)), strings.TrimSpace(run.TransportInstance), strings.TrimSpace(run.SenderRef)).Scan(&code)
+	if errors.Is(err, sql.ErrNoRows) {
+		transport, instance, sender := pointsScope(run)
+		err = a.db.QueryRowContext(ctx, `SELECT o.affiliate_code FROM agent_affiliate_owners o
+			JOIN agent_points_identities owner USING (transport, transport_instance, sender_ref)
+			JOIN agent_points_identities actor ON actor.account_id = owner.account_id
+			WHERE actor.transport = ? AND actor.transport_instance = ? AND actor.sender_ref = ?
+			ORDER BY o.verified_at, o.affiliate_code LIMIT 1`, transport, instance, sender).Scan(&code)
+	}
 	return code, err
 }
 
@@ -135,10 +143,16 @@ func pointsScope(run runRecord) (string, string, string) {
 }
 
 func (a *AgentRuntime) pointsLedgerBalance(ctx context.Context, run runRecord) (int64, error) {
-	transport, instance, sender := pointsScope(run)
+	_, err := a.pointsIdentityAccount(ctx, run)
+	if err != nil {
+		return 0, err
+	}
 	var balance int64
-	err := a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(points), 0) FROM agent_points_ledger
-		WHERE transport = ? AND transport_instance = ? AND sender_ref = ?`, transport, instance, sender).Scan(&balance)
+	transport, instance, sender := pointsScope(run)
+	err = a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(l.points), 0) FROM agent_points_ledger l
+		JOIN agent_points_identities i USING (transport, transport_instance, sender_ref)
+		WHERE i.account_id = (SELECT account_id FROM agent_points_identities WHERE transport = ? AND transport_instance = ? AND sender_ref = ?)`,
+		transport, instance, sender).Scan(&balance)
 	return balance, err
 }
 
@@ -168,10 +182,16 @@ func (a *AgentRuntime) recordDailyCheckIn(ctx context.Context, run runRecord, po
 	if err != nil {
 		return false, 0, err
 	}
-	result, err := a.db.ExecContext(ctx, `INSERT OR IGNORE INTO agent_points_ledger
-		(id, transport, transport_instance, sender_ref, entry_type, points, reference_key, note, created_at)
-		VALUES (?, ?, ?, ?, 'check_in', ?, ?, ?, ?)`, id, transport, instance, sender, points,
-		"check-in:"+date, "每日签到", time.Now().UTC().Format(time.RFC3339Nano))
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, 0, err
+	}
+	defer tx.Rollback()
+	accountID, err := ensurePointsIdentity(tx, pointIdentity(run))
+	if err != nil {
+		return false, 0, err
+	}
+	result, err := tx.Exec(`INSERT OR IGNORE INTO agent_points_checkins (account_id, day) VALUES (?, ?)`, accountID, date)
 	if err != nil {
 		return false, 0, err
 	}
@@ -179,12 +199,28 @@ func (a *AgentRuntime) recordDailyCheckIn(ctx context.Context, run runRecord, po
 	if err != nil {
 		return false, 0, err
 	}
-	balance, err := a.pointsLedgerBalance(ctx, run)
-	return awarded > 0, balance, err
+	if awarded > 0 {
+		_, err = tx.Exec(`INSERT INTO agent_points_ledger
+		(id, transport, transport_instance, sender_ref, entry_type, points, reference_key, note, created_at)
+		VALUES (?, ?, ?, ?, 'check_in', ?, ?, ?, ?)`, id, transport, instance, sender, points,
+			"check-in:"+date, "每日签到", time.Now().UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return false, 0, err
+		}
+	}
+	balance, err := pointsBalance(tx, accountID)
+	if err != nil {
+		return false, 0, err
+	}
+	return awarded > 0, balance, tx.Commit()
 }
 
 func (a *AgentRuntime) pointsAccount(ctx context.Context, run runRecord, policy affiliatePolicy) (pointsAccount, error) {
 	account := pointsAccount{}
+	_, err := a.pointsIdentityAccount(ctx, run)
+	if err != nil {
+		return account, err
+	}
 	code, err := a.boundAffiliateCode(ctx, run)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return account, err
@@ -207,9 +243,10 @@ func (a *AgentRuntime) pointsAccount(ctx context.Context, run runRecord, policy 
 		account.SyncErr = syncErr
 	}
 	transport, instance, sender := pointsScope(run)
-	err = a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(points), 0),
-		COALESCE(SUM(CASE WHEN entry_type = 'adjustment' AND substr(reference_key, 1, 7) = 'invite:' THEN points ELSE 0 END), 0)
-		FROM agent_points_ledger WHERE transport = ? AND transport_instance = ? AND sender_ref = ?`,
+	err = a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(l.points), 0),
+		COALESCE(SUM(CASE WHEN l.entry_type = 'adjustment' AND substr(l.reference_key, 1, 7) = 'invite:' THEN l.points ELSE 0 END), 0)
+		FROM agent_points_ledger l JOIN agent_points_identities i USING (transport, transport_instance, sender_ref)
+		WHERE i.account_id = (SELECT account_id FROM agent_points_identities WHERE transport = ? AND transport_instance = ? AND sender_ref = ?)`,
 		transport, instance, sender).Scan(&account.TotalPoints, &account.InvitePoints)
 	account.LocalPoints = account.TotalPoints - account.InvitePoints
 	return account, err
@@ -221,6 +258,9 @@ func (a *AgentRuntime) creditInvitePoints(ctx context.Context, run runRecord, su
 		return errors.New("invalid affiliate award code")
 	}
 	summary.Code = code
+	if _, err := a.pointsIdentityAccount(ctx, run); err != nil {
+		return err
+	}
 	verified, err := a.affiliateOwnerVerified(ctx, run, code)
 	if err != nil {
 		return err
@@ -245,8 +285,10 @@ func (a *AgentRuntime) creditInvitePoints(ctx context.Context, run runRecord, su
 		SELECT ?, ?, ?, ?, 'adjustment', (? - awarded_count) * ?, ?, ?, ?
 		FROM (SELECT COALESCE(MAX(CAST(substr(reference_key, length(?) + 1) AS INTEGER)), 0) AS awarded_count
 			FROM agent_points_ledger WHERE entry_type = 'adjustment' AND substr(reference_key, 1, length(?)) = ?)
-		WHERE ? > awarded_count AND EXISTS (SELECT 1 FROM agent_affiliate_owners
-			WHERE affiliate_code = ? AND transport = ? AND transport_instance = ? AND sender_ref = ?)`, id, transport, instance, sender, summary.PaidInviteeCount, rate,
+		WHERE ? > awarded_count AND EXISTS (SELECT 1 FROM agent_affiliate_owners o
+			JOIN agent_points_identities owner USING (transport, transport_instance, sender_ref)
+			JOIN agent_points_identities actor ON actor.account_id = owner.account_id
+			WHERE o.affiliate_code = ? AND actor.transport = ? AND actor.transport_instance = ? AND actor.sender_ref = ?)`, id, transport, instance, sender, summary.PaidInviteeCount, rate,
 		fmt.Sprintf("%s%d", prefix, summary.PaidInviteeCount), "邀请奖励同步", time.Now().UTC().Format(time.RFC3339Nano),
 		prefix, prefix, prefix, summary.PaidInviteeCount, code, transport, instance, sender)
 	return err
@@ -320,6 +362,9 @@ func (a *AgentRuntime) handleAffiliateCommand(ctx context.Context, run runRecord
 			return agentReply{}, err
 		}
 		// Read back after INSERT OR IGNORE: racing requests may bind another code.
+		if _, err = a.pointsIdentityAccount(ctx, run); err != nil {
+			return agentReply{}, err
+		}
 		bound, err := a.boundAffiliateCode(ctx, run)
 		if err != nil {
 			return agentReply{}, err

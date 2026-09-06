@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const nativeCoreSchemaVersion = 84
+const nativeCoreSchemaVersion = 85
 
 const nativeCoreTables = `
 CREATE TABLE IF NOT EXISTS provider_connections (
@@ -812,6 +812,9 @@ func migrateCoreConfig(db *sql.DB) error {
 		if err = syncProviderConnection(tx); err != nil {
 			return err
 		}
+	}
+	if err = migratePointsAccounts(tx); err != nil {
+		return fmt.Errorf("migrate points accounts: %w", err)
 	}
 	if _, err = tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", nativeCoreSchemaVersion)); err != nil {
 		return err

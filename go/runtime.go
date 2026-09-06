@@ -40,6 +40,7 @@ type RuntimeConfig struct {
 	ConfigDatabasePath            string
 	LegacyRuntimeDatabasePath     string
 	AdminToken                    string
+	PointsReadToken               string
 	RuntimeToken                  string
 	ModelAPIKey                   string
 	GrokAPIKey                    string
@@ -63,6 +64,7 @@ type AgentRuntime struct {
 	db                            *sql.DB
 	configStore                   *coreConfigStore
 	adminToken                    string
+	pointsReadToken               string
 	runtimeToken                  string
 	modelAPIKey                   string
 	grokAPIKey                    string
@@ -679,6 +681,7 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 	runtime := &AgentRuntime{
 		db: db, configStore: configStore,
 		adminToken:             strings.TrimSpace(config.AdminToken),
+		pointsReadToken:        strings.TrimSpace(config.PointsReadToken),
 		runtimeToken:           strings.TrimSpace(config.RuntimeToken),
 		modelAPIKey:            strings.TrimSpace(config.ModelAPIKey),
 		grokAPIKey:             strings.TrimSpace(config.GrokAPIKey),
@@ -724,6 +727,9 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		} else {
 			err = mergeLegacyRuntimeDatabase(ctx, db, config.DatabasePath, config.LegacyRuntimeDatabasePath)
 		}
+	}
+	if err == nil {
+		err = initPointsAccounts(ctx, db)
 	}
 	if err == nil {
 		err = recoverInterruptedRuntime(ctx, db)

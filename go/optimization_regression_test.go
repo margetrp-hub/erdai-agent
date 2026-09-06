@@ -83,7 +83,7 @@ func TestOptimizationSchema84DoesNotApproveLegacyBindings(t *testing.T) {
 	if err = store.db.QueryRow(`SELECT count(*) FROM agent_affiliate_bindings WHERE sender_ref='legacy'`).Scan(&bindings); err != nil || bindings != 1 {
 		t.Fatalf("legacy binding lost: %d %v", bindings, err)
 	}
-	if err = store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 84 {
+	if err = store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != nativeCoreSchemaVersion {
 		t.Fatalf("schema version: %d %v", version, err)
 	}
 }

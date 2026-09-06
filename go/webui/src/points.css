@@ -1,0 +1,52 @@
+.points-page { display: grid; gap: 18px; min-width: 0; letter-spacing: 0; }
+.points-heading, .points-detail-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.points-heading h1 { display: flex; align-items: center; gap: 10px; font-size: 23px; margin: 0 0 8px; }
+.points-heading h1 svg { color: var(--cyan); }
+.points-muted { color: var(--muted); font-size: 12px; }
+.points-filters { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.points-filters label, .points-action-form > label:not(.points-confirm) { display: grid; gap: 7px; min-width: 0; font-size: 12px; color: var(--muted); }
+.points-search { flex: 1; max-width: 430px; }
+.points-filters input, .points-filters select, .points-action-form input:not([type=checkbox]), .points-action-form select, .points-action-form textarea { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--panel); font: inherit; font-size: 13px; }
+.points-filters input:focus-visible, .points-filters select:focus-visible, .points-action-form input:focus-visible, .points-action-form select:focus-visible, .points-action-form textarea:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.points-section, .points-detail { min-width: 0; border-top: 1px solid var(--line); }
+.points-detail { padding-top: 18px; display: grid; gap: 14px; scroll-margin-top: 88px; }
+.points-detail-heading h2 { font-size: 17px; margin: 0; }
+.points-table { table-layout: auto; }
+.points-table th { letter-spacing: 0; }
+.points-table td small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.points-table code { overflow-wrap: anywhere; font-size: 11px; }
+.points-number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.points-table .points-credit { color: var(--green); }
+.points-table .points-debit { color: var(--rose); }
+.points-actions { display: flex; gap: 7px; }
+.points-actions .ui-button { flex-shrink: 0; }
+.points-account-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+.points-account-summary > div { display: grid; gap: 5px; }
+.points-account-summary > div span { color: var(--muted); font-size: 12px; }
+.points-account-summary > div strong { font-size: 26px; font-variant-numeric: tabular-nums; }
+.points-account-summary > code { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); }
+.points-identities { display: flex; flex-wrap: wrap; gap: 12px 26px; padding: 10px 0; font-size: 13px; }
+.points-identities > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.points-identities small { display: block; color: var(--muted); margin-top: 4px; font-size: 11px; }
+.points-text-button { background: none; border: 0; color: var(--cyan); font: inherit; text-align: left; cursor: pointer; padding: 0; }
+.points-notice, .points-error { padding: 10px 0; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.points-notice { color: var(--green); }
+.points-error { color: var(--rose); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.points-action-form { display: grid; gap: 16px; min-width: 0; }
+.points-action-form dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 9px 12px; margin: 0; font-size: 13px; }
+.points-action-form dt { color: var(--muted); }
+.points-action-form dd { margin: 0; overflow-wrap: anywhere; }
+.points-action-form dd code { font-size: 11px; }
+.points-action-form textarea { resize: vertical; min-height: 100px; }
+.points-confirm { display: flex; align-items: start; gap: 10px; font-size: 13px; line-height: 1.6; }
+.points-confirm input { flex: 0 0 auto; margin-top: 4px; width: 16px; height: 16px; accent-color: var(--cyan); }
+.points-merge-total { margin: 0; color: var(--cyan); font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  .points-page { gap: 14px; }
+  .points-heading h1 { font-size: 20px; }
+  .points-filters { gap: 10px; }
+  .points-search { min-width: 150px; }
+  .points-account-summary { gap: 12px; }
+  .points-account-summary > code { flex-basis: 65%; }
+  .points-action-form dl { grid-template-columns: 70px minmax(0, 1fr); }
+}

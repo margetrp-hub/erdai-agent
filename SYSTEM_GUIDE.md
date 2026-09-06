@@ -1,6 +1,6 @@
 # 二呆智能体系统说明
 
-> 源码基线：Schema v84；当前 Stable 版本见 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md)。
+> 源码基线：Schema v85；当前 Stable 版本见 [`CURRENT_RELEASE.md`](./CURRENT_RELEASE.md)。
 >
 > 公开文档只记录源码、接口和可复现的验收方法。生产主机、网络地址、备份路径和真实账号验收证据保存在私有运维记录中。
 >
@@ -364,14 +364,30 @@ OPS 查询只能通过显式命令触发，例如：
 
 ### 13.1 积分与活动
 
-- `/签到` 每个 QQ 身份每天按北京时间入账一次；`/积分`、`/查询积分`、`/积分查询` 读取同一流水。
+- `/签到` 每个积分账户每天按北京时间入账一次；`/积分`、`/查询积分`、`/积分查询` 读取同一流水。原 QQ/机器人身份先独立迁移，管理员核验后可合并到账户；合并保留历史流水和余额，此后共享签到资格，不会按相同昵称自动合并。
 - 邀请奖励须先核验站点账号和 QQ 身份归属；公开邀请码本身不是归属证明。新旧绑定在没有核验记录时均保留为待核验，旧余额不扣回、签到不受影响，仅暂停新增邀请奖励入账。
 - 同一邀请码只能有一个已核验领取账户。首次核验后查询按该邀请码全局已发人数补入差额，后续只按新增充值邀请人数入账，不因换 QQ/实例重发历史奖励；历史重复绑定和余额不会被自动删除或扣减。重复或乱序同步不重复加分，接口失败保留已入账余额并提示新增奖励暂未同步。
 - 邀请人数暂时回落不自动扣回已发奖励；退款或作弊扣回须走管理员调整。奖励比例变更仅影响之后新增人数，不重新计算旧奖励。
-- `/积分兑换` 继续展示账户和未开放状态，不扣分、不生成兑换订单、不上架奖品。正式开放前还需订单、库存和原子消费/退款。
-- `/抽奖` 复用现有活动页面入口；抽奖页与此流水的扣分交易尚未接通，不把入口合并描述为资金账本互通。
+- `/积分兑换` 继续展示账户和未开放状态，不扣分、不生成兑换订单、不上架奖品。订单和原子扣分/退分底座已具备；库存、奖品和真实发放流程未开放。
+- `/抽奖` 复用活动页面入口。活动服务可用专用只读凭据读取已核验站点身份的真实积分；生产流量不使用演示余额。当前仍不开放抽奖、兑换及发奖交易。
 
 管理员核验接口：`GET /api/v1/affiliate/ownership` 返回绑定的 pending / verified / conflict 状态；支持 `limit`（1–200，默认 200）、`offset`（非负）分页，返回 `truncated` 和可空 `nextOffset`。支持 `status`、`affiliateCode`（忽略大小写）、`transport`、`transportInstance`、`senderRef` 精确筛选；非法分页或状态返回 400。`POST` 同一路径接收 `transport`、`transportInstance`、`senderRef`、`affiliateCode`、`ownershipConfirmed: true` 和 `evidence`。必须先在站点侧核实账号与 QQ 归属，再填写不含密码或密钥的核验说明。两种请求都要求管理员凭据，运行时令牌不可使用；重复确认同一归属幂等，已被其他账户核验的邀请码返回 409 且不改余额。此版本是人工核验闸门，不声称已经接通站点登录或自动归属证明。
+
+管理台“积分与活动”包含归属核验、积分账户和交易订单三个视图，支持状态筛选、分页、核验凭据、流水明细、站点身份关联与同一用户账户合并。核验说明不得填写密码或密钥。
+
+积分管理接口（仅管理员）：
+
+- `GET /api/v1/points/accounts`：`q` 查询用户/实例/账户；`limit` 1..200，默认 25；`offset` 0..1000000。
+- `GET /api/v1/points/accounts/{id}`：余额、身份和分页流水；旧账户 ID 可解析到合并后的账户。
+- `POST /api/v1/points/accounts/{id}/merge`：`targetAccountId`、`identityConfirmed: true`、`evidence`。不同已核验邀请归属的账户不能合并。
+- `POST /api/v1/points/accounts/{id}/identities`：`transport`、`transportInstance`、`senderRef`、`identityConfirmed: true`、`evidence`。站点身份以来源实例和真实用户 ID 为准；已有归属不可覆盖。
+- `GET /api/v1/points/orders`：`status`、`accountId` 筛选及分页。
+- `POST /api/v1/points/orders`：`accountId`、`source`、`externalRef`、`kind`（`redemption`/`lottery`）、`points`、`note`。事务内建立 `reserved` 订单并扣分；业务来源+订单号唯一，重复提交不重复扣分，更换金额/账户返回 409。
+- `POST /api/v1/points/orders/{id}/resolve`：`status`（`committed`/`refunded`）、`note`。确认已发放后提交；仅已确认未发放且不会继续发放的预留订单可退分。超时不代表未发放，不自动退款；重复结算幂等，终态不能反向修改。
+
+只读活动桥：`GET /points-bridge/v1/account?transport=sub2api&transportInstance=...&senderRef=...`，请求头 `X-ErDai-Points-Token`。在 Compose 的受保护环境文件配置独立 `ERDAI_POINTS_READ_TOKEN`（至少 32 字符，不能复用管理/运行时令牌）。返回 `data.accountId`、`data.balance`；未核验身份返回 409，不自动创建账户。该凭据不能合并账户或扣分/退分。
+
+活动服务配置 `ERDAI_POINTS_BASE_URL`、相同的 `ERDAI_POINTS_READ_TOKEN`、`ERDAI_POINTS_IDENTITY_INSTANCE`（必须与已核验身份的来源实例一致）。凭据只存服务端，不下发浏览器。`LOTTERY_PREVIEW_ENABLED=1` 只用于隔离预览环境；生产保持关闭。
 
 ## 14. 19 个原生 Go 连接器
 

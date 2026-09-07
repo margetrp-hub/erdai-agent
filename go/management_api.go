@@ -145,6 +145,19 @@ func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.Respo
 		return s.handleAgentInstanceCapabilities(w, r, path)
 	case path == "/api/v1/provider-drivers":
 		return s.handleProviderDrivers(w, r, path)
+	case strings.HasPrefix(path, "/api/v1/runs/") && strings.HasSuffix(path, "/cancel"):
+		id, err := mgmtPathID(strings.TrimSuffix(path, "/cancel"), "/api/v1/runs/")
+		if err != nil || path != "/api/v1/runs/"+id+"/cancel" || r.URL.Path != path {
+			return mgmtNotFound("route")
+		}
+		if r.Method != http.MethodPost {
+			return mgmtMethodNotAllowed()
+		}
+		if !tokenMatches(r.Header.Get(adminTokenHeader), a.adminToken) {
+			return &coreAPIError{status: http.StatusUnauthorized, code: "unauthorized", message: "administrator service token required"}
+		}
+		a.cancelRun(w, id)
+		return nil
 	case path == "/api/v1/runs" || strings.HasPrefix(path, "/api/v1/runs/"):
 		return a.handleRunTimeline(w, r, path)
 	case path == "/api/v1/usage/stats":

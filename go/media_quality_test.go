@@ -95,8 +95,12 @@ func TestMediaQualityTwoAttemptsAndPersistedSelection(t *testing.T) {
 			if err != nil || len(result.Attachments) != 1 || result.Attachments[0].Name != want || generates != 2 || checks.Load() != 2 {
 				t.Fatalf("selection=%+v err=%v generations=%d checks=%d", result, err, generates, checks.Load())
 			}
-			if _, err = runtime.executeMediaQuality(context.Background(), run, request, generate); err != nil || generates != 2 || checks.Load() != 2 {
+			replay, replayErr := runtime.executeMediaQuality(context.Background(), run, request, generate)
+			if replayErr != nil || generates != 2 || checks.Load() != 2 || replay.UserMessage != result.UserMessage || replay.Content != result.Content {
 				t.Fatalf("recovery regenerated: %v %d %d", err, generates, checks.Load())
+			}
+			if secondStatus != "passed" && (!result.PreserveUserMessage || result.UserMessage == "") {
+				t.Fatal("non-passing quality was not disclosed to the user")
 			}
 			reports, err := runtime.mediaQualityTaskDetails(context.Background(), run.ID)
 			if err != nil || len(reports) != 1 || len(reports[0].Attempts) != 2 {
@@ -188,7 +192,8 @@ func TestMediaQualityCorrectionGenerationFailureRetainsFirstArtifact(t *testing.
 			}
 			for repeat := 0; repeat < 2; repeat++ {
 				result, err := runtime.executeMediaQuality(context.Background(), run, request, generate)
-				if err != nil || len(result.Attachments) != 1 || result.Attachments[0].Name != first.Attachments[0].Name || calls != 1 {
+				if err != nil || len(result.Attachments) != 1 || result.Attachments[0].Name != first.Attachments[0].Name || calls != 1 ||
+					!result.PreserveUserMessage || !strings.Contains(result.UserMessage, "质量核验仍未通过") {
 					t.Fatalf("result=%+v err=%v calls=%d", result, err, calls)
 				}
 			}
@@ -199,6 +204,39 @@ func TestMediaQualityCorrectionGenerationFailureRetainsFirstArtifact(t *testing.
 				t.Fatalf("report=%+v err=%v", reports, err)
 			}
 		})
+	}
+}
+
+func TestMediaQualitySelectedResultDisclosesStateWithoutDuplicating(t *testing.T) {
+	for _, kind := range []string{"image", "video"} {
+		for _, status := range []string{"passed", "failed", "unverified"} {
+			t.Run(kind+"/"+status, func(t *testing.T) {
+				receipt := mediaQualityReceipt{mediaQualityReport: mediaQualityReport{MediaType: kind, Status: status,
+					SelectedAttempt: 0, SelectionReason: status}, Results: []toolResult{{Content: `{"ok":true,"result":"original_result"}`, UserMessage: "original completion"}}}
+				result := selectedMediaQualityResult(receipt)
+				var content struct {
+					Result       string `json:"result"`
+					MediaQuality struct {
+						Status string `json:"status"`
+					} `json:"mediaQuality"`
+				}
+				if err := json.Unmarshal([]byte(result.Content), &content); err != nil || content.Result != "original_result" || content.MediaQuality.Status != status {
+					t.Fatalf("quality content missing: %s err=%v", result.Content, err)
+				}
+				if status == "passed" {
+					if result.UserMessage != "original completion" || result.PreserveUserMessage {
+						t.Fatal("passing quality replaced normal completion")
+					}
+				} else if !result.PreserveUserMessage || !strings.Contains(result.UserMessage, "质量核验") {
+					t.Fatal("quality warning was not preserved")
+				}
+				receipt.Results[0] = result
+				again := selectedMediaQualityResult(receipt)
+				if again.UserMessage != result.UserMessage || again.Content != result.Content {
+					t.Fatal("replay duplicated the quality warning")
+				}
+			})
+		}
 	}
 }
 

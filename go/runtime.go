@@ -2316,7 +2316,11 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 			}
 			return agentReply{}, fmt.Errorf("image edit: %w", editErr)
 		}
-		return agentReply{Text: a.personaFixedReply(ctx, run, "image-completion", imageCompletionOptions(messagePolicy)), Attachments: result.Attachments}, nil
+		text := result.UserMessage
+		if strings.TrimSpace(text) == "" {
+			text = a.personaFixedReply(ctx, run, "image-completion", imageCompletionOptions(messagePolicy))
+		}
+		return agentReply{Text: text, Attachments: result.Attachments}, nil
 	}
 	if prepared.Data.RouteDecision.Lane == "video" && prepared.Data.RouteDecision.Selected == nil {
 		return agentReply{Text: a.personaFixedReply(ctx, run, "video-unavailable", videoUnavailableReplyOptions())}, nil
@@ -2350,9 +2354,11 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 			}
 			return agentReply{}, fmt.Errorf("video generation: %w", err)
 		}
-		return agentReply{
-			Text: a.personaFixedReply(ctx, run, "video-completion", videoCompletionOptions(messagePolicy)), Attachments: result.Attachments,
-		}, nil
+		text := result.UserMessage
+		if strings.TrimSpace(text) == "" {
+			text = a.personaFixedReply(ctx, run, "video-completion", videoCompletionOptions(messagePolicy))
+		}
+		return agentReply{Text: text, Attachments: result.Attachments}, nil
 	}
 	if selected := prepared.Data.RouteDecision.Selected; selected != nil &&
 		selected.Endpoint.ExecutionKind == "media" &&
@@ -2380,9 +2386,11 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 			}
 			return agentReply{}, fmt.Errorf("image generation: %w", err)
 		}
-		return agentReply{
-			Text: a.personaFixedReply(ctx, run, "image-completion", imageCompletionOptions(messagePolicy)), Attachments: result.Attachments,
-		}, nil
+		text := result.UserMessage
+		if strings.TrimSpace(text) == "" {
+			text = a.personaFixedReply(ctx, run, "image-completion", imageCompletionOptions(messagePolicy))
+		}
+		return agentReply{Text: text, Attachments: result.Attachments}, nil
 	}
 	if selected := prepared.Data.RouteDecision.Selected; selected != nil &&
 		selected.Endpoint.ExecutionKind == "tool" && selected.Endpoint.AdapterRef == "grok_web_search" {

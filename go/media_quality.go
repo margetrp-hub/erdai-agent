@@ -165,7 +165,7 @@ func (a *AgentRuntime) executeMediaQuality(ctx context.Context, run runRecord, r
 		return toolResult{}, err
 	}
 	if receipt.SelectedAttempt >= 0 && receipt.SelectedAttempt < len(receipt.Results) {
-		return receipt.Results[receipt.SelectedAttempt], nil
+		return selectedMediaQualityResult(receipt), nil
 	}
 	if receipt.OperationID != "" && receipt.OperationID != request.OperationID {
 		return toolResult{}, errors.New("a media operation already exists for this request; automatic additional generation is disabled")
@@ -203,7 +203,7 @@ func (a *AgentRuntime) executeMediaQuality(ctx context.Context, run runRecord, r
 					if saveErr := save("succeeded"); saveErr != nil {
 						return toolResult{}, saveErr
 					}
-					return receipt.Results[0], nil
+					return selectedMediaQualityResult(receipt), nil
 				}
 				// Accepted video tasks remain resumable; no second generation is
 				// started merely because polling or a receipt write failed.
@@ -278,9 +278,34 @@ func (a *AgentRuntime) executeMediaQuality(ctx context.Context, run runRecord, r
 		if err := save("succeeded"); err != nil {
 			return toolResult{}, err
 		}
-		return receipt.Results[selected], nil
+		return selectedMediaQualityResult(receipt), nil
 	}
 	return toolResult{}, errors.New("media quality attempt limit exceeded")
+}
+
+func selectedMediaQualityResult(receipt mediaQualityReceipt) toolResult {
+	result := receipt.Results[receipt.SelectedAttempt]
+	var content map[string]any
+	if json.Unmarshal([]byte(result.Content), &content) != nil || content == nil {
+		content = map[string]any{"ok": true, "result": receipt.MediaType + "_generated"}
+	}
+	content["mediaQuality"] = map[string]any{"status": receipt.Status, "mediaType": receipt.MediaType,
+		"selectedAttempt": receipt.SelectedAttempt, "selectionReason": receipt.SelectionReason}
+	encoded, _ := json.Marshal(content)
+	result.Content = string(encoded)
+	label := "图片"
+	if receipt.MediaType == "video" {
+		label = "视频"
+	}
+	switch receipt.Status {
+	case "failed":
+		result.UserMessage = label + "已生成，但质量核验仍未通过。"
+		result.PreserveUserMessage = true
+	case "unverified":
+		result.UserMessage = label + "已生成，尚未完成质量核验。"
+		result.PreserveUserMessage = true
+	}
+	return result
 }
 
 // Only transport failures can retain the already inspected first artifact.

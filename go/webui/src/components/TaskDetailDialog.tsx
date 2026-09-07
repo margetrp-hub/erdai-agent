@@ -9,7 +9,8 @@ const stateLabels: Record<string, string> = {
   succeeded: '已完成', failed: '未通过', passed: '通过', unverified: '未验证', cancelled: '已取消',
   accepted: '明确认可', correction: '纠正要求', redo: '要求重做', rejected: '不满意',
   new: '新任务', continue: '继续任务', stop: '停止任务', disabled: '检查已关闭',
-  quality_route_unavailable: '检查线路不可用', check_interrupted: '检查中断',
+  quality_route_unavailable: '检查线路不可用', vision_route_unavailable: '未配置可用视觉检查线路',
+  check_interrupted: '检查中断',
   check_started: '正在检查',
 };
 

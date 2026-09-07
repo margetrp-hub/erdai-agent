@@ -1864,7 +1864,9 @@ func (a *AgentRuntime) processNext(ctx context.Context) bool {
 		}
 		failureText, errorCode := a.naturalFailureReplyForRun(ctx, run, string(message), err)
 		if len(reply.Attachments) > 0 {
-			reply.Text = "图做好了，先给你。"
+			if strings.TrimSpace(reply.Text) == "" {
+				reply.Text = "图做好了，先给你。"
+			}
 		} else {
 			reply.Text = failureText
 		}

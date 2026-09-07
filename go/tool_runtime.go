@@ -239,7 +239,9 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 	targets []runtimeProviderTarget,
 	policy runtimeToolPolicy,
 	messagePolicy runtimeMessagePolicy,
-) (agentReply, error) {
+) (reply agentReply, loopErr error) {
+	var mediaWarnings []string
+	defer func() { reply = appendMediaQualityWarnings(reply, mediaWarnings) }()
 	if len(targets) == 0 {
 		return agentReply{}, errors.New("provider model is not configured")
 	}
@@ -397,7 +399,9 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 			adapter := normalizeAdapterRef(call.Function.Name)
 			result := a.executePersistentToolCall(ctx, run, message, policy, mcpRoutes, step, modelStepID, call)
 			attachments = append(attachments, result.Attachments...)
-			if result.UserMessage != "" {
+			if warning := mediaQualityToolWarning(adapter, result); warning != "" {
+				mediaWarnings = append(mediaWarnings, warning)
+			} else if result.UserMessage != "" {
 				if adapter == "grok_web_search" {
 					result.UserMessage = humanizeSearchReply(result.UserMessage)
 				}
@@ -421,6 +425,52 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 		}
 	}
 	return agentReply{Attachments: attachments}, errors.New("agent tool loop exceeded step limit")
+}
+
+func mediaQualityToolWarning(adapter string, result toolResult) string {
+	if len(result.Attachments) == 0 || (!isImageGenerationAdapter(adapter) && adapter != "grok_generate_video") {
+		return ""
+	}
+	var content struct {
+		MediaQuality struct {
+			Status string `json:"status"`
+		} `json:"mediaQuality"`
+	}
+	if json.Unmarshal([]byte(result.Content), &content) != nil {
+		return ""
+	}
+	label := "图片"
+	if adapter == "grok_generate_video" {
+		label = "视频"
+	}
+	switch content.MediaQuality.Status {
+	case "failed":
+		return label + "已生成，但质量核验仍未通过。"
+	case "unverified":
+		return label + "已生成，尚未完成质量核验。"
+	default:
+		return ""
+	}
+}
+
+// Append only after finalization so model rewriting and chat budgets cannot
+// remove the deterministic assessment, including when later model work fails.
+func appendMediaQualityWarnings(reply agentReply, warnings []string) agentReply {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning != "" && !seen[warning] {
+			seen[warning] = true
+			unique = append(unique, warning)
+			reply.Text = strings.TrimSpace(strings.ReplaceAll(reply.Text, warning, ""))
+		}
+	}
+	if len(unique) > 0 {
+		reply.Text = strings.TrimSpace(reply.Text + "\n\n" + strings.Join(unique, "\n"))
+		reply.Segments = nil
+		reply.TypingDelayMS = 0
+	}
+	return reply
 }
 
 func (a *AgentRuntime) finalizeAgentReply(

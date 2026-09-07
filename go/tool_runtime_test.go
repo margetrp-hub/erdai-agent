@@ -102,13 +102,108 @@ func TestProgressMessageIgnoresUnknownShortTool(t *testing.T) {
 }
 
 func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		validImage   bool
+		modelFailure bool
+	}{
+		{name: "failed-quality"},
+		{name: "unverified-quality", validImage: true},
+		{name: "later-model-failure", validImage: true, modelFailure: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			testAgentToolLoopMediaQuality(t, scenario.validImage, scenario.modelFailure)
+		})
+	}
+}
+
+func TestMediaQualityToolWarningsAreDeterministicAndDeduplicated(t *testing.T) {
+	image := toolResult{Content: `{"ok":true,"mediaQuality":{"status":"failed"}}`,
+		UserMessage: "model must not choose this text", Attachments: []agentAttachment{{Kind: "image"}}}
+	video := toolResult{Content: `{"ok":true,"mediaQuality":{"status":"unverified"}}`,
+		Attachments: []agentAttachment{{Kind: "video"}}}
+	imageWarning := mediaQualityToolWarning("grok_generate_image", image)
+	videoWarning := mediaQualityToolWarning("grok_generate_video", video)
+	if imageWarning != "图片已生成，但质量核验仍未通过。" || videoWarning != "视频已生成，尚未完成质量核验。" {
+		t.Fatalf("unexpected media warnings: %q / %q", imageWarning, videoWarning)
+	}
+	reply := appendMediaQualityWarnings(agentReply{Text: "其它任务已完成。\n" + imageWarning,
+		Segments: []string{"obsolete compressed text"}, Attachments: image.Attachments, TypingDelayMS: 100},
+		[]string{imageWarning, videoWarning, imageWarning, videoWarning})
+	if reply.Text != "其它任务已完成。\n\n"+imageWarning+"\n"+videoWarning || len(reply.Segments) != 0 || reply.TypingDelayMS != 0 || len(reply.Attachments) != 1 {
+		t.Fatalf("warning finalization changed or duplicated evidence: %+v", reply)
+	}
+	for _, adapter := range []string{"grok_web_search", "query_ops_status", "custom_tool"} {
+		if mediaQualityToolWarning(adapter, image) != "" {
+			t.Fatalf("non-media UserMessage was reclassified: %s", adapter)
+		}
+	}
+	for _, result := range []toolResult{
+		{UserMessage: "quota exceeded", PreserveUserMessage: true},
+		{Content: `{"mediaQuality":{"status":"failed"}}`, UserMessage: "no artifact"},
+		{Content: `{"mediaQuality":{"status":"passed"}}`, Attachments: image.Attachments},
+	} {
+		if mediaQualityToolWarning("generate_image", result) != "" {
+			t.Fatalf("ordinary tool result was reclassified: %+v", result)
+		}
+	}
+}
+
+func TestAgentToolLoopOrdinaryUserMessageStillStops(t *testing.T) {
+	runtime := newIdleRuntime(t)
+	defer runtime.Close()
+	run := visualPlanTestRun(t, runtime, "tool-user-message")
+	call := chatToolCall{ID: "reply-1"}
+	call.Function.Name, call.Function.Arguments = "query_ops_status", `{}`
+	stepID, err := runtime.beginPersistentOperation(run.ID, "", call.Function.Name, 0, persistentToolInput(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtime.finishTaskStep(stepID, "succeeded", "", toolResult{Content: `{"ok":true}`,
+		UserMessage: "保留这条工具回复。", PreserveUserMessage: true}); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	service := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{
+			"role": "assistant", "tool_calls": []chatToolCall{call},
+		}}}})
+	}))
+	defer service.Close()
+	runtime.client = service.Client()
+	reply, err := runtime.runAgentLoopWithTargets(context.Background(), run, "check tools", "", []runtimeProviderTarget{{
+		Model: "test", APIBase: service.URL,
+	}}, runtimeToolPolicy{}, runtimeMessagePolicy{})
+	if err != nil || reply.Text != "保留这条工具回复。" || calls.Load() != 1 {
+		t.Fatalf("ordinary UserMessage did not stop: %+v err=%v calls=%d", reply, err, calls.Load())
+	}
+}
+
+func testAgentToolLoopMediaQuality(t *testing.T, validImage, modelFailure bool) {
+	t.Helper()
 	var modelCalls atomic.Int32
 	var toolResults atomic.Int32
 	var xaiCalls atomic.Int32
 	var observedToolResults atomic.Value
 	png := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{1}, 32)...)
+	warning := "图片已生成，但质量核验仍未通过。"
+	qualityStatus := "failed"
+	if validImage {
+		var err error
+		png, err = base64.StdEncoding.DecodeString(strings.TrimPrefix(testVideoPersonaAvatar, "data:image/png;base64,"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		warning = "图片已生成，尚未完成质量核验。"
+		qualityStatus = "unverified"
+	}
 	service := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/quality/chat/completions":
+			writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]string{
+				"content": `{"status":"failed","identityIssues":[],"constraintIssues":[],"qualityIssues":["incorrect composition"]}`,
+			}}}})
 		case "/v1/chat/completions":
 			call := modelCalls.Add(1)
 			var request map[string]any
@@ -150,6 +245,10 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 				}
 			}
 			observedToolResults.Store(observed)
+			if modelFailure {
+				writeJSON(w, http.StatusOK, map[string]any{"choices": []any{}})
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": "弄好了，图也在下面。"}}},
 			})
@@ -207,7 +306,13 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 	setTestIntegration(t, configDB, "grok_policy", map[string]any{
 		"enabled": true, "apiBase": service.URL + "/grok", "searchConnectionId": "xai-test", "searchModel": "search", "imageModel": "image",
 	})
-	setTestIntegration(t, configDB, "image_policy", map[string]any{"enabled": true})
+	qualityEndpoint := "test-quality-unavailable"
+	if !validImage {
+		qualityEndpoint = "tool-quality"
+		insertTestEndpoint(t, configDB, qualityEndpoint, "test-vision", []string{"vision"}, "llm", "openai")
+		bindTestModelConnection(t, configDB, qualityEndpoint, service.URL+"/quality")
+	}
+	setTestIntegration(t, configDB, "image_policy", map[string]any{"enabled": true, "mediaQualityEndpointId": qualityEndpoint})
 	if _, err := configDB.Exec(`INSERT INTO provider_connections
 		(id, provider, protocol, api_base, credential_ref, timeout_seconds, enabled, created_at, updated_at)
 		VALUES ('xai-test', 'xai-test', 'xai_responses', ?, 'ERDAI_TEST_XAI_KEY', 20, 1, '2026-08-07T00:00:00Z', '2026-08-07T00:00:00Z')`, service.URL+"/grok"); err != nil {
@@ -258,6 +363,9 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 		t.Fatalf("model calls = %d, tool results = %d, xai calls = %d, observed = %v", modelCalls.Load(), toolResults.Load(), xaiCalls.Load(), observedToolResults.Load())
 	}
 	observed := observedToolResults.Load().([]string)
+	if !strings.Contains(observed[3], `"mediaQuality":`) || !strings.Contains(observed[3], `"status":"`+qualityStatus+`"`) {
+		t.Fatalf("structured media QA missing from continuing model round: %s", observed[3])
+	}
 	if !strings.Contains(observed[0], "AI news") || !strings.Contains(observed[1], "AI news") || !strings.Contains(observed[2], "Robotics news") {
 		t.Fatalf("search results crossed query boundaries: %+v", observed)
 	}
@@ -272,7 +380,11 @@ func TestAgentToolLoopRunsBuiltInsAndPersistsImageAttachment(t *testing.T) {
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Text != "弄好了，图也在下面。" || len(payload.Attachments) != 1 {
+	wantText := "弄好了，图也在下面。\n\n" + warning
+	if modelFailure {
+		wantText = warning
+	}
+	if payload.Text != wantText || len(payload.Attachments) != 1 {
 		t.Fatalf("delivery payload = %+v", payload)
 	}
 	attachment := payload.Attachments[0]

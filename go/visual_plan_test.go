@@ -256,12 +256,14 @@ func TestVisualPlanSelectedLibraryOverridesRoleName(t *testing.T) {
 		(SELECT library_id FROM persona_appearance_libraries WHERE persona_id='xiaoman') WHERE persona_id='doubao'`); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := runtime.prepareVisualGeneration(context.Background(), runRecord{PersonaID: "doubao"}, "来一张你的自拍", "image", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(plan.Identity, "黑色长卷发") || strings.Contains(plan.Identity, "小巧柔和的鹅蛋脸") {
-		t.Fatalf("role name overrode selected appearance: %s", plan.Identity)
+	for _, prompt := range []string{"来一张你的自拍", "生成一张你本人的照片", "生成一张你自己的照片", "生成一张你的全身照"} {
+		plan, err := runtime.prepareVisualGeneration(context.Background(), runRecord{PersonaID: "doubao"}, prompt, "image", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.AppearanceID == "" || plan.Reference == "" || plan.ReferenceDigest == "" || !strings.Contains(plan.Identity, "黑色长卷发") || strings.Contains(plan.Identity, "小巧柔和的鹅蛋脸") {
+			t.Fatalf("request %q lost the selected library reference/identity: %+v", prompt, plan)
+		}
 	}
 }
 

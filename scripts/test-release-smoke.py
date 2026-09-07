@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Smoke-test one already-built release image with disposable Docker resources.
 
-Requires Python 3.9+ and a local Linux Docker daemon. No production paths, provider
+Requires Python 3.9+ on the Linux Docker host, using its local Unix socket.
+No production paths, provider
 credentials, browser acceptance, or external network access are used.
 """
 
 import argparse
 import base64
 import http.client
+import ipaddress
 import json
 import os
 import re
 import secrets
 import signal
 import subprocess
+import sys
 import time
 
 
@@ -30,13 +33,51 @@ def require(condition, message):
         raise SmokeFailure(message)
 
 
+def container_address(container, network, name, owner):
+    require(network.get("Internal") is True and network.get("Driver") == "bridge",
+            "network.Internal/Driver must be internal bridge")
+    require((network.get("Labels") or {}).get(OWNER_LABEL) == owner, "network.Labels ownership differs")
+    require((container.get("Config", {}).get("Labels") or {}).get(OWNER_LABEL) == owner,
+            "container.Config.Labels ownership differs")
+    attachments = container.get("NetworkSettings", {}).get("Networks", {})
+    require(set(attachments) == {name}, "container.NetworkSettings.Networks differs")
+    attachment = attachments[name]
+    require(bool(network.get("Id")) and attachment.get("NetworkID") == network["Id"],
+            "container.NetworkSettings.Networks.NetworkID differs")
+    try:
+        address = ipaddress.IPv4Address(attachment.get("IPAddress", ""))
+    except ipaddress.AddressValueError:
+        raise SmokeFailure("container.NetworkSettings.Networks.IPAddress is invalid") from None
+    require(address.is_private and not (address.is_loopback or address.is_link_local or
+            address.is_multicast or address.is_unspecified or address.is_reserved),
+            "container.NetworkSettings.Networks.IPAddress is not private unicast")
+    try:
+        subnets = [ipaddress.ip_network(item["Subnet"]) for item in network.get("IPAM", {}).get("Config", [])
+                   if item.get("Subnet")]
+    except ValueError:
+        raise SmokeFailure("network.IPAM.Config.Subnet is invalid") from None
+    require(any(subnet.version == 4 and address in subnet and
+                address not in (subnet.network_address, subnet.broadcast_address) for subnet in subnets),
+            "container IPAddress is outside network.IPAM.Config.Subnet")
+    member = network.get("Containers", {}).get(container.get("Id"), {})
+    require(member.get("Name") == name and member.get("IPv4Address") ==
+            str(address) + "/" + str(attachment.get("IPPrefixLen")),
+            "network.Containers.IPv4Address membership differs")
+    require(not any((container.get("HostConfig", {}).get("PortBindings") or {}).values()),
+            "container.HostConfig.PortBindings must be empty")
+    return str(address)
+
+
 def smoke(image, version, schema):
     owner = secrets.token_hex(12)
     name = "erdai-release-smoke-" + owner
     resources = []
     report = {"ok": False, "image": image, "expectedVersion": version,
               "expectedSchema": schema, "checks": {}, "cleanup": [],
-              "productionDataUsed": False, "externalNetworkEnabled": False}
+              "productionDataUsed": False, "externalNetworkEnabled": False,
+              "connectionMethod": "host_to_internal_bridge", "publishedPorts": False}
+    stage = "preflight"
+    address = None
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith("ERDAI_")}
     environment.update({
@@ -49,6 +90,8 @@ def smoke(image, version, schema):
     })
 
     def docker(arguments, step, timeout=30, check=True):
+        nonlocal stage
+        stage = step
         try:
             result = subprocess.run(["docker", *arguments], env=environment,
                                     capture_output=True, text=True, timeout=timeout)
@@ -67,7 +110,9 @@ def smoke(image, version, schema):
         return value[0]
 
     def request(port, path, expected=200, headers=None, payload=None):
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        nonlocal stage
+        stage = "HTTP " + path
+        connection = http.client.HTTPConnection(address, port, timeout=10)
         try:
             request_headers = dict(headers or {})
             body = None
@@ -85,11 +130,12 @@ def smoke(image, version, schema):
             connection.close()
 
     try:
+        require(sys.platform.startswith("linux"), "smoke must run on the Linux Docker host")
         endpoint = environment.get("DOCKER_HOST", "")
         if not endpoint or environment.get("DOCKER_CONTEXT"):
             context = json.loads(docker(["context", "inspect"], "inspect Docker context").stdout)[0]
             endpoint = context.get("Endpoints", {}).get("docker", {}).get("Host", "")
-        require(endpoint.startswith(("unix://", "npipe://")), "a local Docker socket is required")
+        require(endpoint.startswith("unix:///"), "a local Docker Unix socket is required")
         metadata = json.loads(docker(["image", "inspect", image], "inspect image").stdout)[0]
         require(metadata.get("Os") == "linux", "release image must target Linux")
         require(metadata.get("Config", {}).get("Healthcheck", {}).get("Test") ==
@@ -104,7 +150,7 @@ def smoke(image, version, schema):
         docker(["volume", "create", "--label", OWNER_LABEL + "=" + owner, name], "create fresh volume")
         resources.append(("container", name))
         command = ["create", "--name", name, "--pull=never", "--label", OWNER_LABEL + "=" + owner,
-                   "--network", name, "--publish", "127.0.0.1::6280", "--publish", "127.0.0.1::6282",
+                   "--network", name,
                    "--mount", "type=volume,source=" + name + ",target=/app/data",
                    "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
@@ -127,34 +173,32 @@ def smoke(image, version, schema):
             require(time.monotonic() < deadline, "container health deadline exceeded")
             time.sleep(1)
         require(container.get("RestartCount") == 0, "container unexpectedly restarted")
-        require(set(container["NetworkSettings"]["Networks"]) == {name}, "unexpected container network")
         report["checks"]["containerHealthy"] = True
-        ports = {}
+        network = inspect("network", name)
+        stage = "validate internal bridge address"
+        address = container_address(container, network, name, owner)
+        report["checks"]["ownedInternalBridgeAddress"] = True
         for port in (6280, 6282):
-            bindings = container["NetworkSettings"]["Ports"][str(port) + "/tcp"]
-            require(len(bindings) == 1 and bindings[0]["HostIp"] == "127.0.0.1", "non-loopback port binding")
-            ports[port] = int(bindings[0]["HostPort"])
-            require(0 < ports[port] <= 65535, "invalid published port")
-            require(json.loads(request(ports[port], "/healthz")[0]).get("ok") is True, "health payload differs")
+            require(json.loads(request(port, "/healthz")[0]).get("ok") is True, "health payload differs")
         report["checks"]["bothHealthEndpoints"] = True
-        page, _ = request(ports[6282], "/")
+        page, _ = request(6282, "/")
         require(b"<html" in page.lower() and b"<script" in page.lower(), "embedded homepage missing")
         report["checks"]["embeddedHomepage"] = True
-        request(ports[6282], "/api/v1/overview", expected=401)
-        request(ports[6280], "/api/v1/overview", expected=404)
+        request(6282, "/api/v1/overview", expected=401)
+        request(6280, "/api/v1/overview", expected=404)
         report["checks"]["anonymousManagementRejected"] = True
-        login, login_headers = request(ports[6282], "/auth/login", payload={
+        login, login_headers = request(6282, "/auth/login", payload={
             "username": environment["ERDAI_ADMIN_USERNAME"], "password": environment["ERDAI_ADMIN_PASSWORD"]})
         require(json.loads(login).get("data", {}).get("authenticated") is True, "administrator login failed")
         cookies = [value.split(";", 1)[0] for key, value in login_headers
                    if key.lower() == "set-cookie" and value.startswith("erdai_admin_session=")]
         require(len(cookies) == 1, "administrator session cookie missing")
-        overview = json.loads(request(ports[6282], "/api/v1/overview", headers={"Cookie": cookies[0]})[0])
+        overview = json.loads(request(6282, "/api/v1/overview", headers={"Cookie": cookies[0]})[0])
         actual_schema = overview.get("data", {}).get("schemaVersion")
         require(type(actual_schema) is int and actual_schema == schema, "schema version mismatch")
         report["checks"]["administratorSession"] = True
         report["schemaVersion"] = actual_schema
-        registry = json.loads(request(ports[6282], "/api/v1/integrations/channel_platforms",
+        registry = json.loads(request(6282, "/api/v1/integrations/channel_platforms",
                                       headers={"X-Erdai-Admin-Token": environment["ERDAI_ADMIN_TOKEN"]})[0])
         actual_version = registry.get("data", {}).get("config", {}).get("runtimeVersion")
         require(actual_version == version, "runtime version mismatch")
@@ -166,8 +210,12 @@ def smoke(image, version, schema):
         report["ok"] = True
     except SmokeFailure as error:
         report["error"] = str(error)
+        report["errorStage"] = stage
     except (Exception, KeyboardInterrupt) as error:
         report["error"] = "smoke interrupted" if isinstance(error, KeyboardInterrupt) else type(error).__name__
+        report["errorStage"] = stage
+        if isinstance(error, KeyError) and error.args[0] in {"Id", "State", "Subnet", "HostPort", "NetworkSettings"}:
+            report["errorField"] = error.args[0]
     finally:
         for kind, resource in reversed(resources):
             cleanup = {"kind": kind, "name": resource, "removed": False}

@@ -11,7 +11,7 @@ SCRIPTS = Path(__file__).resolve().parent
 
 class DeploymentRollbackTest(unittest.TestCase):
     def run_rollback(self, renamed=False, core_started=False, browser_started=False,
-                     app_moved=False):
+                     app_moved=False, media_check_started=False, previous_media_check=False):
         with tempfile.TemporaryDirectory(prefix="erdai-rollback-test-") as folder:
             root = Path(folder)
             mockbin = root / "bin"
@@ -26,6 +26,9 @@ class DeploymentRollbackTest(unittest.TestCase):
             (app / "scripts/set-channel-mode.sh").chmod(0o755)
             (root / ".env").write_text("old-env\n")
             (rollback / ".env").write_text("old-env\n")
+            (root / "data").mkdir()
+            (root / "data/erdai-agent-core.sqlite3").write_bytes(b"post-cutover-ledger-and-receipts")
+            (rollback / "erdai-agent-core.sqlite3").write_bytes(b"pre-cutover-backup")
             for name, source in {
                 "docker": """#!/bin/sh
 printf '%s\\n' "$*" >> "$MOCK_LOG"
@@ -59,6 +62,8 @@ old_channel_mode=active
 rollback_armed=1
 core_install_started=$TEST_CORE_STARTED
 browser_install_started=$TEST_BROWSER_STARTED
+media_check_install_started=$TEST_MEDIA_CHECK_STARTED
+old_media_check_image_ref=$TEST_OLD_MEDIA_CHECK
 swapped_app=$TEST_APP_MOVED
 trap cleanup EXIT
 exit 1
@@ -70,6 +75,8 @@ exit 1
                        TEST_OLD_CONTAINER="old-core" if renamed else "",
                        TEST_CORE_STARTED=str(int(core_started)),
                        TEST_BROWSER_STARTED=str(int(browser_started)),
+                       TEST_MEDIA_CHECK_STARTED=str(int(media_check_started)),
+                       TEST_OLD_MEDIA_CHECK="erdai-media-check:old" if previous_media_check else "",
                        TEST_APP_MOVED=str(int(app_moved)))
             result = subprocess.run(["sh", str(script), str(root)], env=env,
                                     capture_output=True, text=True, timeout=10)
@@ -79,7 +86,9 @@ exit 1
             self.assertIn("mode=active", commands)
             self.assertEqual("rm -f erdai-agent\n" in commands, core_started)
             self.assertEqual("rm -f erdai-monitor-browser\n" in commands, browser_started)
+            self.assertEqual("rm -f erdai-media-check\n" in commands, media_check_started)
             self.assertEqual((root / "app/compose.production.yml").read_text(), "old-compose\n")
+            self.assertEqual((root / "data/erdai-agent-core.sqlite3").read_bytes(), b"post-cutover-ledger-and-receipts")
             if renamed:
                 self.assertIn("rename old-core erdai-agent", commands)
             return commands
@@ -101,6 +110,12 @@ exit 1
         for name in ("deploy-250.sh", "set-channel-mode.sh", "build-release.sh",
                      "verify-production.sh"):
             subprocess.run(["sh", "-n", str(SCRIPTS / name)], check=True)
+
+    def test_media_checker_failure_removes_candidate_and_restores_previous(self):
+        commands = self.run_rollback(renamed=True, app_moved=True, media_check_started=True)
+        self.assertNotIn("--force-recreate erdai-media-check", commands)
+        commands = self.run_rollback(renamed=True, app_moved=True, media_check_started=True, previous_media_check=True)
+        self.assertIn("--force-recreate erdai-media-check", commands)
 
 
 if __name__ == "__main__":

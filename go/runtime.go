@@ -101,6 +101,10 @@ type AgentRuntime struct {
 	videoCancelID                 uint64
 	videoCancels                  map[uint64]context.CancelFunc
 	mediaGCMu                     sync.Mutex
+	taskRunMu                     sync.Mutex
+	taskRunCancels                map[string]context.CancelFunc
+	taskOperationMu               sync.Mutex
+	taskOperations                map[string]bool
 }
 
 type transportAttachment struct {
@@ -567,6 +571,10 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		{"ownership_reason", "TEXT NOT NULL DEFAULT ''"},
 		{"failure_class", "TEXT NOT NULL DEFAULT ''"},
 		{"first_response_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"task_id", "TEXT NOT NULL DEFAULT ''"},
+		{"task_revision", "INTEGER NOT NULL DEFAULT 0"},
+		{"task_scope_key", "TEXT NOT NULL DEFAULT ''"},
+		{"task_action", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err = ensureRuntimeColumn(db, "agent_runs", column.name, column.definition); err != nil {
 			db.Close()
@@ -574,6 +582,10 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		}
 	}
 	if err = ensureRuntimeColumn(db, "agent_runs", "persona_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS agent_runs_task_revision_idx ON agent_runs(task_scope_key, task_id, task_revision)`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -642,6 +654,14 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		}
 	}
 	if err = ensureRuntimeColumn(db, "agent_deliveries", "phase", "TEXT NOT NULL DEFAULT 'terminal'"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = ensureRuntimeColumn(db, "platform_sent_delivery_parts", "message_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS platform_sent_message_idx ON platform_sent_delivery_parts(message_id) WHERE message_id<>''`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -762,8 +782,14 @@ func (a *AgentRuntime) startMemoryPruneWorker(ctx context.Context) {
 	a.workers.Add(1)
 	go func() {
 		defer a.workers.Done()
+		if ctx.Err() != nil {
+			return
+		}
+		if err := a.pruneTaskOptimizationMetadata(ctx, time.Now()); err != nil && ctx.Err() == nil {
+			log.Printf("task metadata prune failed: %v", err)
+		}
 		if a.memory != nil {
-			if err := a.memory.PruneExpiredMemories(ctx); err != nil {
+			if err := a.memory.PruneExpiredMemories(ctx); err != nil && ctx.Err() == nil {
 				log.Printf("initial memory prune failed: %v", err)
 			}
 		}
@@ -774,10 +800,13 @@ func (a *AgentRuntime) startMemoryPruneWorker(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if err := a.pruneTaskOptimizationMetadata(ctx, time.Now()); err != nil && ctx.Err() == nil {
+					log.Printf("task metadata prune failed: %v", err)
+				}
 				if a.memory == nil {
 					continue
 				}
-				if err := a.memory.PruneExpiredMemories(ctx); err != nil {
+				if err := a.memory.PruneExpiredMemories(ctx); err != nil && ctx.Err() == nil {
 					log.Printf("memory prune failed: %v", err)
 				}
 			}
@@ -1177,12 +1206,15 @@ func (a *AgentRuntime) acceptTransportEventWithTrust(ctx context.Context, event 
 	}
 	// Memory capture is independent from reply ownership. A quiet observation
 	// can still reveal a stable preference or address the person naturally.
-	a.captureStableMemory(ctx, runRecord{
-		EventID: event.EventID, Transport: event.Transport, TransportInstance: event.TransportInstance,
-		AgentInstanceID: target.InstanceID, MemoryNamespace: memoryNamespace, ThreadKey: event.Conversation.ThreadKey,
-		ConversationRef: event.Conversation.Key, SenderRef: event.Sender.Key,
-		PersonaID: personaID,
-	}, message)
+	understandTask := a.taskUnderstandingEnabled(ctx) && !event.Flags.IsCommand
+	if !understandTask || !transientTaskConstraint(message) {
+		a.captureStableMemory(ctx, runRecord{
+			EventID: event.EventID, Transport: event.Transport, TransportInstance: event.TransportInstance,
+			AgentInstanceID: target.InstanceID, MemoryNamespace: memoryNamespace, ThreadKey: event.Conversation.ThreadKey,
+			ConversationRef: event.Conversation.Key, SenderRef: event.Sender.Key,
+			PersonaID: personaID,
+		}, message)
+	}
 	shouldOwn := event.Flags.IsWake || event.Flags.IsMentionBot
 	decisionReason := "wake_required"
 	if transportMode == "active" && event.Flags.IsCommand && !shouldOwn {
@@ -1213,7 +1245,12 @@ func (a *AgentRuntime) acceptTransportEventWithTrust(ctx context.Context, event 
 	if message == "" || len([]rune(message)) > 4000 {
 		return nil, newTransportRuntimeError(http.StatusBadRequest, "invalid_message", nil)
 	}
-	mergedBurst, _, coalesceErr := a.coalesceQueuedWakeRuns(ctx, event, personaID, message)
+	var mergedBurst []string
+	var coalesceErr error
+	action := taskIntentAction(message)
+	if !understandTask || action == "" {
+		mergedBurst, _, coalesceErr = a.coalesceQueuedWakeRuns(ctx, event, personaID, message)
+	}
 	if coalesceErr != nil {
 		return nil, newTransportRuntimeError(http.StatusInternalServerError, "dialogue_coalesce_failed", coalesceErr)
 	}
@@ -1267,7 +1304,12 @@ func (a *AgentRuntime) acceptTransportEventWithTrust(ctx context.Context, event 
 	if agentInstanceID == "" {
 		agentInstanceID = legacyAgentInstanceID
 	}
-	insertResult, err := a.db.Exec(`
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, newTransportRuntimeError(http.StatusInternalServerError, "run_persist_failed", err)
+	}
+	defer tx.Rollback()
+	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_runs (
 			id, event_id, message_id, reply_to_message_id, thread_key, transport, transport_instance, reply_handle, conversation_ref, conversation_kind, sender_ref, agent_instance_id, memory_namespace, persona_id,
 			input_cipher, attachments_cipher, is_admin, is_wake, is_mention_bot, ownership_reason, state, created_at, updated_at
@@ -1279,7 +1321,27 @@ func (a *AgentRuntime) acceptTransportEventWithTrust(ctx context.Context, event 
 	if err != nil {
 		return nil, newTransportRuntimeError(http.StatusInternalServerError, "run_persist_failed", err)
 	}
-	if changed, _ := insertResult.RowsAffected(); changed == 1 {
+	changed, _ := insertResult.RowsAffected()
+	var intent *TaskIntent
+	if changed == 1 && understandTask {
+		intent, err = a.admitTaskIntentTx(ctx, tx, runRecord{ID: runID, EventID: event.EventID, MessageID: event.Message.ID,
+			ReplyToMessageID: replyToMessageID, AgentInstanceID: agentInstanceID, MemoryNamespace: memoryNamespace,
+			Transport: event.Transport, TransportInstance: event.TransportInstance, ConversationRef: event.Conversation.Key,
+			ThreadKey: event.Conversation.ThreadKey, SenderRef: event.Sender.Key, PersonaID: personaID}, message)
+		if err != nil {
+			return nil, newTransportRuntimeError(http.StatusInternalServerError, "task_intent_persist_failed", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, newTransportRuntimeError(http.StatusInternalServerError, "run_persist_failed", err)
+	}
+	if intent != nil && intent.PreviousRunID != "" && (intent.Action == "correction" || intent.Action == "redo" || intent.Action == "stop") {
+		a.cancelSupersededTaskContexts(ctx, intent.TaskID)
+	}
+	if intent != nil && intent.PreviousRunID != "" && (intent.Action == "correction" || intent.Action == "redo" || intent.Action == "accepted" || intent.Action == "rejected") {
+		_ = a.recordTaskFeedback(ctx, intent.PreviousRunID, event.EventID, intent.Action, "conversation")
+	}
+	if changed == 1 {
 		stageDetails := map[string]any{"decisionReason": decisionReason, "transport": event.Transport}
 		if len(mergedBurst) > 0 {
 			stageDetails["mergedBurst"] = len(mergedBurst)
@@ -1713,6 +1775,8 @@ func (a *AgentRuntime) processNext(ctx context.Context) bool {
 	if changed != 1 {
 		return true
 	}
+	ctx, releaseTask := a.taskRunContext(ctx, run.ID)
+	defer releaseTask()
 	runStarted := time.Now()
 	_ = a.recordRunStage(run.ID, "run_started", runStarted, nil)
 	if len(run.AttachmentCipher) > 0 {
@@ -1761,6 +1825,10 @@ func (a *AgentRuntime) processNext(ctx context.Context) bool {
 		}
 	}
 	if err != nil {
+		if errors.Is(err, errTaskSuperseded) {
+			_ = a.finishRunWithoutDelivery(run, "task_revision_superseded")
+			return true
+		}
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 			return false
 		}
@@ -1855,6 +1923,14 @@ func (a *AgentRuntime) deriveTransportThreadKey(ctx context.Context, event trans
 		if err == nil && strings.TrimSpace(threadKey) != "" {
 			return strings.TrimSpace(threadKey)
 		}
+		err = a.db.QueryRowContext(ctx, `SELECT r.thread_key FROM platform_sent_delivery_parts p
+			JOIN agent_deliveries d ON d.id=p.delivery_id JOIN agent_runs r ON r.id=d.run_id
+			WHERE p.message_id=? AND r.transport=? AND r.transport_instance=? AND r.conversation_ref=? AND r.sender_ref=?
+			AND trim(r.thread_key)<>'' ORDER BY p.sent_at DESC LIMIT 1`, event.Message.ReplyTo.MessageID, event.Transport,
+			event.TransportInstance, event.Conversation.Key, event.Sender.Key).Scan(&threadKey)
+		if err == nil && strings.TrimSpace(threadKey) != "" {
+			return strings.TrimSpace(threadKey)
+		}
 	}
 	digest := sha256.Sum256([]byte(strings.Join([]string{
 		event.TransportInstance, event.Transport, event.Conversation.Key, event.Sender.Key,
@@ -1919,7 +1995,7 @@ func (a *AgentRuntime) finishRunWithoutDelivery(run runRecord, errorCode string)
 	}
 	state := "failed"
 	if errorCode == "superseded_by_newer_dialogue" || errorCode == "coalesced_by_newer_dialogue" ||
-		errorCode == "stale_terminal_discarded" {
+		errorCode == "stale_terminal_discarded" || errorCode == "task_revision_superseded" {
 		state = "cancelled"
 	}
 	if _, err = tx.Exec(`UPDATE agent_runs SET state = ?, error_code = ?, input_cipher = NULL, updated_at = ?
@@ -1984,6 +2060,9 @@ func (a *AgentRuntime) recordRunStage(runID, stage string, started time.Time, de
 }
 
 func naturalFailureReply(message string, err error) (string, string) {
+	if errors.Is(err, errTaskExecutionUncertain) {
+		return "上一步的结果还没确认，先不重复生成，避免重复消耗额度。", "task_execution_uncertain"
+	}
 	lane := inferNativeLane(message, false, false, false)
 	// Credential/permission rejections are an operations fault, not a
 	// generation hiccup. They get their own class-first phrasing and error
@@ -2051,7 +2130,7 @@ func (a *AgentRuntime) naturalFailureReplyForRun(ctx context.Context, run runRec
 
 func failureReplyOptions(code, fallback string) []string {
 	switch code {
-	case "provider_unavailable", "provider_quota_exhausted", "provider_rate_limited":
+	case "provider_unavailable", "provider_quota_exhausted", "provider_rate_limited", "task_execution_uncertain":
 		return []string{fallback}
 	case "image_generation_timeout":
 		return []string{fallback, "这张等太久了，没出来。", "这回卡在半路了。", "图片超时了，这次不算。"}
@@ -2085,6 +2164,17 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	boundaryPolicy, err := a.configStore.contentBoundaryPolicy()
 	if err != nil {
 		return agentReply{}, err
+	}
+	if decision, matched := evaluateContentBoundary(boundaryPolicy, message); matched &&
+		(decision.Action == contentBoundaryActionRefuse || decision.Action == contentBoundaryActionCounter) {
+		return agentReply{Text: chooseBoundaryReply(run.EventID, message, decision)}, nil
+	}
+	message, taskReply, taskErr := a.prepareTaskIntent(ctx, run, message)
+	if taskErr != nil {
+		return agentReply{}, taskErr
+	}
+	if taskReply != nil {
+		return *taskReply, nil
 	}
 	if decision, matched := evaluateContentBoundary(boundaryPolicy, message); matched &&
 		(decision.Action == contentBoundaryActionRefuse || decision.Action == contentBoundaryActionCounter) {
@@ -2246,7 +2336,7 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 			return a.executeQuotaMedia(ctx, run, mediaKindVideo, func() (toolResult, error) {
 				// Video progress is announced inside generateVideo, only after
 				// the provider accepted the task and returned a real task ID.
-				return a.generateVideo(ctx, run, a.personaVideoPromptForRun(ctx, run, message))
+				return a.generateVideo(ctx, run, message)
 			})
 		})
 		if err != nil {
@@ -2280,8 +2370,7 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 						return toolResult{}, err
 					}
 				}
-				prompt := a.personaImagePrompt(imageContext, message, prepared.Data.ActivePersona)
-				return a.generateImageForPersona(imageContext, prompt, grok, run.PersonaID)
+				return a.generateImageForRun(imageContext, run, message, grok)
 			})
 		})
 		if err != nil {
@@ -2811,6 +2900,14 @@ func (a *AgentRuntime) enqueueAgentReply(run runRecord, reply agentReply, errorC
 }
 
 func (a *AgentRuntime) enqueueDelivery(run runRecord, reply agentReply, phase, errorCode string) error {
+	if len(reply.Attachments) > 0 {
+		if err := a.ensureRunVisualAppearanceCurrent(context.Background(), run.ID); err != nil {
+			if errors.Is(err, errTaskSuperseded) {
+				return errStaleTerminalReply
+			}
+			return err
+		}
+	}
 	if phase != "progress" && phase != "terminal" {
 		return errors.New("delivery phase is invalid")
 	}
@@ -2841,6 +2938,12 @@ func (a *AgentRuntime) enqueueDelivery(run runRecord, reply agentReply, phase, e
 		return err
 	}
 	defer tx.Rollback()
+	if err = ensureTaskCurrentQuery(context.Background(), tx, run.ID); err != nil {
+		if errors.Is(err, errTaskSuperseded) {
+			return errStaleTerminalReply
+		}
+		return err
+	}
 	var currentState string
 	if err = tx.QueryRow("SELECT state FROM agent_runs WHERE id = ?", run.ID).Scan(&currentState); err != nil {
 		return err
@@ -3066,6 +3169,14 @@ func (a *AgentRuntime) leaseTransportDeliveries(ctx context.Context, consumerID 
 		return nil, err
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE agent_deliveries SET status='cancelled', lease_owner=NULL,
+		lease_expires_at=NULL, last_error='task_revision_superseded', updated_at=?
+		WHERE status IN ('pending','sending') AND run_id IN (SELECT r.id FROM agent_runs r
+		WHERE r.state='cancelled' OR (r.task_id<>'' AND EXISTS(SELECT 1 FROM agent_runs newer
+		WHERE newer.task_id=r.task_id AND newer.task_scope_key=r.task_scope_key AND newer.task_revision>r.task_revision)))`,
+		now.UTC().Format(time.RFC3339Nano)); err != nil {
+		return nil, err
+	}
 	_, err = tx.ExecContext(ctx, `
 		UPDATE agent_deliveries
 		SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
@@ -3371,6 +3482,7 @@ func (a *AgentRuntime) cancelRun(w http.ResponseWriter, id string) {
 	cancelled := state != "delivered" && state != "failed"
 	if cancelled {
 		state = "cancelled"
+		a.cancelTaskRunContext(id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"id": id, "state": state, "cancelled": cancelled,

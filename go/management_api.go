@@ -13,6 +13,8 @@ func (a *AgentRuntime) handleNativeManagement(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	sensitiveRead := r.Method == http.MethodGet && (path == "/api/v1/affiliate/ownership" || strings.HasPrefix(path, "/api/v1/points/") ||
+		path == "/api/v1/tasks" || strings.HasPrefix(path, "/api/v1/tasks/") ||
+		path == "/api/v1/observability/visual-history" ||
 		strings.HasPrefix(path, "/api/v1/platforms/") && (strings.HasSuffix(path, "/login-qr") || strings.HasSuffix(path, "/telegram-user/auth/status")))
 	if sensitiveRead && !tokenMatches(r.Header.Get(adminTokenHeader), a.adminToken) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
@@ -48,6 +50,7 @@ func isNativeManagementPath(path string) bool {
 	for _, exact := range []string{
 		"/api/v1/affiliate/ownership",
 		"/api/v1/overview", "/api/v1/observability", "/api/v1/audit", "/api/v1/shadow/interactions",
+		"/api/v1/observability/visual-history",
 		"/api/v1/installation/status", "/api/v1/update/check", "/api/v1/update/status", "/api/v1/update/request",
 		"/api/v1/credentials",
 		"/api/v1/config/layers",
@@ -112,6 +115,8 @@ func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.Respo
 		return s.handleManagementOverview(w, r)
 	case path == "/api/v1/observability":
 		return a.handleManagementObservability(w, r)
+	case path == "/api/v1/observability/visual-history":
+		return a.handleVisualHistory(w, r)
 	case path == "/api/v1/config/layers":
 		return s.handleConfigLayers(w, r)
 	case path == "/api/v1/audit":

@@ -31,6 +31,7 @@ export type MediaCapabilityStatus = {
 };
 
 export type Observability = {
+  quality?: TaskQualityStats;
   media?: {
     image?: MediaCapabilityStatus;
     video?: MediaCapabilityStatus;
@@ -52,6 +53,56 @@ export type Observability = {
     lastWriteAt?: string;
     lastAccessAt?: string;
     lastRecallAt?: string;
+  };
+};
+
+export type TaskQualityStats = {
+  windowHours: number;
+  generatedRuns: number;
+  deliveredRuns: number;
+  qualityOperations: number;
+  passed: number;
+  failed: number;
+  unverified: number;
+  generationRounds: number;
+  accepted: number;
+  corrections: number;
+  redos: number;
+  rejected: number;
+  adminFeedback: number;
+  sampleLimited: boolean;
+};
+
+export type MediaQualityReport = {
+  mediaType: string;
+  operationId: string;
+  status: string;
+  selectedAttempt: number;
+  selectionReason?: string;
+  attempts: Array<{
+    attempt: number;
+    generationStatus: string;
+    artifactNames: string[];
+    assessment: {
+      status: string;
+      reason?: string;
+      identityIssues: string[];
+      constraintIssues: string[];
+      qualityIssues: string[];
+    };
+    providerCostKnown: boolean;
+  }>;
+};
+
+export type TaskDetail = {
+  runId: string;
+  steps: Array<{ id: string; kind: string; name: string; status: string; attempts: number; errorCode?: string }>;
+  artifacts: Array<{ id?: number; kind: string; name: string; mimeType: string; contentUrl?: string }>;
+  optimization: {
+    intent?: JsonMap;
+    visualPlans: JsonMap[];
+    mediaQuality: MediaQualityReport[];
+    feedback: Array<{ eventId: string; kind: string; source: string; createdAt: string }>;
   };
 };
 
@@ -255,6 +306,7 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
       return loadEntries([
         ['runs', '/api/v1/runs'],
         ['runStats', '/api/v1/runs/stats?hours=24'],
+        ['observability', '/api/v1/observability'],
         ['usageStats', '/api/v1/usage/stats?hours=24'],
         ['audit', '/api/v1/audit?limit=100'],
         ['shadow', '/api/v1/shadow/interactions?limit=50'],

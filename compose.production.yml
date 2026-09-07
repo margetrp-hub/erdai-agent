@@ -17,6 +17,7 @@ services:
           - erdai-core
           - erdai-agent-core
       grok-egress: {}
+      media-check: {}
     env_file:
       - path: ${ERDAI_RUNTIME_ENV_FILE:-./runtime.env}
         required: false
@@ -32,6 +33,8 @@ services:
       ERDAI_RUNTIME_DATABASE: /app/data/erdai-agent-core.sqlite3
       ERDAI_LEGACY_RUNTIME_DATABASE: /app/data/erdai-runtime.sqlite3
       ERDAI_MEDIA_DIR: /app/data/media
+      ERDAI_MEDIA_CHECK_URL: http://erdai-media-check:8091
+      ERDAI_MEDIA_CHECK_TOKEN: ${ERDAI_MEDIA_CHECK_TOKEN:?ERDAI_MEDIA_CHECK_TOKEN is required}
       ERDAI_MANAGED_CREDENTIALS_FILE: /app/data/managed-credentials.env
       ERDAI_UPDATE_REQUEST_FILE: /app/data/update-request.json
       ERDAI_UPDATE_STATUS_FILE: /app/update-status/update-status.json
@@ -115,6 +118,40 @@ services:
         max-size: 5m
         max-file: "2"
 
+  erdai-media-check:
+    image: ${ERDAI_MEDIA_CHECK_IMAGE:?ERDAI_MEDIA_CHECK_IMAGE is required}
+    platform: linux/amd64
+    container_name: erdai-media-check
+    restart: unless-stopped
+    init: true
+    networks:
+      - media-check
+    environment:
+      ERDAI_MEDIA_CHECK_TOKEN: ${ERDAI_MEDIA_CHECK_TOKEN:?ERDAI_MEDIA_CHECK_TOKEN is required}
+    volumes:
+      - ${ERDAI_DATA_DIR:-./data}/media:/media:ro
+    cpus: 0.75
+    mem_limit: 128m
+    memswap_limit: 192m
+    pids_limit: 32
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
   erdai-embedding:
     image: ${ERDAI_EMBEDDING_IMAGE:-ghcr.io/ggml-org/llama.cpp@sha256:046ad33efae5c4ec3e19be344778a80c2bb402d3f10b464514c5fe99eab94d19}
     platform: linux/amd64
@@ -166,6 +203,8 @@ services:
       retries: 5
 
 networks:
+  media-check:
+    internal: true
   erdai-agent:
     external: true
     name: erdai-agent-internal

@@ -59,12 +59,14 @@ export function InfoDialog({
   title,
   description,
   children,
+  className = '',
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
   children: ReactNode;
+  className?: string;
 }) {
   useEffect(() => {
     if (!open) return undefined;
@@ -80,7 +82,7 @@ export function InfoDialog({
     <div className="dialog-layer">
       <div className="dialog-overlay" onMouseDown={() => onOpenChange(false)} />
       <section
-        className="dialog-content"
+        className={`dialog-content ${className}`.trim()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modern-dialog-title"

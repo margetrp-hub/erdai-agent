@@ -215,6 +215,10 @@ func (m *platformConnectorManager) deliverPending(ctx context.Context) {
 			m.failDelivery(ctx, delivery, false, "unknown_reply_handle", receipt)
 			continue
 		}
+		if err = m.runtime.ensureDeliveryTaskCurrent(ctx, delivery.ID); err != nil {
+			m.failDelivery(ctx, delivery, !errors.Is(err, errTaskSuperseded), "task_revision_unavailable", receipt)
+			continue
+		}
 		sendStarted := time.Now()
 		sendContext, cancelSend := context.WithTimeout(ctx, 270*time.Second)
 		err = connector.Deliver(sendContext, route, delivery)

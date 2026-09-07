@@ -23,5 +23,14 @@ jobs:
         run: docker build --target verify --progress plain .
       - name: Check deployment rollback failure paths
         run: python3 scripts/test-deploy.py
-      - name: Race-check recovery, delivery and points regressions
+      - name: Verify restricted video inspection worker
+        run: |
+          docker build --tag erdai-media-check:verify media-check
+          docker run --rm --network none --read-only \
+            --memory 128m --memory-swap 192m --cpus 0.75 --pids-limit 32 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /tmp:size=16m,noexec,nosuid \
+            --mount "type=bind,source=$PWD/media-check/test_server.py,target=/app/test_server.py,readonly" \
+            erdai-media-check:verify python -m unittest -v test_server
+      - name: Race-check recovery, delivery, points and agent optimization
         run: docker build --target verify-race --progress plain .

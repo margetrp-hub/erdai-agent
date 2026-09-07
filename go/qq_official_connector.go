@@ -904,13 +904,25 @@ func (c *qqOfficialConnector) isOutboundMessage(messageID string) bool {
 	}
 	now := time.Now()
 	c.outboundMu.Lock()
-	defer c.outboundMu.Unlock()
 	expiresAt, found := c.outboundMessages[messageID]
 	if found && !now.Before(expiresAt) {
 		delete(c.outboundMessages, messageID)
-		return false
+		found = false
 	}
-	return found
+	c.outboundMu.Unlock()
+	if found || c.runtime == nil || c.runtime.db == nil {
+		return found
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var exists int
+	err := c.runtime.db.QueryRowContext(ctx, `SELECT 1 FROM platform_sent_delivery_parts part
+		JOIN agent_deliveries delivery ON delivery.id = part.delivery_id
+		JOIN agent_runs run ON run.id = delivery.run_id
+		WHERE part.message_id = ? AND run.transport = ? AND run.transport_instance = ?
+		AND julianday(part.sent_at) >= julianday(?) LIMIT 1`, messageID, qqOfficialTransport, c.ID(),
+		now.UTC().Add(-6*time.Hour).Format(time.RFC3339Nano)).Scan(&exists)
+	return err == nil && exists == 1
 }
 
 func qqMessageWithQuotedContext(current, quotedID, quoted string) string {
@@ -1019,7 +1031,11 @@ func (c *qqOfficialConnector) Deliver(ctx context.Context, route platformReplyRo
 			message := &dto.MessageToCreate{
 				Content: text, MsgType: dto.TextMsg, MsgID: route.MessageID, MsgSeq: sequence,
 			}
-			if err = c.sendText(ctx, route, message); err != nil {
+			if err = c.sendText(qqTaskReceiptContextFor(ctx, delivery.ID, "text"), route, message); err != nil {
+				var deliveryErr *platformDeliveryError
+				if errors.As(err, &deliveryErr) {
+					return deliveryErr
+				}
 				return &platformDeliveryError{Retryable: true, Reason: "qq_text_send_failed", Cause: err}
 			}
 			return nil
@@ -1029,7 +1045,7 @@ func (c *qqOfficialConnector) Deliver(ctx context.Context, route platformReplyRo
 	}
 	for index, attachment := range delivery.Message.Attachments {
 		if err := c.deliverPart(ctx, delivery.ID, fmt.Sprintf("attachment:%d", index), func() error {
-			return c.sendAttachment(ctx, route, delivery.ReplyHandle, attachment)
+			return c.sendAttachment(qqTaskReceiptContextFor(ctx, delivery.ID, fmt.Sprintf("attachment:%d", index)), route, delivery.ReplyHandle, attachment)
 		}); err != nil {
 			return err
 		}
@@ -1043,10 +1059,40 @@ func (c *qqOfficialConnector) deliverPart(ctx context.Context, deliveryID, part 
 	if err != nil || sent {
 		return err
 	}
+	if deliveryID != "" {
+		if err = c.runtime.ensureDeliveryTaskCurrent(ctx, deliveryID); err != nil {
+			return &platformDeliveryError{Retryable: !errors.Is(err, errTaskSuperseded), Reason: "task_revision_unavailable", Cause: err}
+		}
+	}
 	if err = send(); err != nil {
 		return err
 	}
 	return c.runtime.markPlatformDeliveryPartSent(ctx, deliveryID, part)
+}
+
+type qqTaskReceiptContextKey struct{}
+
+type qqTaskReceiptContext struct {
+	deliveryID string
+	partKey    string
+}
+
+func qqTaskReceiptContextFor(ctx context.Context, deliveryID, partKey string) context.Context {
+	if deliveryID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, qqTaskReceiptContextKey{}, qqTaskReceiptContext{deliveryID: deliveryID, partKey: partKey})
+}
+
+func (c *qqOfficialConnector) saveTaskOutboundReceipt(ctx context.Context, message *dto.Message) error {
+	receipt, tracked := ctx.Value(qqTaskReceiptContextKey{}).(qqTaskReceiptContext)
+	if !tracked || message == nil || strings.TrimSpace(message.ID) == "" {
+		return nil
+	}
+	if err := c.runtime.recordTaskOutboundMessage(ctx, receipt.deliveryID, receipt.partKey, message.ID); err != nil {
+		return &platformDeliveryError{Retryable: false, Reason: "qq_sent_receipt_uncertain", Cause: err}
+	}
+	return nil
 }
 
 func (c *qqOfficialConnector) sendText(ctx context.Context, route platformReplyRoute, message *dto.MessageToCreate) error {
@@ -1066,6 +1112,7 @@ func (c *qqOfficialConnector) sendText(ctx context.Context, route platformReplyR
 	}
 	if err == nil {
 		c.recordOutboundMessage(sent)
+		return c.saveTaskOutboundReceipt(ctx, sent)
 	}
 	return err
 }
@@ -1119,6 +1166,11 @@ func (c *qqOfficialConnector) sendAttachment(ctx context.Context, route platform
 		MsgType: dto.RichMediaMsg, MsgID: route.MessageID, MsgSeq: sequence,
 		Media: &dto.MediaInfo{FileInfo: uploaded.FileInfo},
 	}
+	if receipt, tracked := ctx.Value(qqTaskReceiptContextKey{}).(qqTaskReceiptContext); tracked {
+		if err = c.runtime.ensureDeliveryTaskCurrent(ctx, receipt.deliveryID); err != nil {
+			return &platformDeliveryError{Retryable: !errors.Is(err, errTaskSuperseded), Reason: "task_revision_unavailable", Cause: err}
+		}
+	}
 	if route.Kind == "group" {
 		uploaded, err = c.api.PostGroupMessage(ctx, route.TargetID, message)
 	} else {
@@ -1128,5 +1180,5 @@ func (c *qqOfficialConnector) sendAttachment(ctx context.Context, route platform
 		return &platformDeliveryError{Retryable: true, Reason: "qq_attachment_send_failed", Cause: err}
 	}
 	c.recordOutboundMessage(uploaded)
-	return nil
+	return c.saveTaskOutboundReceipt(ctx, uploaded)
 }

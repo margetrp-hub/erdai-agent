@@ -496,12 +496,12 @@ func TestImageTaskTimeoutCapsLongPolicyWithoutRestoringShortGate(t *testing.T) {
 	}
 }
 
-func TestGrokSelfImageUsesActivePersonaAvatarReference(t *testing.T) {
+func TestGrokSelfImageUsesSelectedAppearanceReference(t *testing.T) {
 	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const avatar = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+	const avatar = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	var edits, generations atomic.Int32
 	service := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -552,6 +552,7 @@ func TestGrokSelfImageUsesActivePersonaAvatarReference(t *testing.T) {
 	}
 	defer runtime.Close()
 
+	addVisualPlanReference(t, runtime, "doubao")
 	result, err := runtime.generateImage(context.Background(), "来一张你的自拍", true)
 	if err != nil || len(result.Attachments) != 1 || edits.Load() != 1 || generations.Load() != 0 {
 		t.Fatalf("reference result = %+v, calls = %d/%d, err = %v", result, edits.Load(), generations.Load(), err)
@@ -633,7 +634,7 @@ func TestInboundImageEditUsesDurableAttachmentAsReference(t *testing.T) {
 	}
 }
 
-func TestGrokSelfImageFallsBackWhenReferenceEditIsUnavailable(t *testing.T) {
+func TestGrokSelfImageDoesNotDropReferenceWhenEditIsUnavailable(t *testing.T) {
 	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 	if err != nil {
 		t.Fatal(err)
@@ -688,8 +689,9 @@ func TestGrokSelfImageFallsBackWhenReferenceEditIsUnavailable(t *testing.T) {
 	}
 	defer runtime.Close()
 
+	addVisualPlanReference(t, runtime, "doubao")
 	result, err := runtime.generateImage(context.Background(), "来一张你的自拍", true)
-	if err != nil || len(result.Attachments) != 1 || edits.Load() != 1 || generations.Load() != 1 {
+	if err == nil || len(result.Attachments) != 0 || edits.Load() != 1 || generations.Load() != 0 {
 		t.Fatalf("fallback result = %+v, calls = %d/%d, err = %v", result, edits.Load(), generations.Load(), err)
 	}
 }

@@ -66,7 +66,7 @@ func TestVideoRouteSurvivesTransientPollsAndDeliversMP4(t *testing.T) {
 			prompt, _ := body["prompt"].(string)
 			references, _ := body["reference_images"].([]any)
 			if body["model"] != "grok-imagine-video" || !strings.Contains(prompt, "做一段海边日落视频") ||
-				!strings.Contains(prompt, "角色外观基准") {
+				!strings.Contains(prompt, "固定身份") {
 				t.Errorf("create body = %+v", body)
 			}
 			if len(references) != 1 || references[0].(map[string]any)["url"] != testVideoPersonaAvatar {
@@ -197,7 +197,8 @@ func TestVideoRouteSurvivesTransientPollsAndDeliversMP4(t *testing.T) {
 	if len(requestIDs) != 453 {
 		t.Fatalf("provider request count = %d", len(requestIDs))
 	}
-	expectedRequestID := stableVideoRequestID(runRecord{EventID: "video-event"})
+	requestRun := runRecord{ID: accepted.Data.RunID, EventID: "video-event"}
+	expectedRequestID := stableVideoAttemptRequestID(requestRun, visualOperationID(requestRun, "video", "做一段海边日落视频"), 0)
 	for index := range requestIDs {
 		if requestIDs[index] != expectedRequestID || requestIDs[index] == "" {
 			t.Fatalf("request ID %d = %q", index, requestIDs[index])
@@ -216,14 +217,14 @@ func TestVideoRouteSurvivesTransientPollsAndDeliversMP4(t *testing.T) {
 	}
 }
 
-func TestVideoCreateRetriesTransientGatewayFailure(t *testing.T) {
+func TestVideoCreateRetriesExplicitRateLimitRejection(t *testing.T) {
 	var createCalls atomic.Int32
 	var provider *httptest.Server
 	provider = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/grok/videos/generations":
 			if createCalls.Add(1) < 3 {
-				http.Error(w, "temporary gateway failure", http.StatusBadGateway)
+				http.Error(w, "rate limit rejection", http.StatusTooManyRequests)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"request_id": "retry-task"})
@@ -627,6 +628,11 @@ func TestMediaGenerationHonorsUnifiedImagePolicy(t *testing.T) {
 	if _, err := runtime.generateVideo(context.Background(), runRecord{EventID: "media-gate"}, "test"); err == nil || !strings.Contains(err.Error(), "media generation is disabled") {
 		t.Fatalf("video gate error = %v", err)
 	}
+	setTestIntegration(t, runtime.configStore.db, "image_policy", map[string]any{"enabled": true})
+	setTestIntegration(t, runtime.configStore.db, "grok_policy", map[string]any{"enabled": false})
+	if _, err := runtime.generateVideo(context.Background(), runRecord{EventID: "video-gate"}, "test"); err == nil || !strings.Contains(err.Error(), "Grok video generation is disabled") {
+		t.Fatalf("video-specific gate error = %v", err)
+	}
 }
 
 func videoTestConfig(t *testing.T, apiBase string, timeoutSeconds int) string {
@@ -657,7 +663,7 @@ func videoTestConfig(t *testing.T, apiBase string, timeoutSeconds int) string {
 	return path
 }
 
-const testVideoPersonaAvatar = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+const testVideoPersonaAvatar = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 func newVideoRuntime(
 	t *testing.T,
@@ -679,6 +685,7 @@ func newVideoRuntime(
 	if err != nil {
 		t.Fatal(err)
 	}
+	addVisualPlanReference(t, runtime, "doubao")
 	return runtime
 }
 

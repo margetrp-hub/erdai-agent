@@ -73,6 +73,7 @@ var mgmtIntegrationFields = map[string]map[string]struct{}{
 	"companion_policy": coreFieldSet(
 		"enabled", "enabledGroups", "enableModelRouting", "chatModel", "taskModel",
 		"complexMessageChars", "collectTopicState",
+		"taskUnderstandingEnabled",
 		"summaryIntervalMessages", "summaryWindowMessages",
 		"topicTtlHours",
 		"contextMessagesPerPrompt", "contextTokenBudget", "maxMessagesPerGroup", "messageRetentionHours",
@@ -126,6 +127,7 @@ var mgmtIntegrationFields = map[string]map[string]struct{}{
 		"dailyLimitCount", "maxImageSizeMb", "promptAuditEnabled", "promptAuditProviderId",
 		"historyEnabled", "historyLimit", "historyRetentionDays",
 		"visualDirectorEnabled", "visualUseTimeContext", "visualTimezone", "selfieTypes",
+		"visualVariationEnabled", "mediaQualityEnabled", "mediaQualityEndpointId",
 	),
 }
 
@@ -317,6 +319,20 @@ func mgmtValidateIntegration(id string, current, input map[string]any) (map[stri
 			}
 		}
 		switch field {
+		case "taskUnderstandingEnabled", "visualVariationEnabled", "mediaQualityEnabled":
+			if _, ok := value.(bool); !ok {
+				return nil, coreInvalid(field + " must be a boolean")
+			}
+		case "mediaQualityEndpointId":
+			raw, ok := value.(string)
+			if !ok {
+				return nil, coreInvalid(field + " must be a string")
+			}
+			normalized, err := normalizeCoreText(raw, field, 120, false)
+			if err != nil {
+				return nil, err
+			}
+			value = normalized
 		case "credentialRef":
 			reference, ok := value.(string)
 			if !ok {

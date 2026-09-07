@@ -15,12 +15,15 @@ old_image_ref=
 old_image_id=
 old_browser_image_ref=
 old_browser_image_id=
+old_media_check_image_ref=
+old_media_check_image_id=
 old_channel_mode=off
 channel_quiesced=0
 swapped_app=0
 rollback_armed=0
 core_install_started=0
 browser_install_started=0
+media_check_install_started=0
 
 fail() { echo "$*" >&2; exit 1; }
 manifest_value() {
@@ -50,14 +53,13 @@ cleanup() {
     set +e
     if [ "$core_install_started" -eq 1 ]; then docker rm -f erdai-agent >/dev/null 2>&1 || true; fi
     if [ "$browser_install_started" -eq 1 ]; then docker rm -f erdai-monitor-browser >/dev/null 2>&1 || true; fi
+    if [ "$media_check_install_started" -eq 1 ]; then docker rm -f erdai-media-check >/dev/null 2>&1 || true; fi
+    if [ -n "$old_media_check_image_ref" ]; then export ERDAI_MEDIA_CHECK_IMAGE="$old_media_check_image_ref"; fi
     [ -z "$old_image_ref" ] || docker image tag "$old_image_id" "$old_image_ref" >/dev/null 2>&1 || true
-    for database in erdai-agent-core.sqlite3 erdai-runtime.sqlite3; do
-      if [ -n "$rollback_dir" ] && [ -f "$rollback_dir/$database" ]; then
-        cp -f "$rollback_dir/$database" "$root/data/$database"
-        rm -f "$root/data/$database-wal" "$root/data/$database-shm"
-        chown 1000:1000 "$root/data/$database"
-      fi
-    done
+    [ -z "$old_media_check_image_ref" ] || docker image tag "$old_media_check_image_id" "$old_media_check_image_ref" >/dev/null 2>&1 || true
+    # This pipeline only accepts schema-compatible releases. Preserve all
+    # post-cutover ledger and receipt writes; snapshots are disaster recovery,
+    # never an automatic rollback source.
     if [ "$swapped_app" -eq 1 ] && [ -d "$rollback_dir/app" ]; then
       rm -rf "$root/app"
       mv "$rollback_dir/app" "$root/app"
@@ -80,6 +82,11 @@ cleanup() {
       ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="${old_browser_image_ref:-$browser_image}" \
         docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" \
         up -d --no-build --force-recreate erdai-monitor-browser >/dev/null 2>&1 || true
+    fi
+    if [ "$media_check_install_started" -eq 1 ] && [ -n "$old_media_check_image_ref" ] && [ -f "$root/app/compose.production.yml" ]; then
+      ERDAI_RELEASE_IMAGE="${old_image_ref:-$release_image}" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="${old_browser_image_ref:-$browser_image}" \
+        docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" \
+        up -d --no-build --force-recreate erdai-media-check >/dev/null 2>&1 || true
     fi
     attempt=0
     while docker container inspect erdai-agent >/dev/null 2>&1 && [ "$attempt" -lt 60 ]; do
@@ -116,11 +123,13 @@ release=$(manifest_value RELEASE_ID)
 release_image=$(manifest_value RELEASE_IMAGE)
 embedding_image=$(manifest_value EMBEDDING_IMAGE)
 browser_image=$(manifest_value BROWSER_IMAGE)
+media_check_image=$(manifest_value MEDIA_CHECK_IMAGE)
+export ERDAI_MEDIA_CHECK_IMAGE="$media_check_image"
 schema=$(manifest_value SCHEMA_VERSION)
 platform=$(manifest_value PLATFORM)
 source_revision=$(manifest_value SOURCE_REVISION)
 memory_total=$(manifest_value MEMORY_LIMIT_TOTAL_BYTES)
-for value in "$release" "$release_image" "$embedding_image" "$browser_image" "$platform" "$source_revision"; do safe_value "$value"; done
+for value in "$release" "$release_image" "$embedding_image" "$browser_image" "$media_check_image" "$platform" "$source_revision"; do safe_value "$value"; done
 case "$schema:$memory_total" in *[!0-9:]*|:*) fail "invalid numeric manifest field";; esac
 [ "$platform" = linux/amd64 ] || fail "only linux/amd64 release bundles are accepted"
 [ "$memory_total" -le 1717986918 ] || fail "release memory budget exceeds the 1.6-GiB VPS safety limit"
@@ -131,7 +140,30 @@ flock -n 9 || fail "another ErDai release is already running"
 docker info >/dev/null
 [ "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "$platform" ] || fail "Docker architecture mismatch"
 test -f "$env_file" || fail "missing $env_file"
+ERDAI_MEDIA_CHECK_TOKEN=$(python3 - "$env_file" <<'PY'
+import re
+import secrets
+import sys
+from pathlib import Path
+token = ""
+for line in Path(sys.argv[1]).read_text().splitlines():
+    if line.startswith("ERDAI_MEDIA_CHECK_TOKEN="):
+        token = line.split("=", 1)[1].strip().strip("\"'")
+if token and not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
+    raise SystemExit("invalid media checker token")
+print(token or secrets.token_urlsafe(32))
+PY
+)
+export ERDAI_MEDIA_CHECK_TOKEN
 test -d "$root/data" || fail "missing $root/data"
+python3 - "$root/data/erdai-agent-core.sqlite3" "$schema" <<'PY'
+import sqlite3
+import sys
+with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as db:
+    current = db.execute("PRAGMA user_version").fetchone()[0]
+if current != int(sys.argv[2]):
+    raise SystemExit("schema-changing deployment requires a separately reviewed migration and data-safe rollback")
+PY
 test -r "$root/models/bge-small-zh-v1.5-q4_k_m.gguf" || fail "embedding model is missing"
 docker container inspect erdai-embedding >/dev/null 2>&1 || fail "embedding container must already exist"
 docker network inspect erdai-agent-internal >/dev/null
@@ -161,6 +193,10 @@ core_image_id=$(docker image inspect -f '{{.Id}}' "$release_image")
 [ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$release_image")" = "$platform" ] || fail "loaded Core platform does not match manifest"
 docker image inspect "$embedding_image" >/dev/null 2>&1 || fail "immutable embedding image is unavailable"
 docker image inspect "$browser_image" >/dev/null 2>&1 || fail "immutable monitor browser image is unavailable"
+docker image inspect "$media_check_image" >/dev/null 2>&1 || fail "media checker image is unavailable"
+[ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$media_check_image")" = "$platform" ] || fail "media checker platform does not match manifest"
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$media_check_image")" = "$release" ] || fail "media checker version does not match manifest"
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$media_check_image")" = "$source_revision" ] || fail "media checker revision does not match manifest"
 [ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$browser_image")" = "$platform" ] || fail "monitor browser platform does not match manifest"
 [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$browser_image")" = "$release" ] || fail "loaded monitor browser version label does not match manifest"
 [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$browser_image")" = "$source_revision" ] || fail "loaded monitor browser revision label does not match manifest"
@@ -172,6 +208,10 @@ fi
 if docker container inspect erdai-monitor-browser >/dev/null 2>&1; then
   old_browser_image_ref=$(docker container inspect -f '{{.Config.Image}}' erdai-monitor-browser)
   old_browser_image_id=$(docker container inspect -f '{{.Image}}' erdai-monitor-browser)
+fi
+if docker container inspect erdai-media-check >/dev/null 2>&1; then
+  old_media_check_image_ref=$(docker container inspect -f '{{.Config.Image}}' erdai-media-check)
+  old_media_check_image_id=$(docker container inspect -f '{{.Image}}' erdai-media-check)
 fi
 old_channel_mode=$(python3 - "$root/data/erdai-agent-core.sqlite3" <<'PY'
 import json
@@ -227,6 +267,15 @@ if [ -d "$root/app" ]; then mv "$root/app" "$rollback_dir/app"; fi
 mv "$stage" "$root/app"
 stage=
 
+media_check_install_started=1
+if [ ! -d "$root/data/media" ]; then install -d -m 700 -o 1000 -g 1000 "$root/data/media"; fi
+ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-media-check
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+  if [ "$(docker inspect -f '{{.State.Health.Status}}' erdai-media-check 2>/dev/null || true)" = healthy ]; then break; fi
+  attempt=$((attempt + 1)); sleep 1
+done
+[ "$attempt" -lt 60 ] || fail "media checker did not become healthy"
 browser_install_started=1
 ERDAI_RELEASE_IMAGE="$release_image" ERDAI_EMBEDDING_IMAGE="$embedding_image" ERDAI_MONITOR_BROWSER_IMAGE="$browser_image" docker compose --env-file "$env_file" -f "$root/app/compose.production.yml" up -d --no-build --force-recreate erdai-monitor-browser
 attempt=0
@@ -250,7 +299,8 @@ if docker container inspect erdai-embedding >/dev/null 2>&1; then
   [ "$(docker inspect -f '{{.State.Health.Status}}' erdai-embedding)" = healthy ] || fail "embedding is not healthy"
   embedding_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-embedding)
   browser_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-monitor-browser)
-  [ $((core_memory + embedding_memory + browser_memory)) -le "$memory_total" ] || fail "container memory limits exceed the release budget"
+  media_check_memory=$(docker inspect -f '{{.HostConfig.Memory}}' erdai-media-check)
+  [ $((core_memory + embedding_memory + browser_memory + media_check_memory)) -le "$memory_total" ] || fail "container memory limits exceed the release budget"
 fi
 [ "$(docker inspect -f '{{.State.OOMKilled}}' erdai-agent)" = false ] || fail "Core was OOM-killed"
 [ "$(docker inspect -f '{{.RestartCount}}' erdai-agent)" = 0 ] || fail "Core restarted during cutover"
@@ -260,9 +310,12 @@ ERDAI_INSTALL_ROOT="$root" "$root/app/scripts/set-channel-mode.sh" "$old_channel
 channel_quiesced=0
 persist_env_value ERDAI_RELEASE_IMAGE "$release_image"
 persist_env_value ERDAI_MONITOR_BROWSER_IMAGE "$browser_image"
+persist_env_value ERDAI_MEDIA_CHECK_IMAGE "$media_check_image"
+persist_env_value ERDAI_MEDIA_CHECK_TOKEN "$ERDAI_MEDIA_CHECK_TOKEN"
 # Keep one usable rollback point; the operator can retire the prior point
 # after checking ownership and completing post-release acceptance.
 printf 'old_container=%s\nold_image_ref=%s\nold_image_id=%s\nold_browser_image_ref=%s\nold_browser_image_id=%s\nold_channel_mode=%s\n' \
   "$old_container" "$old_image_ref" "$old_image_id" "$old_browser_image_ref" "$old_browser_image_id" "$old_channel_mode" > "$rollback_dir/rollback.env"
+printf 'old_media_check_image_ref=%s\nold_media_check_image_id=%s\n' "$old_media_check_image_ref" "$old_media_check_image_id" >> "$rollback_dir/rollback.env"
 rollback_armed=0
 printf 'release=%s\nimage=%s\nschema=%s\nchannel_mode=%s\nrollback=%s\n' "$release" "$release_image" "$schema" "$old_channel_mode" "$rollback_dir"

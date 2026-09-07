@@ -160,6 +160,69 @@ func applyVideoGenerationOptions(
 }
 
 func (a *AgentRuntime) generateVideo(ctx context.Context, run runRecord, prompt string) (toolResult, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return toolResult{}, errors.New("video prompt is required")
+	}
+	var enabled struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := a.integrationConfig(ctx, "image_policy", &enabled); err != nil || !enabled.Enabled {
+		return toolResult{}, errors.New("media generation is disabled")
+	}
+	enabled.Enabled = false
+	if err := a.integrationConfig(ctx, "grok_policy", &enabled); err != nil || !enabled.Enabled {
+		return toolResult{}, errors.New("Grok video generation is disabled")
+	}
+	var err error
+	prompt, err = a.effectiveMediaTaskPrompt(ctx, run, prompt)
+	if err != nil {
+		return toolResult{}, err
+	}
+	plan, err := a.prepareVisualGeneration(ctx, run, prompt, "video", 0)
+	if err != nil {
+		return toolResult{}, err
+	}
+	result, err := a.executeMediaQuality(ctx, run, mediaQualityRequest{MediaType: "video", Prompt: plan.UserPrompt,
+		Reference: plan.Reference, OperationID: plan.OperationID}, func(attemptCtx context.Context, attempt int, correction string) (toolResult, error) {
+		if err := a.validateVisualGeneration(attemptCtx, run, plan); err != nil {
+			return toolResult{}, err
+		}
+		attemptPlan := plan
+		if attempt > 0 {
+			var err error
+			attemptPlan, err = a.prepareVisualGeneration(attemptCtx, run, prompt, "video", attempt)
+			if err != nil {
+				return toolResult{}, err
+			}
+		}
+		if err := a.validateVisualGeneration(attemptCtx, run, attemptPlan); err != nil {
+			return toolResult{}, err
+		}
+		compiled, err := compileVisualGenerationPrompt(attemptPlan, correction)
+		if err != nil {
+			return toolResult{}, err
+		}
+		return a.generateVideoAttempt(attemptCtx, run, compiled, attemptPlan.Reference, attemptPlan.OperationID, attempt)
+	})
+	if err != nil {
+		return toolResult{}, err
+	}
+	if err := a.validateVisualGeneration(ctx, run, plan); err != nil {
+		return toolResult{}, err
+	}
+	return result, nil
+}
+
+type videoGenerationReceipt struct {
+	RequestID string      `json:"requestId"`
+	Phase     string      `json:"phase"`
+	Base      string      `json:"base"`
+	Model     string      `json:"model"`
+	Task      videoTask   `json:"task"`
+	Result    *toolResult `json:"result,omitempty"`
+}
+
+func (a *AgentRuntime) generateVideoAttempt(ctx context.Context, run runRecord, prompt, reference, operationID string, attempt int) (toolResult, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return toolResult{}, errors.New("video prompt is required")
@@ -214,17 +277,57 @@ func (a *AgentRuntime) generateVideo(ctx context.Context, run runRecord, prompt 
 		timeoutCancel()
 	}()
 
-	requestID := stableVideoRequestID(run)
+	requestID := stableVideoAttemptRequestID(run, operationID, attempt)
 	request := map[string]any{"prompt": fitVideoProviderPrompt(prompt)}
-	if reference := a.personaAvatarDataURI(videoContext, run.PersonaID, prompt, false); reference != "" {
+	if reference != "" {
 		request["reference_images"] = []map[string]string{{"url": reference}}
+	}
+	receipt := videoGenerationReceipt{RequestID: requestID, Phase: "pending"}
+	var receiptID string
+	if a.db != nil && a.taskGraphRunExists(run.ID) {
+		input := map[string]any{"requestId": requestID, "attempt": attempt}
+		encoded, _ := json.Marshal(input)
+		receiptID = taskStepID(run.ID, "tool", attempt, "media_generation:video", string(encoded))
+		found, err := a.loadMediaReceipt(videoContext, receiptID, &receipt)
+		if err != nil {
+			return toolResult{}, err
+		}
+		if !found {
+			receiptID, err = a.beginTaskStep(run.ID, "", "tool", "media_generation:video", attempt, input)
+			if err != nil {
+				return toolResult{}, err
+			}
+		}
+	}
+	if receipt.Result != nil {
+		return *receipt.Result, nil
+	}
+	if receipt.Phase == "creating" && receipt.Task.ID == "" {
+		return toolResult{}, errors.New("video creation outcome is uncertain; automatic resubmission is disabled")
+	}
+	if receipt.Phase == "failed" {
+		return toolResult{}, errors.New("video provider reported failure")
 	}
 	var base, credential string
 	var task videoTask
 	var lastErr error
 	var payload map[string]any
 	var err error
+	if receipt.Task.ID != "" {
+		for _, target := range targets {
+			if target.base == receipt.Base && target.model == receipt.Model {
+				base, credential, task = target.base, target.credential, receipt.Task
+				break
+			}
+		}
+		if base == "" {
+			return toolResult{}, errors.New("accepted video provider route is no longer enabled")
+		}
+	}
 	for _, target := range targets {
+		if task.ID != "" {
+			break
+		}
 		candidateRequest := make(map[string]any, len(request)+1)
 		for key, value := range request {
 			candidateRequest[key] = value
@@ -234,17 +337,31 @@ func (a *AgentRuntime) generateVideo(ctx context.Context, run runRecord, prompt 
 			lastErr = optionsErr
 			continue
 		}
+		receipt.Phase, receipt.Base, receipt.Model = "creating", target.base, target.model
+		if err = a.saveMediaReceipt(videoContext, receiptID, "running", receipt); err != nil {
+			return toolResult{}, err
+		}
 		payload, createErr := a.createVideoTask(videoContext, target.base+"/videos/generations", candidateRequest, requestID, target.credential)
 		if createErr != nil {
 			lastErr = createErr
+			if uncertainVideoCreateError(createErr) {
+				return toolResult{}, createErr
+			}
+			receipt.Phase = "rejected"
+			if err = a.saveMediaReceipt(videoContext, receiptID, "running", receipt); err != nil {
+				return toolResult{}, err
+			}
 			continue
 		}
 		task = normalizeVideoTask(payload)
 		if task.ID == "" {
-			lastErr = errors.New("video provider returned no task ID")
-			continue
+			return toolResult{}, errors.New("video provider returned no task ID; outcome is uncertain")
 		}
 		base, credential = target.base, target.credential
+		receipt.Phase, receipt.Task = "accepted", task
+		if err = a.saveMediaReceipt(videoContext, receiptID, "running", receipt); err != nil {
+			return toolResult{}, err
+		}
 		break
 	}
 	if task.ID == "" && lastErr != nil {
@@ -303,8 +420,16 @@ func (a *AgentRuntime) generateVideo(ctx context.Context, run runRecord, prompt 
 			})
 		}
 		task = next
+		receipt.Task = task
+		if err = a.saveMediaReceipt(videoContext, receiptID, "running", receipt); err != nil {
+			return toolResult{}, err
+		}
 	}
 	if task.Status == "failed" {
+		receipt.Phase = "failed"
+		if err = a.saveMediaReceipt(videoContext, receiptID, "running", receipt); err != nil {
+			return toolResult{}, err
+		}
 		return toolResult{}, errors.New("video provider reported failure")
 	}
 
@@ -327,7 +452,12 @@ func (a *AgentRuntime) generateVideo(ctx context.Context, run runRecord, prompt 
 		"kind": "video", "taskId": task.ID, "name": attachment.Name,
 	})
 	encoded, _ := json.Marshal(map[string]any{"ok": true, "result": "video_generated"})
-	return toolResult{Content: string(encoded), Attachments: []agentAttachment{attachment}}, nil
+	result := toolResult{Content: string(encoded), Attachments: []agentAttachment{attachment}}
+	receipt.Phase, receipt.Result = "completed", &result
+	if err = a.saveMediaReceipt(videoContext, receiptID, "succeeded", receipt); err != nil {
+		return toolResult{}, err
+	}
+	return result, nil
 }
 
 // emitMediaTaskProgress announces a media task exactly once per run, and only
@@ -394,17 +524,18 @@ func retryableVideoCreateError(err error) bool {
 	}
 	var statusError *videoHTTPError
 	if errors.As(err, &statusError) {
-		switch statusError.StatusCode {
-		case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly,
-			http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
-			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			return true
-		default:
-			return false
-		}
+		return statusError.StatusCode == http.StatusTooManyRequests
 	}
-	var networkError interface{ Temporary() bool }
-	return errors.As(err, &networkError) && networkError.Temporary()
+	return false
+}
+
+func uncertainVideoCreateError(err error) bool {
+	var response *videoHTTPError
+	if errors.As(err, &response) {
+		return response.StatusCode >= 500 || response.StatusCode == http.StatusRequestTimeout ||
+			response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusTooEarly
+	}
+	return true
 }
 
 func (a *AgentRuntime) activePersonaVideoPrompt(ctx context.Context, prompt string) string {
@@ -517,6 +648,12 @@ func stableVideoRequestID(run runRecord) string {
 		identity = strings.TrimSpace(run.ID)
 	}
 	sum := sha256.Sum256([]byte("erdai-video-v1:" + identity))
+	return "erdai-" + hex.EncodeToString(sum[:12])
+}
+
+func stableVideoAttemptRequestID(run runRecord, operationID string, attempt int) string {
+	identity := stableVideoRequestID(run) + ":" + operationID + fmt.Sprintf(":%d", attempt)
+	sum := sha256.Sum256([]byte(identity))
 	return "erdai-" + hex.EncodeToString(sum[:12])
 }
 

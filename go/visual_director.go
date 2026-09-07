@@ -39,16 +39,20 @@ func defaultImageVisualDirectorPolicy() imageVisualDirectorPolicy {
 func (a *AgentRuntime) imageVisualDirectorPolicy(ctx context.Context) imageVisualDirectorPolicy {
 	policy := defaultImageVisualDirectorPolicy()
 	var stored struct {
-		VisualDirectorEnabled *bool    `json:"visualDirectorEnabled"`
-		UseTimeContext        *bool    `json:"visualUseTimeContext"`
-		Timezone              string   `json:"visualTimezone"`
-		SelfieTypes           []string `json:"selfieTypes"`
+		VisualDirectorEnabled  *bool    `json:"visualDirectorEnabled"`
+		VisualVariationEnabled *bool    `json:"visualVariationEnabled"`
+		UseTimeContext         *bool    `json:"visualUseTimeContext"`
+		Timezone               string   `json:"visualTimezone"`
+		SelfieTypes            []string `json:"selfieTypes"`
 	}
 	if a == nil || a.integrationConfig(ctx, "image_policy", &stored) != nil {
 		return policy
 	}
 	if stored.VisualDirectorEnabled != nil {
 		policy.Enabled = *stored.VisualDirectorEnabled
+	}
+	if stored.VisualVariationEnabled != nil && !*stored.VisualVariationEnabled {
+		policy.Enabled = false
 	}
 	if stored.UseTimeContext != nil {
 		policy.UseTimeContext = *stored.UseTimeContext
@@ -164,9 +168,9 @@ func videoDirectorPrompt(prompt string, now time.Time, seed uint64, policy image
 	if videoPurpleRequested(prompt) {
 		parts = append(parts, "颜色优先级=用户明确指定紫色，允许使用紫色但仍更换款式，不复制服装")
 	} else if videoOutfitChangeRequested(normalized) {
-		parts = append(parts, "换装优先级=必须更换颜色和款式，不得沿用参考图或上一条成片的紫色衣服、同一套衣服")
+		parts = append(parts, "换装优先级=更换颜色和款式，不得把参考图或上一条成片当作固定制服；未指定部分重新随机")
 	} else {
-		parts = append(parts, "服装变化=本次使用新的非紫色造型，不把主参考图的衣服当作固定制服")
+		parts = append(parts, "服装变化=本次重新随机未指定的颜色和款式，不把主参考图的衣服当作固定制服；没有固定禁用色")
 	}
 	if videoHasAny(normalized, "性感", "撩人", "妩媚", "辣一点", "魅惑") {
 		parts = append(parts, "性感表达=明确成年，靠合身剪裁、姿态、材质和镜头完成，保持非裸露、非色情")

@@ -8,6 +8,7 @@ platform=linux/amd64
 image=erdai-agent:$release
 embedding_image=${ERDAI_EMBEDDING_IMAGE:-ghcr.io/ggml-org/llama.cpp@sha256:046ad33efae5c4ec3e19be344778a80c2bb402d3f10b464514c5fe99eab94d19}
 browser_image=erdai-monitor-browser:$release
+media_check_image=erdai-media-check:$release
 browser_base_image=${ERDAI_MONITOR_BROWSER_BASE_IMAGE:-docker.io/chromedp/headless-shell@sha256:5f877a2a559dea1a99fb750da695d28a020cdd49db660aead6c78a46e3c7dd50}
 
 case "$release" in
@@ -33,7 +34,7 @@ test ! -e "$archive"
 command -v docker >/dev/null
 command -v sha256sum >/dev/null
 if git -C "$root" ls-files --error-unmatch Dockerfile >/dev/null 2>&1; then
-  test -z "$(git -C "$root" status --porcelain -- .github Dockerfile compose.production.yml monitor-browser runtime.env.example go scripts)" || {
+  test -z "$(git -C "$root" status --porcelain -- .github Dockerfile compose.production.yml monitor-browser media-check runtime.env.example go scripts)" || {
     echo "release source has uncommitted release-pipeline changes" >&2
     exit 1
   }
@@ -45,7 +46,7 @@ fi
 if [ -z "$source_revision" ]; then
   source_revision=$(tar -cf - --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
     --exclude=go/webui/node_modules --exclude=go/webui/output --exclude=go/webui/.vite \
-    -C "$root" Dockerfile compose.production.yml monitor-browser runtime.env.example go runtime scripts | sha256sum | awk '{print "tree-" $1}')
+    -C "$root" Dockerfile compose.production.yml monitor-browser media-check runtime.env.example go runtime scripts | sha256sum | awk '{print "tree-" $1}')
 fi
 
 docker build --platform "$platform" --target verify --progress=plain "$root"
@@ -58,6 +59,10 @@ docker build --platform "$platform" --progress=plain \
   --build-arg "ERDAI_RELEASE_VERSION=$release" \
   --build-arg "ERDAI_SOURCE_REVISION=$source_revision" \
   --tag "$browser_image" "$root/monitor-browser"
+docker build --platform "$platform" --progress=plain \
+  --build-arg "ERDAI_RELEASE_VERSION=$release" \
+  --build-arg "ERDAI_SOURCE_REVISION=$source_revision" \
+  --tag "$media_check_image" "$root/media-check"
 docker pull "$embedding_image"
 
 install -d -m 755 "$bundle/app/scripts"
@@ -69,7 +74,7 @@ chmod 755 "$bundle/app/scripts/"*.sh
 
 docker image inspect -f '{{.Id}}' "$image" > "$bundle/core-image-id"
 docker image inspect -f '{{.Id}}' "$embedding_image" > "$bundle/embedding-image-id"
-docker save --output "$bundle/images.tar" "$image" "$embedding_image" "$browser_image"
+docker save --output "$bundle/images.tar" "$image" "$embedding_image" "$browser_image" "$media_check_image"
 tar -czf "$bundle/app.tar.gz" --owner=0 --group=0 --numeric-owner -C "$bundle/app" .
 rm -rf "$bundle/app"
 
@@ -80,13 +85,15 @@ CORE_IMAGE_ID=$(cat "$bundle/core-image-id")
 EMBEDDING_IMAGE=$embedding_image
 EMBEDDING_IMAGE_ID=$(cat "$bundle/embedding-image-id")
 BROWSER_IMAGE=$browser_image
+MEDIA_CHECK_IMAGE=$media_check_image
 SCHEMA_VERSION=$schema
 PLATFORM=$platform
 SOURCE_REVISION=$source_revision
 CORE_MEMORY_LIMIT_BYTES=536870912
 EMBEDDING_MEMORY_LIMIT_BYTES=469762048
 BROWSER_MEMORY_LIMIT_BYTES=536870912
-MEMORY_LIMIT_TOTAL_BYTES=1543503872
+MEDIA_CHECK_MEMORY_LIMIT_BYTES=134217728
+MEMORY_LIMIT_TOTAL_BYTES=1677721600
 EOF
 rm -f "$bundle/core-image-id" "$bundle/embedding-image-id"
 (cd "$bundle" && sha256sum manifest.env images.tar app.tar.gz > SHA256SUMS)

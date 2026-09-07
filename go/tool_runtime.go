@@ -1303,17 +1303,15 @@ func (a *AgentRuntime) executeBuiltIn(ctx context.Context, run runRecord, tool r
 		return a.grokSearchForRun(ctx, run, stringArgument(arguments, "query"))
 	case "grok_generate_image":
 		return a.executeQuotaMedia(ctx, run, mediaKindImage, func() (toolResult, error) {
-			prompt := a.personaImagePromptForRun(ctx, run, stringArgument(arguments, "prompt"))
-			return a.generateImageForPersona(ctx, prompt, true, run.PersonaID)
+			return a.generateImageForRun(ctx, run, stringArgument(arguments, "prompt"), true)
 		})
 	case "generate_image":
 		return a.executeQuotaMedia(ctx, run, mediaKindImage, func() (toolResult, error) {
-			prompt := a.personaImagePromptForRun(ctx, run, stringArgument(arguments, "prompt"))
-			return a.generateImageForPersona(ctx, prompt, false, run.PersonaID)
+			return a.generateImageForRun(ctx, run, stringArgument(arguments, "prompt"), false)
 		})
 	case "grok_generate_video":
 		return a.executeQuotaMedia(ctx, run, mediaKindVideo, func() (toolResult, error) {
-			return a.generateVideo(ctx, run, a.personaVideoPromptForRun(ctx, run, stringArgument(arguments, "prompt")))
+			return a.generateVideo(ctx, run, stringArgument(arguments, "prompt"))
 		})
 	case "ops_status", "query_ops_status":
 		return a.queryOPS(ctx, "")
@@ -2179,14 +2177,18 @@ func (a *AgentRuntime) generateImage(ctx context.Context, prompt string, grok bo
 
 func (a *AgentRuntime) generateImageForPersona(ctx context.Context, prompt string, grok bool, personaID string) (toolResult, error) {
 	reference := ""
-	if grok {
-		reference = a.personaAvatarDataURI(ctx, personaID, prompt, true)
+	if nativeSelfImageRequestPattern.MatchString(prompt) {
+		snapshot, err := a.resolveVisualAppearance(ctx, runRecord{PersonaID: personaID}, prompt, "image")
+		if err != nil {
+			return toolResult{}, err
+		}
+		reference = snapshot.Reference
+		if reference != "" {
+			grok = true
+		}
 	}
 	result, err := a.generateImageOnce(ctx, prompt, grok, reference)
-	if err != nil && grok && reference != "" {
-		result, err = a.generateImageOnce(ctx, prompt, true, "")
-	}
-	if err == nil || !grok || ctx.Err() != nil {
+	if err == nil || !grok || ctx.Err() != nil || reference != "" || !imageProviderRejectedWithoutExecution(err) {
 		return result, err
 	}
 	fallback, fallbackErr := a.generateImageOnce(ctx, prompt, false, "")
@@ -2195,6 +2197,59 @@ func (a *AgentRuntime) generateImageForPersona(ctx context.Context, prompt strin
 	}
 	return toolResult{}, fmt.Errorf("Grok image generation failed: %w; image fallback failed: %v", err, fallbackErr)
 }
+
+func (a *AgentRuntime) generateImageForRun(ctx context.Context, run runRecord, prompt string, grok bool) (toolResult, error) {
+	var policy struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := a.integrationConfig(ctx, "image_policy", &policy); err != nil || !policy.Enabled {
+		return toolResult{}, errors.New("image generation is disabled")
+	}
+	prompt, err := a.effectiveMediaTaskPrompt(ctx, run, prompt)
+	if err != nil {
+		return toolResult{}, err
+	}
+	initial, err := a.prepareVisualGeneration(ctx, run, prompt, "image", 0)
+	if err != nil {
+		return toolResult{}, err
+	}
+	result, err := a.executeMediaQuality(ctx, run, mediaQualityRequest{
+		MediaType: "image", Prompt: initial.UserPrompt, Reference: initial.Reference, OperationID: initial.OperationID,
+	}, func(attemptContext context.Context, attempt int, correction string) (toolResult, error) {
+		if err := a.validateVisualGeneration(attemptContext, run, initial); err != nil {
+			return toolResult{}, err
+		}
+		plan := initial
+		if attempt != 0 {
+			var prepareErr error
+			plan, prepareErr = a.prepareVisualGeneration(attemptContext, run, prompt, "image", attempt)
+			if prepareErr != nil {
+				return toolResult{}, prepareErr
+			}
+		}
+		compiled, compileErr := compileVisualGenerationPrompt(plan, correction)
+		if compileErr != nil {
+			return toolResult{}, compileErr
+		}
+		if validateErr := a.validateVisualGeneration(attemptContext, run, plan); validateErr != nil {
+			return toolResult{}, validateErr
+		}
+		if plan.Reference != "" {
+			guardedContext := context.WithValue(attemptContext, visualGenerationGuardKey{}, func() error { return a.validateVisualGeneration(attemptContext, run, plan) })
+			return a.generateImageOnce(guardedContext, compiled, true, plan.Reference)
+		}
+		return a.generateImageForPersona(attemptContext, compiled, grok, run.PersonaID)
+	})
+	if err != nil {
+		return result, err
+	}
+	if err = a.validateVisualGeneration(ctx, run, initial); err != nil {
+		return toolResult{}, err
+	}
+	return result, nil
+}
+
+type visualGenerationGuardKey struct{}
 
 func personaImagePrompt(prompt string, persona *nativeActivePersona) string {
 	now := time.Now()
@@ -2357,6 +2412,8 @@ func (a *AgentRuntime) personaAvatarDataURI(ctx context.Context, personaID, prom
 		if a.configStore.personaHasAppearanceLibrary(persona.ID) {
 			return ""
 		}
+	} else {
+		return ""
 	}
 	return strings.TrimSpace(persona.AvatarDataURI)
 }
@@ -2399,6 +2456,9 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 			return toolResult{}, err
 		}
 		for _, candidate := range candidates {
+			if strings.TrimSpace(reference) != "" && !referenceImageCandidate(candidate) {
+				continue
+			}
 			model := candidate.Model
 			if strings.TrimSpace(reference) != "" && strings.TrimSpace(policy.ImageEditModel) != "" {
 				model = policy.ImageEditModel
@@ -2412,7 +2472,7 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 				})
 			}
 		}
-		if len(targets) == 0 {
+		if len(targets) == 0 && (len(policy.MediaConnectionIDs) == 0 || strings.TrimSpace(reference) == "") {
 			model := policy.ImageModel
 			if strings.TrimSpace(reference) != "" && strings.TrimSpace(policy.ImageEditModel) != "" {
 				model = policy.ImageEditModel
@@ -2438,6 +2498,11 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 	}
 	var lastErr error
 	for _, target := range targets {
+		if guard, ok := ctx.Value(visualGenerationGuardKey{}).(func() error); ok {
+			if err := guard(); err != nil {
+				return toolResult{}, err
+			}
+		}
 		if target.key == "" {
 			lastErr = errors.New("image generation is not configured")
 			continue
@@ -2458,7 +2523,7 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 			payload["aspect_ratio"] = aspectRatio
 		}
 		endpoint := base + "/images/generations"
-		if grok && strings.TrimSpace(reference) != "" {
+		if strings.TrimSpace(reference) != "" {
 			endpoint = base + "/images/edits"
 			payload["image"] = map[string]string{"url": strings.TrimSpace(reference)}
 		}
@@ -2466,13 +2531,15 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 		err = a.postProviderJSON(attemptContext, endpoint, target.key, payload, &response)
 		if err != nil {
 			cancelAttempt()
+			if !imageProviderRejectedWithoutExecution(err) {
+				return toolResult{}, err
+			}
 			lastErr = err
 			continue
 		}
 		if len(response.Data) == 0 {
 			cancelAttempt()
-			lastErr = errors.New("image provider returned no image")
-			continue
+			return toolResult{}, errors.New("image provider returned no image; execution status is uncertain")
 		}
 		var image []byte
 		if response.Data[0].Base64 != "" {
@@ -2482,8 +2549,7 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 		}
 		cancelAttempt()
 		if err != nil {
-			lastErr = err
-			continue
+			return toolResult{}, err
 		}
 		attachment, err := a.storeImage(image)
 		if err != nil {
@@ -2498,7 +2564,40 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 	return toolResult{}, lastErr
 }
 
+func referenceImageCandidate(candidate mediaProviderCandidate) bool {
+	provider := strings.ToLower(strings.TrimSpace(candidate.Connection.Provider))
+	model := strings.ToLower(strings.TrimSpace(candidate.Model))
+	// This adapter speaks the existing Grok JSON reference-edit contract. A
+	// generic image-generation route is not proof that reference edits work.
+	return provider == "grok2api" || provider == "grok" || strings.HasPrefix(model, "grok-imagine-image")
+}
+
+func imageProviderRejectedWithoutExecution(err error) bool {
+	var response *providerHTTPError
+	if !errors.As(err, &response) {
+		return false
+	}
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
 func imageAspectRatioForPrompt(prompt string) string {
+	normalized := strings.ToLower(prompt)
+	for _, ratio := range []string{"16:9", "1:1", "4:3", "3:4", "9:16"} {
+		if strings.Contains(normalized, ratio) {
+			return ratio
+		}
+	}
+	if videoHasAny(normalized, "横屏", "横版", "landscape") {
+		return "16:9"
+	}
+	if videoHasAny(normalized, "正方形", "square") {
+		return "1:1"
+	}
 	if nativeSelfImageRequestPattern.MatchString(strings.TrimSpace(prompt)) {
 		return "9:16"
 	}

@@ -46,8 +46,8 @@ func TestPersonaVideoPromptHonorsOutfitAndStyleFeedback(t *testing.T) {
 		"至少更换场景与服装颜色或款式",
 		"外观只按当前选中的外观库和参考图确定",
 		"视频类型=韩流/K-pop舞蹈短视频",
-		"换装优先级=必须更换颜色和款式",
-		"不得沿用参考图或上一条成片的紫色衣服、同一套衣服",
+		"换装优先级=更换颜色和款式",
+		"不得把参考图或上一条成片当作固定制服；未指定部分重新随机",
 		"用户场景要求：换套别的颜色的，老是紫色，来个韩流风的跳舞视频",
 	} {
 		if !strings.Contains(prompt, expected) {
@@ -84,7 +84,7 @@ func TestPersonaVideoPromptAddsNonExplicitSexyVariation(t *testing.T) {
 	}
 	prompt := personaVideoPromptAt("发个你穿的性感一点的跳舞视频给我", persona,
 		time.Date(2026, time.August, 31, 16, 0, 0, 0, time.UTC), defaultImageVisualDirectorPolicy(), 1)
-	for _, expected := range []string{"服装=", "性感表达=明确成年", "非裸露、非色情", "服装变化=本次使用新的非紫色造型"} {
+	for _, expected := range []string{"服装=", "性感表达=明确成年", "非裸露、非色情", "服装变化=本次重新随机未指定的颜色和款式", "没有固定禁用色"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("sexy video prompt missing %q: %s", expected, prompt)
 		}

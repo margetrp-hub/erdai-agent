@@ -41,6 +41,9 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ViewId } from '../components/AppShell';
 import { Button, InfoDialog, Panel, PanelHeading, StatusDot } from '../components/ui';
 import { VisualReferenceLibrary } from '../components/VisualReferenceLibrary';
+import { VisualHistory } from '../components/VisualHistory';
+import { TaskDetailDialog } from '../components/TaskDetailDialog';
+import { OptimizationControls } from '../components/OptimizationControls';
 import {
   apiRequest,
   collectionItems,
@@ -743,6 +746,8 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
 }
 
 function OperationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
+	const [taskRunId, setTaskRunId] = useState<string | null>(null);
+	const quality = asRecord(asRecord(data.observability).quality);
   const runs = collectionItems<JsonMap>(data.runs);
   const audit = collectionItems<JsonMap>(data.audit);
   const shadow = collectionItems<JsonMap>(data.shadow);
@@ -765,15 +770,23 @@ function OperationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext 
       ]} />
       {modelCalls > 0 && !pricingComplete ? <p className="module-notice module-notice-inline"><CircleAlert size={15} />24 小时内有 {number(usage.unpricedCalls)} 次模型调用缺少价格，Token 统计有效，成本暂不作为结算依据。</p> : null}
       <SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'runs', label: '最近运行', count: runs.length }, { id: 'audit', label: '审计事件', count: audit.length }, { id: 'shadow', label: '影子交互', count: shadow.length }]} />
+      {active === 'runs' ? <div className="quality-summary" aria-label="24 小时任务质量">
+        <div><span>已生成 / 已投递</span><strong>{number(quality.generatedRuns)} / {number(quality.deliveredRuns)}</strong></div>
+        <div><span>质检通过 / 未验证</span><strong>{number(quality.passed)} / {number(quality.unverified)}</strong></div>
+        <div><span>用户明确认可</span><strong>{number(quality.accepted)}</strong></div>
+        <div><span>纠正 / 重做</span><strong>{number(quality.corrections)} / {number(quality.redos)}</strong></div>
+      </div> : null}
+      {quality.sampleLimited ? <p className="module-notice" role="status">质量统计超过单次读取上限，仅展示最近 10,000 条记录。</p> : null}
       <Panel accent="cyan">
         <PanelHeading eyebrow="OPERATIONS" title={active === 'runs' ? '运行记录' : active === 'audit' ? '审计事件' : '影子交互'} description="来自 Core 的只读运行轨迹。" />
         {active === 'runs' ? (
           <div className="module-record-list">
-            {runs.map((run) => <RecordRow key={itemId(run)} item={run} title={`${text(run.state)} · ${text(run.transport)}`} icon="activity" detail={text(run.routeReason, '未记录路由原因')} meta={[text(run.createdAt), `角色 ${text(run.personaId, '-')}`, `${number(run.totalDurationMs)} ms`, text(run.selectedModel, '模型未记录')]} actions={<Button variant="ghost" icon={<History size={14} />} onClick={async () => { try { const timeline = await apiRequest<unknown>(`/api/v1/runs/${encodeURIComponent(itemId(run))}`); ctx.inspect(`运行时间线 · ${itemId(run)}`, '按接收、上下文、路由、模型、质检、Outbox 和投递顺序记录。', timeline); } catch (cause) { window.alert(cause instanceof Error ? cause.message : '运行时间线读取失败'); } }}>时间线</Button>} />)}
+            {runs.map((run) => <RecordRow key={itemId(run)} item={run} title={`${text(run.state)} · ${text(run.transport)}`} icon="activity" detail={text(run.routeReason, '未记录路由原因')} meta={[text(run.createdAt), `角色 ${text(run.personaId, '-')}`, `${number(run.totalDurationMs)} ms`, text(run.selectedModel, '模型未记录')]} actions={<><Button variant="ghost" icon={<ListChecks size={14} />} onClick={() => setTaskRunId(itemId(run))}>任务详情</Button><Button variant="ghost" icon={<History size={14} />} onClick={async () => { try { const timeline = await apiRequest<unknown>(`/api/v1/runs/${encodeURIComponent(itemId(run))}`); ctx.inspect(`运行时间线 · ${itemId(run)}`, '按接收、上下文、路由、模型、质检、Outbox 和投递顺序记录。', timeline); } catch (cause) { window.alert(cause instanceof Error ? cause.message : '运行时间线读取失败'); } }}>时间线</Button></>} />)}
             {!runs.length ? <EmptyState text="暂无运行记录。" /> : null}
           </div>
         ) : <RecordTable items={active === 'audit' ? audit : shadow} columns={active === 'audit' ? [{ key: 'createdAt', label: '时间' }, { key: 'actor', label: '操作者' }, { key: 'action', label: '动作' }, { key: 'targetType', label: '目标' }] : [{ key: 'createdAt', label: '时间' }, { key: 'transport', label: '通道' }, { key: 'lane', label: 'Lane' }, { key: 'selectedEndpointId', label: '模型端点' }, { key: 'messageLength', label: '输入长度' }]} empty={active === 'audit' ? '暂无审计记录。' : '暂无影子交互。'} />}
       </Panel>
+      <TaskDetailDialog runId={taskRunId} onClose={() => setTaskRunId(null)} onChanged={ctx.reload} />
     </ModuleShell>
   );
 }
@@ -914,6 +927,7 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
                 : '确定删除这份外观参考吗？',
             )}
           />
+          <VisualHistory libraryId={selectedAppearanceLibraryId} />
         </>
       ) : null}
       {active === 'bindings' ? <Panel accent="cyan"><PanelHeading eyebrow="PERSONA BINDINGS" title="会话绑定" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增角色绑定', { id: crypto.randomUUID(), personaId: text(people[0]?.id, ''), transport: '*', transportInstance: '*', conversationRef: '*', priority: 100, enabled: true }, '/api/v1/persona-bindings', 'POST')}>新增绑定</Button>} /><div className="module-record-list">{bindings.map((binding) => <RecordRow key={itemId(binding)} item={binding} title={`${text(binding.transport)} / ${text(binding.conversationRef)}`} icon="link" detail={`角色 ${text(people.find((item) => text(item.id) === text(binding.personaId))?.name, text(binding.personaId))}`} meta={[`实例 ${text(binding.transportInstance, '*')}`, `优先级 ${text(binding.priority)}`, text(binding.updatedAt, '未更新')]} actions={<><Button variant="ghost" icon={<Pencil size={14} />} onClick={() => ctx.openEditor('编辑角色绑定', binding, `/api/v1/persona-bindings/${encodeURIComponent(itemId(binding))}`)}>编辑</Button><Button variant="ghost" onClick={() => ctx.toggle(`/api/v1/persona-bindings/${encodeURIComponent(itemId(binding))}`, enabled(binding.enabled))}>{enabled(binding.enabled) ? '停用' : '启用'}</Button><Button variant="ghost" icon={<Trash2 size={14} />} onClick={() => ctx.remove(`/api/v1/persona-bindings/${encodeURIComponent(itemId(binding))}`, '确定删除这个角色绑定？')} /></>} />)}</div>{!bindings.length ? <EmptyState text="暂无会话绑定。" /> : null}</Panel> : null}
@@ -1187,10 +1201,11 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
       ) : active === 'credentials' ? (
         <CredentialPanel credentials={credentials} credentialFileConfigured={enabled(credentialConfig.credentialFileConfigured)} onReload={ctx.reload} />
       ) : active === 'policies' ? (
+        <><OptimizationControls policies={integrations} onReload={ctx.reload} />
         <div className="module-policy-grid">
           {policies.map((policy) => <PolicyPanel key={itemId(policy)} title={text(policy.displayName, text(policy.id))} description={text(policy.description, 'Core 策略模块')} value={policy.config} endpointPath={endpoint('/api/v1/integrations', itemId(policy))} accent="violet" onEdit={ctx.openEditor} />)}
           {!policies.length ? <EmptyState text="暂无可展示的接入策略。" /> : null}
-        </div>
+        </div></>
       ) : (
         <Panel accent="cyan">
           <PanelHeading eyebrow="PLATFORM CATALOG" title="平台目录" description="目录提供连接器类型和默认参数，不会直接启用平台。" />

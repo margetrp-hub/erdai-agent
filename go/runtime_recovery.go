@@ -35,7 +35,8 @@ func recoverInterruptedRuntime(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE agent_task_steps SET status = 'pending', updated_at = ?
-		WHERE status = 'running'`, now); err != nil {
+		WHERE status = 'running' AND name NOT IN ('generate_image','grok_generate_image','grok_generate_video')
+		AND name NOT LIKE 'media_quality:%' AND name NOT LIKE 'media_generation:%'`, now); err != nil {
 		return err
 	}
 	return tx.Commit()

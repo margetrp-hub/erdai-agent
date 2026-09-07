@@ -414,6 +414,14 @@ OPS 查询只能通过显式命令触发，例如：
 
 活动服务配置 `ERDAI_POINTS_BASE_URL`、相同的 `ERDAI_POINTS_READ_TOKEN`、`ERDAI_POINTS_IDENTITY_INSTANCE`（必须与已核验身份的来源实例一致）。凭据只存服务端，不下发浏览器。`LOTTERY_PREVIEW_ENABLED=1` 只用于隔离预览环境；生产保持关闭。
 
+站点积分桥：受保护环境变量 `ERDAI_POINTS_SITE_CLIENTS` 为 JSON 数组，每项包含独立的 `token`（32–256 字符）、`transport`（`newapi`/`sub2api`）和 `transportInstance`（HTTPS 站点 origin）。每个凭据只能访问配置绑定的站点；不能复用管理、运行时或只读凭据。活动服务验证主站真实登录会话后，用 `X-ErDai-Points-Token` 转接以下接口，浏览器不能提交身份、余额或奖励金额：
+
+- `GET /points-bridge/v1/site/account?senderRef=...&limit=20&offset=0`：余额、北京时间签到状态、奖励分值和脱敏流水；分页上限 50，未开通返回 409 `points_account_required`。
+- `POST /points-bridge/v1/site/account`，正文 `{"senderRef":"123"}`：明确开通零余额账户，重复开通返回原账户；已有核验身份沿用原账户，不自动合并 QQ 或其他站点。
+- `POST /points-bridge/v1/site/checkin`，正文同上：沿用北京时间每个账户每天一次的原子入账规则；已关联 QQ 身份共享余额和签到资格。签到开关与分值沿用 `affiliate_policy`。
+
+站点凭据不能访问管理、账户合并、订单、抽奖或兑换接口。游戏服务配置对应的 `ERDAI_POINTS_SITE_TOKEN`，通过 `/api/points/account` 与 `/api/points/checkin` 服务当前登录用户；写请求必须来自允许的站点 Origin 并使用 JSON。旧浏览器演示积分不导入正式账本。站点登录仅证明站点身份，QQ 与邀请归属仍须按上述管理员核验流程关联。
+
 ## 14. 19 个原生 Go 连接器
 
 当前连接器目录：

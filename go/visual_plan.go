@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -235,6 +236,13 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 	plan.Variables = map[string]string{}
 	if snapshot.AppearanceID != "" {
 		plan.Variables = allocateVisualVariables(prompt, now, plan.Seed, a.imageVisualDirectorPolicy(ctx), snapshot.OutfitLength, history)
+	}
+	if persistent && len(plan.Variables) > 0 && visualLifestyleEnabled(prompt) {
+		previous, continuityErr := a.continuingVisualPlan(ctx, run, plan, now)
+		if continuityErr != nil {
+			return plan, continuityErr
+		}
+		applyVisualContinuity(&plan, previous)
 	}
 	plan.Prompt, err = compileVisualGenerationPrompt(plan, "")
 	if err != nil {
@@ -521,9 +529,10 @@ func visualCameraChoice(prompt string, seed *uint64, configured []string) string
 }
 
 func visualSceneSpecified(prompt string) bool {
-	markers := []string{"咖啡店", "书店", "街边", "街角", "室内", "户外", "公园", "海边", "家里", "卧室", "舞蹈室", "练习室", "舞台", "阳台", "窗边", "楼梯", "办公室", "工作室", "教室", "厨房", "浴室", "客厅", "书房", "露台", "河边", "沙滩", "森林", "山顶", "操场", "stadium", "beach", "bedroom", "indoors", "outdoors", "studio", "park"}
+	markers := []string{"咖啡店", "书店", "街边", "街角", "室内", "户外", "公园", "海边", "家里", "卧室", "舞蹈室", "练习室", "舞台", "阳台", "窗边", "楼梯", "办公室", "工作室", "教室", "厨房", "浴室", "客厅", "书房", "露台", "河边", "沙滩", "森林", "山顶", "操场", "桌边", "书桌", "沙发", "玄关", "stadium", "beach", "bedroom", "indoors", "outdoors", "studio", "park", "desk", "sofa"}
 	for _, clause := range visualConstraintClauses(prompt) {
-		if visualClauseNegated(clause) {
+		clause = visualRoleLocationClause(clause)
+		if clause == "" || visualClauseNegated(clause) {
 			continue
 		}
 		for _, marker := range markers {
@@ -533,6 +542,10 @@ func visualSceneSpecified(prompt string) bool {
 		}
 	}
 	return false
+}
+
+func visualPlanOutfitSpecified(prompt string) bool {
+	return videoHasAny(normalizeVisualPrompt(prompt), "裙", "裤", "衬衫", "上衣", "夹克", "外套", "连体", "针织", "吊带", "长款", "短款", "衣服", "换装", "换套", "换一套", "t恤", "dress", "jacket", "shirt", "pants", "skirt", "outfit")
 }
 
 func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy imageVisualDirectorPolicy, outfitLength string, history []visualGenerationPlan) map[string]string {
@@ -563,6 +576,10 @@ func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy i
 	if len(types) == 0 {
 		types = defaultSelfieTypes
 	}
+	lifestyle := visualLifestyleEnabled(prompt)
+	if lifestyle && slices.Equal(types, defaultSelfieTypes) {
+		types = []string{"近景自拍", "半身生活照"}
+	}
 	photoType := visualCameraChoice(prompt, &seed, types)
 	variables["camera"] = photoType
 	scenes := []string{"明亮玄关", "书店", "展览空间", "商场露台", "树影街边", "河畔步道", "咖啡店外摆", "城市街角", "公园步道", "室内窗边"}
@@ -574,9 +591,18 @@ func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy i
 		outfits = []string{"衬衫配长裤", "针织上衣配长裙", "合身长款连衣裙", "轻薄外套配长裤"}
 	}
 	sceneSpecified := visualSceneSpecified(prompt)
-	outfitSpecified := videoHasAny(normalizeVisualPrompt(prompt), "裙", "裤", "衬衫", "上衣", "夹克", "外套", "连体", "针织", "吊带", "长款", "短款", "dress", "jacket", "shirt", "pants", "skirt")
+	outfitSpecified := visualPlanOutfitSpecified(prompt)
 	scene, outfit := visualChoice(&seed, scenes), visualChoice(&seed, outfits)
-	if !sceneSpecified && !outfitSpecified && len(history) > 0 {
+	var life map[string]string
+	if lifestyle {
+		previousScene := ""
+		if len(history) > 0 {
+			previousScene = history[0].Variables["scene"]
+		}
+		life = visualLifestyleVariables(prompt, local, seed, outfitLength, previousScene)
+		scene, outfit = life["scene"], life["outfit"]
+	}
+	if !lifestyle && !sceneSpecified && !outfitSpecified && len(history) > 0 {
 		previous := history[0].Variables
 		if scene == previous["scene"] && outfit == previous["outfit"] {
 			for _, candidate := range scenes {
@@ -597,11 +623,41 @@ func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy i
 	variables["makeup"] = visualChoice(&seed, []string{"清透蜜桃淡妆", "自然通勤淡妆", "柔粉水光淡妆", "精致外出淡妆"})
 	variables["action"] = visualAction(photoType, seed)
 	variables["mood"] = visualMood(seed / 17)
+	if lifestyle {
+		for _, key := range []string{"makeup", "action", "mood", "light", "activity"} {
+			variables[key] = life[key]
+		}
+		if sceneSpecified {
+			variables["action"] = "在用户指定地点自然停下手头的事看向手机，不添加冲突的场地或道具"
+			variables["activity"] = "接续本次明确的角色活动；未说明时只安排一个与指定地点相符的日常小动作"
+			variables["light"] = "按用户指定地点和时间使用现有环境光，不强加窗光、雨雪或棚灯"
+		}
+		if strings.Contains(photoType, "全身") || strings.Contains(photoType, "穿搭") || strings.Contains(photoType, "镜面") {
+			variables["action"] = "按指定取景保留完整身体、穿搭或镜面关系，姿势随本次生活片段自然调整"
+		}
+		constraints := visualConstraintSubjects(prompt)
+		if !sceneSpecified && visualSceneSpecified(constraints) {
+			variables["scene"] = "在用户允许的普通日常环境随拍，不补充被禁止的地点"
+			variables["action"] = "自然看向手机，不添加依赖特定场地的动作"
+			variables["activity"] = "当前允许环境里的短暂休息，不补充被禁止的活动"
+			variables["light"] = "当前允许环境的现有光线"
+		}
+		if !visualLifestyleActionSpecified(prompt) && visualLifestyleActionSpecified(constraints) {
+			variables["action"] = "按用户明确动作及否定约束，不补充被禁止的动作"
+			variables["activity"] = "保持自然停顿，不安排额外活动或道具"
+			if !sceneSpecified {
+				variables["scene"] = "与当前允许动作相符的普通日常环境"
+			}
+		}
+	}
 	if videoHasAny(normalizeVisualPrompt(prompt), "妆", "素颜", "makeup") {
 		variables["makeup"] = "按用户明确妆容；未指定细节随机变化"
 	}
-	if videoHasAny(normalizeVisualPrompt(prompt), "跳舞", "舞蹈", "跑", "走", "站", "坐", "回头", "举", "拿", "手势", "dance", "walk", "run", "pose") {
+	if visualLifestyleActionSpecified(prompt) {
 		variables["action"] = "按用户明确动作；未指定细节随机变化"
+		if lifestyle {
+			variables["activity"] = "只延续本次明确的角色动作，不额外安排冲突的日常活动或道具"
+		}
 	}
 	if videoHasAny(normalizeVisualPrompt(prompt), "笑", "哭", "开心", "难过", "生气", "表情", "smile", "expression") {
 		variables["mood"] = "按用户明确神态；未指定细节随机变化"
@@ -638,9 +694,12 @@ func compileVisualGenerationPrompt(plan visualGenerationPlan, correction string)
 	if plan.OutfitLength != "" {
 		parts = append(parts, "用户未指定长度时外观库默认服装长度="+plan.OutfitLength+"；明确长度要求优先。")
 	}
+	if plan.AppearanceID != "" && visualLifestyleEnabled(plan.UserPrompt) {
+		parts = append(parts, visualLifestyleInstruction(plan.MediaType))
+	}
 	if len(plan.Variables) > 0 {
 		variables := []string{}
-		for _, key := range []string{"primaryColor", "outfit", "scene", "camera", "makeup", "action", "mood", "time", "season", "variationReason"} {
+		for _, key := range []string{"primaryColor", "outfit", "scene", "camera", "activity", "makeup", "action", "mood", "light", "time", "season", "continuity", "variationReason"} {
 			if value := plan.Variables[key]; value != "" {
 				variables = append(variables, key+"="+value)
 			}

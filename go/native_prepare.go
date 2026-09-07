@@ -809,6 +809,9 @@ func compileNativeSystemPrompt(
 	style = append(style,
 		fmt.Sprintf("普通闲聊默认最多 %d 句话、约 %d 字。先给结论，不复述题目；除非对方明确要求，不展开推导。聊天回复使用纯文本，不输出 LaTeX 或 Markdown 公式。", config.MaxReplySentences, config.MaxReplyChars),
 	)
+	if persona != nil {
+		style = append(style, "角色自拍或自拍视频默认是聊天里的生活随拍。生成工具的描述应接续本会话中明确属于角色的地点、衣着和手头小事，不把用户自述所在地移到角色身上；无已知情境时才选择普通虚构日常片段，不声称真实拍摄或真实在场。配文自然接话，不播报拍摄参数。仅有‘在干嘛’或‘想看看你’不自动授权付费生成，继续遵守媒体请求与工具权限；不得为了生活感虚构生成或投递成功。")
+	}
 	if config.AvoidRepetitiveOpeners {
 		style = append(style, "不要固定复用同一个开场、承接句或结尾；根据当前上下文自然变化表达。")
 	}

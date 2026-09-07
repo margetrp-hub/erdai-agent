@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -101,36 +102,79 @@ type videoGenerationOptions struct {
 	Duration    int
 }
 
+var videoAspectRatioToken = regexp.MustCompile(`(?i)16\s*:\s*9|9\s*:\s*16|1\s*:\s*1|4\s*:\s*3|3\s*:\s*4|横屏|横版|竖屏|竖版|正方形|方形|\b(?:landscape|horizontal|widescreen|portrait|vertical|square)\b`)
+
+func videoAspectRatioForPrompt(prompt string) string {
+	prompt = strings.ReplaceAll(prompt, "\uff1a", ":")
+	positive := []string{}
+	forbidden := map[string]bool{}
+	for _, clause := range visualConstraintClauses(prompt) {
+		previousEnd, previousNegated := 0, false
+		matches := videoAspectRatioToken.FindAllStringIndex(clause, -1)
+		for index, match := range matches {
+			prefix := strings.TrimSpace(clause[previousEnd:match[0]])
+			negated := visualClauseNegated(prefix) || visualNegationSuffix.MatchString(prefix) || strings.HasSuffix(prefix, "instead of")
+			if previousNegated && (prefix == "" || videoAspectRatioConjunction(prefix)) {
+				negated = true
+			}
+			if index == len(matches)-1 {
+				suffix := strings.TrimSpace(clause[match[1]:])
+				if suffix == "不要" || suffix == "不要了" || suffix == "不用" || suffix == "not wanted" {
+					negated = true
+				}
+			}
+			token := strings.Join(strings.Fields(clause[match[0]:match[1]]), "")
+			ratio := token
+			switch token {
+			case "横屏", "横版", "landscape", "horizontal", "widescreen":
+				ratio = "16:9"
+			case "竖屏", "竖版", "portrait", "vertical":
+				ratio = "9:16"
+			case "正方形", "方形", "square":
+				ratio = "1:1"
+			}
+			if negated {
+				forbidden[ratio] = true
+			} else {
+				positive = append(positive, ratio)
+				delete(forbidden, ratio)
+			}
+			previousEnd, previousNegated = match[1], negated
+		}
+	}
+	for index := len(positive) - 1; index >= 0; index-- {
+		if !forbidden[positive[index]] {
+			return positive[index]
+		}
+	}
+	defaults := []string{"16:9", "9:16", "1:1", "4:3", "3:4"}
+	if nativeSelfImageRequestPattern.MatchString(prompt) {
+		defaults[0], defaults[1] = defaults[1], defaults[0]
+	}
+	for _, ratio := range defaults {
+		if !forbidden[ratio] {
+			return ratio
+		}
+	}
+	return ""
+}
+
+func videoAspectRatioConjunction(value string) bool {
+	switch value {
+	case "或", "或者", "和", "与", "及", "、", "/", "or", "and", "nor", "and/or":
+		return true
+	}
+	return false
+}
+
 func videoGenerationOptionsForPrompt(prompt string) videoGenerationOptions {
 	normalized := strings.ToLower(strings.TrimSpace(prompt))
 	normalized = strings.ReplaceAll(normalized, "\uff1a", ":")
 	normalized = strings.ReplaceAll(normalized, " ", "")
 	options := videoGenerationOptions{
-		AspectRatio: "16:9",
+		AspectRatio: videoAspectRatioForPrompt(prompt),
 		Resolution:  "720p",
 		Duration:    6,
-	}
-	switch {
-	case strings.Contains(normalized, "9:16") ||
-		strings.Contains(normalized, "\u7ad6\u5c4f") ||
-		strings.Contains(normalized, "\u7ad6\u7248") ||
-		strings.Contains(normalized, "portrait") ||
-		nativeSelfImageRequestPattern.MatchString(normalized):
-		options.AspectRatio = "9:16"
-	case strings.Contains(normalized, "1:1") ||
-		strings.Contains(normalized, "\u65b9\u5f62") ||
-		strings.Contains(normalized, "\u6b63\u65b9\u5f62") ||
-		strings.Contains(normalized, "square"):
-		options.AspectRatio = "1:1"
-	case strings.Contains(normalized, "4:3"):
-		options.AspectRatio = "4:3"
-	case strings.Contains(normalized, "3:4"):
-		options.AspectRatio = "3:4"
-	case strings.Contains(normalized, "16:9") ||
-		strings.Contains(normalized, "\u6a2a\u5c4f") ||
-		strings.Contains(normalized, "\u6a2a\u7248") ||
-		strings.Contains(normalized, "landscape"):
-		options.AspectRatio = "16:9"
 	}
 	switch {
 	case strings.Contains(normalized, "1080p"):
@@ -149,6 +193,9 @@ func applyVideoGenerationOptions(
 	model string,
 ) error {
 	options := videoGenerationOptionsForPrompt(prompt)
+	if options.AspectRatio == "" {
+		return errors.New("no supported video aspect ratio satisfies the requested exclusions")
+	}
 	if options.Resolution == "1080p" &&
 		!strings.Contains(strings.ToLower(strings.TrimSpace(model)), "1.5") {
 		return errors.New("1080p requires a Grok video 1.5 model; use 720p or switch the video model")
@@ -202,7 +249,7 @@ func (a *AgentRuntime) generateVideo(ctx context.Context, run runRecord, prompt 
 		if err != nil {
 			return toolResult{}, err
 		}
-		return a.generateVideoAttempt(attemptCtx, run, compiled, attemptPlan.Reference, attemptPlan.OperationID, attempt)
+		return a.generateVideoAttempt(attemptCtx, run, compiled, attemptPlan.UserPrompt, attemptPlan.Reference, attemptPlan.OperationID, attempt)
 	})
 	if err != nil {
 		return toolResult{}, err
@@ -222,7 +269,7 @@ type videoGenerationReceipt struct {
 	Result    *toolResult `json:"result,omitempty"`
 }
 
-func (a *AgentRuntime) generateVideoAttempt(ctx context.Context, run runRecord, prompt, reference, operationID string, attempt int) (toolResult, error) {
+func (a *AgentRuntime) generateVideoAttempt(ctx context.Context, run runRecord, prompt, userPrompt, reference, operationID string, attempt int) (toolResult, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return toolResult{}, errors.New("video prompt is required")
@@ -333,7 +380,7 @@ func (a *AgentRuntime) generateVideoAttempt(ctx context.Context, run runRecord, 
 			candidateRequest[key] = value
 		}
 		candidateRequest["model"] = target.model
-		if optionsErr := applyVideoGenerationOptions(candidateRequest, prompt, target.model); optionsErr != nil {
+		if optionsErr := applyVideoGenerationOptions(candidateRequest, userPrompt, target.model); optionsErr != nil {
 			lastErr = optionsErr
 			continue
 		}

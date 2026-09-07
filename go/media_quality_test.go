@@ -382,12 +382,12 @@ func TestMediaQualityVideoAcceptedTaskResumesWithoutCreate(t *testing.T) {
 	run := visualPlanTestRun(t, runtime, "video-resume")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := runtime.generateVideoAttempt(ctx, run, "video", testVideoPersonaAvatar, "persisted-op", 0)
+	_, err := runtime.generateVideoAttempt(ctx, run, "video", "video", testVideoPersonaAvatar, "persisted-op", 0)
 	if err == nil || creates.Load() != 1 {
 		t.Fatalf("initial accepted task: creates=%d err=%v", creates.Load(), err)
 	}
 	runtime.videoPollInterval = time.Millisecond
-	result, err := runtime.generateVideoAttempt(context.Background(), run, "video", testVideoPersonaAvatar, "persisted-op", 0)
+	result, err := runtime.generateVideoAttempt(context.Background(), run, "video", "video", testVideoPersonaAvatar, "persisted-op", 0)
 	if err != nil || creates.Load() != 1 || len(result.Attachments) != 1 {
 		t.Fatalf("resume: creates=%d result=%+v err=%v", creates.Load(), result, err)
 	}

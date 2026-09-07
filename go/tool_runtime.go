@@ -252,15 +252,37 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 			return agentReply{}, errors.New("provider API base is invalid")
 		}
 	}
+	persistent, err := a.persistentModelRun(ctx, run.ID)
+	if err != nil {
+		return agentReply{}, err
+	}
+	if persistent {
+		release, claimed := a.claimTaskOperation(run.ID + ":model-loop")
+		if !claimed {
+			return agentReply{}, errors.New("task model loop is already running")
+		}
+		defer release()
+		if err := a.ensureMediaTaskCurrent(ctx, run); err != nil {
+			return agentReply{}, err
+		}
+		if err := a.ensureRunVisualAppearanceCurrent(ctx, run.ID); err != nil {
+			return agentReply{}, err
+		}
+	}
 	documentPolicy := a.documentPolicy()
 	recentReplies := a.recentAssistantReplyTexts(ctx, runtimeScopeFromRun(run).memoryConversationRef(), run.PersonaID, 12)
-	systemPrompt = withNaturalReplyGuard(systemPrompt, message, recentReplies)
 	tools := authorizedToolDefinitions(
 		policy, run.IsAdmin, message,
 		hasReadableDocumentAttachment(run.Attachments, documentPolicy),
 	)
 	mcpDefinitions, mcpRoutes := a.discoverCoreMCPTools(ctx, policy, run.IsAdmin, message)
 	tools = append(tools, mcpDefinitions...)
+	contractPrompt := systemPrompt
+	contract, err := a.taskModelContract(ctx, run, message, contractPrompt, policy, tools, mcpRoutes)
+	if err != nil {
+		return agentReply{}, err
+	}
+	systemPrompt = withNaturalReplyGuard(systemPrompt, message, recentReplies)
 	messages := []map[string]any{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": a.multimodalUserContent(ctx, message, run.Attachments, documentPolicy)},
@@ -274,6 +296,9 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 		maxSteps = defaultMaxAgentSteps
 	}
 	for step := 0; step < maxSteps; step++ {
+		if err := a.ensureMediaTaskCurrent(ctx, run); err != nil {
+			return agentReply{Attachments: attachments}, err
+		}
 		payload := map[string]any{"messages": messages, "stream": policy.Streaming}
 		if len(tools) > 0 {
 			payload["tools"] = tools
@@ -296,50 +321,78 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 			targetIndex = 0
 		}
 		modelStepID := ""
-		if a.taskGraphRunExists(run.ID) {
-			var stepErr error
-			modelStepID, stepErr = a.beginTaskStep(run.ID, "", "model", requestTargets[targetIndex].Model, step, payload)
-			if stepErr != nil {
-				return agentReply{Attachments: attachments}, stepErr
+		var completion chatCompletion
+		usedTarget := targetIndex
+		restored := false
+		if persistent {
+			history, hashErr := taskModelDigest(messages[2:])
+			if hashErr != nil {
+				return agentReply{Attachments: attachments}, hashErr
+			}
+			modelStepID, completion, usedTarget, restored, err = a.prepareTaskModelStep(ctx, run, step,
+				requestTargets[targetIndex].Model, taskModelInput{
+					Version: taskModelCheckpointVersion, Contract: contract, History: history, Request: payload,
+				}, requestTargets)
+			if err != nil {
+				return agentReply{Attachments: attachments}, err
 			}
 		}
 		requestedTarget := targetIndex
-		_ = a.recordRunStage(run.ID, "model_started", modelStarted, map[string]any{
-			"endpointId": requestTargets[targetIndex].EndpointID, "model": requestTargets[targetIndex].Model,
-		})
-		// Every lane gets a per-step wall budget across the whole fallback
-		// chain. A single slow endpoint must not consume the run, and a chain
-		// of fallbacks must never stretch one message into a minute-scale wait.
-		stepBudget := nonChatModelStepBudget
-		if plainChatProviderBudgetApplies(message, len(run.Attachments) > 0) {
-			stepBudget = plainChatProviderBudget
-		}
-		requestContext, cancelRequest := context.WithTimeout(ctx, stepBudget)
-		completion, usedTarget, err := a.chatCompletionWithTargets(requestContext, payload, requestTargets, targetIndex, func(target runtimeProviderTarget, duration time.Duration, attemptErr error) {
-			_, _ = a.db.Exec("UPDATE agent_runs SET provider_calls = provider_calls + 1 WHERE id = ?", run.ID)
-			_ = a.recordRunStage(run.ID, "provider_attempt", time.Now().Add(-duration), map[string]any{
-				"endpointId": target.EndpointID,
-				"model":      target.Model,
-				"durationMs": duration.Milliseconds(),
-				"outcome":    providerAttemptOutcome(attemptErr),
+		if !restored {
+			_ = a.recordRunStage(run.ID, "model_started", modelStarted, map[string]any{
+				"endpointId": requestTargets[targetIndex].EndpointID, "model": requestTargets[targetIndex].Model,
 			})
-		})
-		cancelRequest()
-		if completion.FirstTokenMS > 0 {
-			_ = a.recordRunStage(run.ID, "model_first_token", modelStarted, map[string]any{"latencyMs": completion.FirstTokenMS})
-		}
-		_ = a.recordRunStage(run.ID, "model_completed", modelStarted, map[string]any{
-			"endpointId": requestTargets[usedTarget].EndpointID, "model": requestTargets[usedTarget].Model, "error": err != nil,
-		})
-		if err != nil {
-			if modelStepID != "" {
-				_ = a.finishTaskStep(modelStepID, "failed", "provider_failed", nil)
+			// Every lane gets a per-step wall budget across the whole fallback
+			// chain. A single slow endpoint must not consume the run, and a chain
+			// of fallbacks must never stretch one message into a minute-scale wait.
+			stepBudget := nonChatModelStepBudget
+			if plainChatProviderBudgetApplies(message, len(run.Attachments) > 0) {
+				stepBudget = plainChatProviderBudget
 			}
-			return agentReply{Attachments: attachments}, err
-		}
-		a.recordProviderUsage(run.ID, requestTargets[usedTarget], completion.Usage)
-		if modelStepID != "" {
-			_ = a.finishTaskStep(modelStepID, "succeeded", "", completion)
+			requestContext, cancelRequest := context.WithTimeout(ctx, stepBudget)
+			completion, usedTarget, err = a.chatCompletionWithTargets(requestContext, payload, requestTargets, targetIndex, func(target runtimeProviderTarget, duration time.Duration, attemptErr error) {
+				_, _ = a.db.Exec("UPDATE agent_runs SET provider_calls = provider_calls + 1 WHERE id = ?", run.ID)
+				_ = a.recordRunStage(run.ID, "provider_attempt", time.Now().Add(-duration), map[string]any{
+					"endpointId": target.EndpointID,
+					"model":      target.Model,
+					"durationMs": duration.Milliseconds(),
+					"outcome":    providerAttemptOutcome(attemptErr),
+				})
+			})
+			cancelRequest()
+			if completion.FirstTokenMS > 0 {
+				_ = a.recordRunStage(run.ID, "model_first_token", modelStarted, map[string]any{"latencyMs": completion.FirstTokenMS})
+			}
+			_ = a.recordRunStage(run.ID, "model_completed", modelStarted, map[string]any{
+				"endpointId": requestTargets[usedTarget].EndpointID, "model": requestTargets[usedTarget].Model, "error": err != nil,
+			})
+			if err != nil {
+				if modelStepID != "" {
+					_ = a.finishTaskStep(modelStepID, "failed", "provider_failed", nil)
+				}
+				return agentReply{Attachments: attachments}, err
+			}
+			a.recordProviderUsage(run.ID, requestTargets[usedTarget], completion.Usage)
+			if len(completion.Choices) == 0 {
+				if modelStepID != "" {
+					_ = a.finishTaskStep(modelStepID, "failed", "provider_no_choices", nil)
+				}
+				return agentReply{Attachments: attachments}, errors.New("provider returned no choices")
+			}
+			completedMessage := completion.Choices[0].Message
+			if len(completedMessage.ToolCalls) == 0 && strings.TrimSpace(completedMessage.Content) == "" && len(attachments) == 0 {
+				if modelStepID != "" {
+					_ = a.finishTaskStep(modelStepID, "failed", "provider_empty_content", nil)
+				}
+				return agentReply{}, errors.New("provider returned empty content")
+			}
+			if modelStepID != "" {
+				if err := a.finishTaskModelStep(ctx, run, modelStepID, completion, requestTargets[usedTarget]); err != nil {
+					return agentReply{Attachments: attachments}, err
+				}
+			}
+		} else {
+			_ = a.recordRunStage(run.ID, "model_restored", time.Now(), map[string]any{"stepIndex": step})
 		}
 		targetIndex = usedTarget
 		targets = requestTargets
@@ -352,6 +405,16 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 			WHERE id = ?`, targets[usedTarget].EndpointID, targets[usedTarget].Model, routeReason, routeReason, run.ID)
 		if len(completion.Choices) == 0 {
 			return agentReply{Attachments: attachments}, errors.New("provider returned no choices")
+		}
+		if err := a.ensureMediaTaskCurrent(ctx, run); err != nil {
+			return agentReply{Attachments: attachments}, err
+		}
+		currentContract, err := a.taskModelContract(ctx, run, message, contractPrompt, policy, tools, mcpRoutes)
+		if err != nil {
+			return agentReply{Attachments: attachments}, err
+		}
+		if currentContract != contract {
+			return agentReply{Attachments: attachments}, errTaskModelCheckpoint
 		}
 		assistant := completion.Choices[0].Message
 		if len(assistant.ToolCalls) == 0 {
@@ -395,10 +458,35 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 			}
 		}
 		for _, call := range assistant.ToolCalls {
+			if err := ctx.Err(); err != nil {
+				return agentReply{Attachments: attachments}, err
+			}
+			currentContract, err := a.taskModelContract(ctx, run, message, contractPrompt, policy, tools, mcpRoutes)
+			if err != nil {
+				return agentReply{Attachments: attachments}, err
+			}
+			if currentContract != contract {
+				return agentReply{Attachments: attachments}, errTaskModelCheckpoint
+			}
 			toolUsed = true
 			adapter := normalizeAdapterRef(call.Function.Name)
 			result := a.executePersistentToolCall(ctx, run, message, policy, mcpRoutes, step, modelStepID, call)
 			attachments = append(attachments, result.Attachments...)
+			var failure struct {
+				Error string `json:"error"`
+			}
+			if json.Unmarshal([]byte(result.Content), &failure) == nil {
+				switch failure.Error {
+				case "task_persistence_failed":
+					return agentReply{Attachments: attachments}, errTaskPlanPersistence
+				case "task_execution_uncertain":
+					return agentReply{Attachments: attachments}, errTaskExecutionUncertain
+				case "task_revision_superseded":
+					return agentReply{Attachments: attachments}, errTaskSuperseded
+				case "task_execution_in_progress":
+					return agentReply{Attachments: attachments}, fmt.Errorf("task tool stopped: %s", failure.Error)
+				}
+			}
 			if warning := mediaQualityToolWarning(adapter, result); warning != "" {
 				mediaWarnings = append(mediaWarnings, warning)
 			} else if result.UserMessage != "" {

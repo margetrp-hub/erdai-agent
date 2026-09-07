@@ -363,7 +363,10 @@ func TestMediaQualityReceiptFailureNeverRepeatsImageGeneration(t *testing.T) {
 }
 
 func TestMediaQualityVideoAcceptedTaskResumesWithoutCreate(t *testing.T) {
-	var creates atomic.Int32
+	parent, finish := context.WithTimeout(t.Context(), 10*time.Second)
+	defer finish()
+	var creates, polls atomic.Int32
+	firstPoll := make(chan struct{})
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost:
@@ -373,22 +376,56 @@ func TestMediaQualityVideoAcceptedTaskResumesWithoutCreate(t *testing.T) {
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write(testMP4())
 		default:
+			if polls.Add(1) == 1 {
+				close(firstPoll)
+				select {
+				case <-r.Context().Done():
+				case <-parent.Done():
+				}
+				return
+			}
 			writeJSON(w, 200, map[string]string{"id": "persisted-video", "status": "completed"})
 		}
 	}))
 	defer server.Close()
-	runtime := newVideoRuntime(t, videoTestConfig(t, server.URL, 10), server.Client(), t.TempDir(), time.Hour, 1)
+	runtime := newVideoRuntime(t, videoTestConfig(t, server.URL, 10), server.Client(), t.TempDir(), time.Millisecond, 1)
 	defer runtime.Close()
 	run := visualPlanTestRun(t, runtime, "video-resume")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	_, err := runtime.generateVideoAttempt(ctx, run, "video", "video", testVideoPersonaAvatar, "persisted-op", 0)
-	if err == nil || creates.Load() != 1 {
-		t.Fatalf("initial accepted task: creates=%d err=%v", creates.Load(), err)
+	firstResult := make(chan error, 1)
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, err := runtime.generateVideoAttempt(ctx, run, "video", "video", testVideoPersonaAvatar, "persisted-op", 0)
+		firstResult <- err
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-firstDone:
+		case <-parent.Done():
+		}
+	}()
+	// The first GET happens only after the accepted provider task is persisted.
+	select {
+	case <-firstPoll:
+	case err := <-firstResult:
+		t.Fatalf("video attempt ended before first poll: creates=%d err=%v", creates.Load(), err)
+	case <-parent.Done():
+		t.Fatalf("video attempt did not reach first poll: %v", parent.Err())
 	}
-	runtime.videoPollInterval = time.Millisecond
-	result, err := runtime.generateVideoAttempt(context.Background(), run, "video", "video", testVideoPersonaAvatar, "persisted-op", 0)
-	if err != nil || creates.Load() != 1 || len(result.Attachments) != 1 {
-		t.Fatalf("resume: creates=%d result=%+v err=%v", creates.Load(), result, err)
+	cancel()
+	select {
+	case err := <-firstResult:
+		if !errors.Is(err, context.Canceled) || creates.Load() != 1 || polls.Load() != 1 {
+			t.Fatalf("cancel accepted task: creates=%d polls=%d err=%v", creates.Load(), polls.Load(), err)
+		}
+	case <-parent.Done():
+		t.Fatalf("cancelled video attempt did not stop: %v", parent.Err())
+	}
+	result, err := runtime.generateVideoAttempt(parent, run, "video", "video", testVideoPersonaAvatar, "persisted-op", 0)
+	if err != nil || creates.Load() != 1 || polls.Load() != 2 || len(result.Attachments) != 1 {
+		t.Fatalf("resume: creates=%d polls=%d result=%+v err=%v", creates.Load(), polls.Load(), result, err)
 	}
 }

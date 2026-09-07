@@ -228,17 +228,31 @@ func (a *AgentRuntime) persistTaskArtifacts(runID, stepID string, artifacts []ag
 }
 
 func (a *AgentRuntime) cachedTaskToolResult(id string) (toolResult, bool) {
+	result, found, _ := a.readTaskToolResult(id)
+	return result, found
+}
+
+func (a *AgentRuntime) readTaskToolResult(id string) (toolResult, bool, error) {
 	var ciphertext []byte
 	err := a.db.QueryRow("SELECT output_cipher FROM agent_task_steps WHERE id = ? AND status = 'succeeded'", id).Scan(&ciphertext)
-	if err != nil || len(ciphertext) == 0 {
-		return toolResult{}, false
+	if errors.Is(err, sql.ErrNoRows) {
+		return toolResult{}, false, nil
+	}
+	if err != nil {
+		return toolResult{}, false, err
+	}
+	if len(ciphertext) == 0 {
+		return toolResult{}, false, errors.New("completed task receipt is empty")
 	}
 	plain, err := a.decrypt(ciphertext)
 	if err != nil {
-		return toolResult{}, false
+		return toolResult{}, false, err
 	}
 	var result toolResult
-	return result, json.Unmarshal(plain, &result) == nil
+	if err := json.Unmarshal(plain, &result); err != nil {
+		return toolResult{}, false, err
+	}
+	return result, true, nil
 }
 
 func (a *AgentRuntime) taskGraphRunExists(runID string) bool {
@@ -285,7 +299,9 @@ func (a *AgentRuntime) executePersistentToolCall(
 		}
 		defer release()
 	}
-	if result, found := a.cachedTaskToolResult(id); found {
+	if result, found, err := a.readTaskToolResult(id); err != nil {
+		return taskPersistenceFailure()
+	} else if found {
 		if err := a.persistTaskArtifacts(run.ID, id, result.Attachments); err != nil {
 			return taskPersistenceFailure()
 		}
@@ -345,7 +361,9 @@ func (a *AgentRuntime) executePersistentOperation(
 		}
 		defer release()
 	}
-	if result, found := a.cachedTaskToolResult(id); found {
+	if result, found, err := a.readTaskToolResult(id); err != nil {
+		return toolResult{}, errTaskPlanPersistence
+	} else if found {
 		return result, a.persistTaskArtifacts(run.ID, id, result.Attachments)
 	}
 	if costlyTaskOperation(name) {

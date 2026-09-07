@@ -2070,6 +2070,12 @@ func (a *AgentRuntime) recordRunStage(runID, stage string, started time.Time, de
 }
 
 func naturalFailureReply(message string, err error) (string, string) {
+	if errors.Is(err, errTaskModelCheckpoint) {
+		return "原计划已经不能安全接着做了，我先停在这里。请确认要重新处理的内容。", "task_plan_unavailable"
+	}
+	if errors.Is(err, errTaskPlanPersistence) {
+		return "执行记录没能可靠保存或恢复，我先停下，避免重复处理。", "task_persistence_failed"
+	}
 	if errors.Is(err, errTaskExecutionUncertain) {
 		return "上一步的结果还没确认，先不重复生成，避免重复消耗额度。", "task_execution_uncertain"
 	}
@@ -2140,7 +2146,7 @@ func (a *AgentRuntime) naturalFailureReplyForRun(ctx context.Context, run runRec
 
 func failureReplyOptions(code, fallback string) []string {
 	switch code {
-	case "provider_unavailable", "provider_quota_exhausted", "provider_rate_limited", "task_execution_uncertain":
+	case "provider_unavailable", "provider_quota_exhausted", "provider_rate_limited", "task_execution_uncertain", "task_plan_unavailable", "task_persistence_failed":
 		return []string{fallback}
 	case "image_generation_timeout":
 		return []string{fallback, "这张等太久了，没出来。", "这回卡在半路了。", "图片超时了，这次不算。"}

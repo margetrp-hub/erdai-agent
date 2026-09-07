@@ -69,10 +69,15 @@ func TestOptimizationArtifactPreviewIsAdminOnlyAndConfined(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("private-external-image"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(runtime.mediaDir, "outside-link.png")); err != nil {
+	linkPath := createEscapingMediaLink(t, runtime.mediaDir, outside)
+	if data, err := os.ReadFile(linkPath); err != nil || string(data) != "private-external-image" {
+		t.Fatalf("escape fixture is not a real readable link: %q, %v", data, err)
+	}
+	linkRelative, err := filepath.Rel(runtime.mediaDir, linkPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = runtime.persistTaskArtifacts(run.ID, step, []agentAttachment{{Kind: "image", Name: "symlink", LocalPath: mediaMountRoot + "/outside-link.png", MimeType: "image/png"}}); err != nil {
+	if err = runtime.persistTaskArtifacts(run.ID, step, []agentAttachment{{Kind: "image", Name: "symlink", LocalPath: mediaMountRoot + "/" + filepath.ToSlash(linkRelative), MimeType: "image/png"}}); err != nil {
 		t.Fatal(err)
 	}
 	var id int64

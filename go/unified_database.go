@@ -45,9 +45,14 @@ func readOnlySQLiteURI(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	uriPath := filepath.ToSlash(absolute)
+	// A Windows drive belongs in the URI path, not its authority (file://C:).
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
 	return (&url.URL{
 		Scheme:   "file",
-		Path:     filepath.ToSlash(absolute),
+		Path:     uriPath,
 		RawQuery: "mode=ro",
 	}).String(), nil
 }

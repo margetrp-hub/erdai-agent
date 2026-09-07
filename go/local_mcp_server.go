@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -258,7 +257,10 @@ func openLocalMCPDatabase(path string) (*sql.DB, error) {
 	if path == "" {
 		return nil, nil
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	dsn, err := readOnlySQLiteURI(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve MCP database path: %w", err)
+	}
 	database, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open MCP database: %w", err)

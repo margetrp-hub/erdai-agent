@@ -15,6 +15,7 @@ type runtimeMemoryPolicy struct {
 	RetrievalLimit            int  `json:"retrievalLimit"`
 	MaxMemoriesPerScope       int  `json:"maxMemoriesPerScope"`
 	AllowGroupSharedMemory    bool `json:"allowGroupSharedMemory"`
+	SemanticRecallEnabled     bool `json:"semanticRecallEnabled"`
 	RelationshipPulseEnabled  bool `json:"relationshipPulseEnabled"`
 	OutputFeedbackEnabled     bool `json:"outputFeedbackEnabled"`
 	MemoryResonanceEnabled    bool `json:"memoryResonanceEnabled"`
@@ -60,6 +61,7 @@ var stableMemoryPatterns = []struct {
 }{
 	{regexp.MustCompile(`(?:^|[，。！？\s])我(?:很|比较|最)?喜欢([^，。！？\n]{1,40})`), "preference", 0.75},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我不喜欢([^，。！？\n]{1,40})`), "preference", 0.75},
+	{regexp.MustCompile(`(?:^|[，。！？\s])我(?:现在|已经)?不再喜欢([^，。！？\n]{1,40})`), "preference", 0.75},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我(?:平时|一般|通常)喝([^，。！？\n]{1,30})`), "preference", 0.72},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我(?:平时|一般|通常)用([^，。！？\n]{1,30})`), "preference", 0.72},
 	{regexp.MustCompile(`(?:^|[，。！？\s])我习惯([^，。！？\n]{1,40})`), "habit", 0.72},
@@ -277,21 +279,7 @@ func conversationEventLine(event RecalledGroupEvent, text string) string {
 }
 
 func detectConversationEmotion(message string) string {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	for emotion, markers := range map[string][]string{
-		"难过": {"难过", "伤心", "想哭", "崩溃", "委屈", "失落", "抑郁"},
-		"焦虑": {"焦虑", "紧张", "害怕", "担心", "慌", "怎么办", "急死"},
-		"生气": {"生气", "气死", "烦死", "离谱", "无语", "火大"},
-		"开心": {"开心", "高兴", "好耶", "哈哈", "笑死", "太棒"},
-		"困惑": {"不懂", "没明白", "为什么", "怎么回事", "啥意思", "看不懂"},
-	} {
-		for _, marker := range markers {
-			if strings.Contains(normalized, marker) {
-				return emotion
-			}
-		}
-	}
-	return "平静"
+	return stableConversationEmotion(message)
 }
 
 func (a *AgentRuntime) captureStableMemory(ctx context.Context, run runRecord, message string) {
@@ -310,10 +298,8 @@ func (a *AgentRuntime) captureStableMemory(ctx context.Context, run runRecord, m
 			continue
 		}
 		memoryScope := personaMemoryScope(run.PersonaID, "user", runtimeScopeFromRun(run).userMemoryRef())
-		_, _, err := a.memory.AddMemoryWithMetadata(ctx, memoryScope, candidate.Content, MemoryMetadata{
-			Source: "auto_capture", Kind: candidate.Kind,
-			Confidence: 0.88, Importance: candidate.Importance,
-		})
+		observedAt, _ := time.Parse(time.RFC3339Nano, run.CreatedAt)
+		err := a.memory.captureMemoryFact(ctx, memoryScope, candidate, run.EventID, observedAt)
 		if err == nil {
 			_ = a.memory.TrimScope(ctx, memoryScope, policy.MaxMemoriesPerScope)
 		}
@@ -328,34 +314,46 @@ type stableMemoryCandidate struct {
 
 func extractStableMemories(message string) []stableMemoryCandidate {
 	message = strings.TrimSpace(message)
-	if message == "" || len([]rune(message)) > 300 {
+	if message == "" || len([]rune(message)) > 300 || !durableMemoryStatement(message) {
 		return nil
 	}
 	result := []stableMemoryCandidate{}
 	seen := map[string]struct{}{}
-	for _, pattern := range stableMemoryPatterns {
-		for _, match := range pattern.expression.FindAllStringSubmatch(message, -1) {
-			if len(match) != 2 {
-				continue
-			}
-			content := strings.TrimSpace(strings.Trim(match[0], "，。！？ \t\r\n"))
-			if pattern.kind == "address" {
-				address := strings.TrimSpace(match[1])
-				if address == "" || isAddressQuestion(address) {
+	facts := map[string]int{}
+	for _, clause := range socialOwnClauses(message) {
+		for _, pattern := range stableMemoryPatterns {
+			for _, match := range pattern.expression.FindAllStringSubmatch(clause, -1) {
+				if len(match) != 2 {
 					continue
 				}
-				content = "用户希望被称为" + address
+				content := strings.TrimSpace(strings.Trim(match[0], "，。！？ \t\r\n"))
+				if pattern.kind == "address" {
+					address := strings.TrimSpace(match[1])
+					if address == "" || isAddressQuestion(address) {
+						continue
+					}
+					content = "用户希望被称为" + address
+				}
+				if content == "" || len([]rune(content)) > 80 || containsSensitiveMemory(content) {
+					continue
+				}
+				candidate := stableMemoryCandidate{
+					Content: content, Kind: pattern.kind, Importance: pattern.importance,
+				}
+				key := stableMemoryFactKey(candidate)
+				if index, found := facts[key]; key != "" && found {
+					result[index] = candidate
+					continue
+				}
+				if _, exists := seen[content]; exists {
+					continue
+				}
+				seen[content] = struct{}{}
+				if key != "" {
+					facts[key] = len(result)
+				}
+				result = append(result, candidate)
 			}
-			if content == "" || len([]rune(content)) > 80 || containsSensitiveMemory(content) {
-				continue
-			}
-			if _, exists := seen[content]; exists {
-				continue
-			}
-			seen[content] = struct{}{}
-			result = append(result, stableMemoryCandidate{
-				Content: content, Kind: pattern.kind, Importance: pattern.importance,
-			})
 		}
 	}
 	return result

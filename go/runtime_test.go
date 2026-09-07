@@ -1110,6 +1110,11 @@ func newIdleRuntime(t *testing.T) *AgentRuntime {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close runtime fixture: %v", err)
+		}
+	})
 	return runtime
 }
 

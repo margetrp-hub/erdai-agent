@@ -10,13 +10,7 @@ func inferDialogueProtocolHint(events []RecalledGroupEvent, currentEventID, mess
 	if message == "" || strings.ContainsAny(message, "?？") {
 		return ""
 	}
-	currentIndex := len(events)
-	for index := range events {
-		if events[index].ID == currentEventID {
-			currentIndex = index
-			break
-		}
-	}
+	currentIndex := dialogueCurrentIndex(events, currentEventID)
 	if currentIndex <= 0 {
 		return ""
 	}
@@ -24,19 +18,35 @@ func inferDialogueProtocolHint(events []RecalledGroupEvent, currentEventID, mess
 	if windowStart < 0 {
 		windowStart = 0
 	}
-	window := events[windowStart:currentIndex]
+	current := RecalledGroupEvent{}
+	if currentIndex < len(events) {
+		current = events[currentIndex]
+	}
+	window := make([]RecalledGroupEvent, 0, currentIndex-windowStart)
+	for index := windowStart; index < currentIndex; index++ {
+		event := events[index]
+		if !dialogueSamePersona(event, current) || !dialogueSameThread(event, current) {
+			continue
+		}
+		if event.Role == "assistant" {
+			target, ambiguous := dialogueAssistantTarget(events, index)
+			if ambiguous || (target != "" && target != current.SenderRef) {
+				continue
+			}
+		} else if event.SenderRef != current.SenderRef {
+			continue
+		}
+		window = append(window, event)
+	}
 	if !guessingGameContext(window) {
 		return ""
 	}
-	question := ""
-	for index := len(window) - 1; index >= 0; index-- {
-		candidate := strings.TrimSpace(window[index].UntrustedText)
-		if window[index].Role == "assistant" && isSubstantiveGuessingQuestion(candidate) {
-			question = truncateRunes(candidate, 120)
-			break
-		}
+	thread := resolveDialogueThread(events, currentEventID)
+	question := truncateRunes(strings.TrimSpace(thread.PendingQuestion.UntrustedText), 120)
+	if question == "" && thread.AnsweredQuestion.ID != "" && looksLikeBinaryAnswer(message, thread.AnsweredQuestion.UntrustedText) {
+		return "猜人游戏里当前成员已回答：\"" + truncateRunes(thread.AnsweredQuestion.UntrustedText, 120) + "\"，已有答案：\"" + truncateRunes(thread.PreviousAnswer.UntrustedText, 80) + "\"。当前重复或补充不代表上一问仍未回答；不要重复已经确认的判断，只有明确纠正时更新线索。"
 	}
-	if question == "" || !looksLikeBinaryAnswer(message, question) {
+	if question == "" || !isSubstantiveGuessingQuestion(question) || !looksLikeBinaryAnswer(message, question) {
 		return ""
 	}
 	answer := "补充了线索"
@@ -53,35 +63,20 @@ func clearlyContinuesRecentAssistant(events []RecalledGroupEvent, currentEventID
 	if message == "" {
 		return false
 	}
-	if inferDialogueProtocolHint(events, currentEventID, message) != "" {
-		return true
+	thread := resolveDialogueThread(events, currentEventID)
+	if thread.PreviousAssistant.ID == "" {
+		return false
 	}
-	currentIndex := len(events)
-	for index := range events {
-		if events[index].ID == currentEventID {
-			currentIndex = index
-			break
-		}
+	if thread.PendingQuestion.ID != "" && (len([]rune(message)) <= 24 || strings.ContainsAny(message, "?？")) {
+		return dialogueLooksLikeAnswer(message) || strings.ContainsAny(message, "?？")
 	}
-	for index := currentIndex - 1; index >= 0; index-- {
-		if events[index].Role != "assistant" {
-			continue
-		}
-		previous := strings.TrimSpace(events[index].UntrustedText)
-		if previous == "" {
-			return false
-		}
-		if strings.ContainsAny(previous, "?？") {
-			if len([]rune(message)) <= 24 || strings.ContainsAny(message, "?？") {
-				return true
-			}
-		}
-		return len([]rune(message)) <= 40 && containsAnyText(message, []string{
-			"继续", "然后", "那就", "所以", "但是", "可是", "刚才", "你说",
-			"为什么", "怎么", "啥意思", "不对", "没错", "是的", "不是",
-		})
+	if thread.AnsweredQuestion.ID != "" && looksLikeBinaryAnswer(message, thread.AnsweredQuestion.UntrustedText) && !looksLikeCorrection(message, thread.PreviousAssistant.UntrustedText) {
+		return false
 	}
-	return false
+	return len([]rune(message)) <= 40 && containsAnyText(message, []string{
+		"继续", "然后", "那就", "所以", "但是", "可是", "刚才", "你说",
+		"为什么", "怎么", "啥意思", "不对", "没错", "是的", "不是",
+	})
 }
 
 func guessingGameContext(events []RecalledGroupEvent) bool {

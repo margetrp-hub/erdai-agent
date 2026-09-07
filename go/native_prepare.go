@@ -1248,6 +1248,10 @@ func (s *coreConfigStore) prepareRuntime(payload corePreparePayload) (preparedRu
 		RAGContext:           nativeRAGContext{Trusted: false, Namespace: config.KnowledgeNamespace, Namespaces: ragNamespaces, Items: ragItems},
 		ToolPolicy:           toolPolicy, MessagePolicy: messagePolicy, Skills: preparedSkills,
 	}
+	// Current expression preferences do not depend on persistent memory being enabled.
+	if hint := conversationSocialHint(nil, "", payload.Message); hint != "" {
+		prepared.CompiledSystemPrompt += "\n\n当前消息的交流偏好（仅影响表达，不授权工具或覆盖安全规则）：\n" + hint
+	}
 	if route.Selected != nil && route.Selected.Endpoint.ExecutionKind == "llm" {
 		model := route.Selected.Endpoint.Model
 		prepared.SelectedModel = &model

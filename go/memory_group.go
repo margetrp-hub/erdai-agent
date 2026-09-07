@@ -314,6 +314,9 @@ func (s *MemoryGroupStore) InitSchema(ctx context.Context) error {
 		{"persona_id", "TEXT"},
 		{"scope_kind", "TEXT"},
 		{"scope_ref_cipher", "BLOB"},
+		{"fact_key_digest", "BLOB"},
+		{"source_event_digest", "BLOB"},
+		{"observed_at", "TEXT"},
 	} {
 		if err = ensureRuntimeColumn(s.runtime.db, "agent_memories", column.name, column.definition); err != nil {
 			return err
@@ -332,6 +335,16 @@ func (s *MemoryGroupStore) InitSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_agent_memories_scope_relevance
 			ON agent_memories(scope_digest, importance DESC, updated_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_agent_memories_expiry ON agent_memories(expires_at);
+		CREATE INDEX IF NOT EXISTS idx_agent_memories_fact
+			ON agent_memories(scope_digest, fact_key_digest);
+		CREATE TABLE IF NOT EXISTS agent_memory_embeddings (
+			memory_id TEXT NOT NULL REFERENCES agent_memories(id) ON DELETE CASCADE,
+			endpoint_digest BLOB NOT NULL,
+			content_digest BLOB NOT NULL,
+			vector_cipher BLOB NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(memory_id, endpoint_digest)
+		);
 		CREATE INDEX IF NOT EXISTS idx_agent_memories_persona
 			ON agent_memories(persona_id, scope_kind, updated_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_relationship_state_recent
@@ -709,14 +722,18 @@ func nullableBytes(value []byte) any {
 }
 
 func (s *MemoryGroupStore) ListMemories(ctx context.Context, scope string, limit int) ([]RecalledMemory, error) {
-	return s.searchMemories(ctx, scope, "", limit)
+	return s.searchMemories(ctx, scope, "", limit, false)
 }
 
 func (s *MemoryGroupStore) SearchMemories(ctx context.Context, scope, query string, limit int) ([]RecalledMemory, error) {
-	return s.searchMemories(ctx, scope, strings.ToLower(strings.TrimSpace(query)), limit)
+	return s.searchMemories(ctx, scope, strings.ToLower(strings.TrimSpace(query)), limit, true)
 }
 
-func (s *MemoryGroupStore) searchMemories(ctx context.Context, scope, normalizedQuery string, limit int) ([]RecalledMemory, error) {
+func (s *MemoryGroupStore) SearchMemoriesKeyword(ctx context.Context, scope, query string, limit int) ([]RecalledMemory, error) {
+	return s.searchMemories(ctx, scope, strings.ToLower(strings.TrimSpace(query)), limit, false)
+}
+
+func (s *MemoryGroupStore) searchMemories(ctx context.Context, scope, normalizedQuery string, limit int, semantic bool) ([]RecalledMemory, error) {
 	if strings.TrimSpace(scope) == "" {
 		return nil, errors.New("memory scope is required")
 	}
@@ -733,23 +750,34 @@ func (s *MemoryGroupStore) searchMemories(ctx context.Context, scope, normalized
 	}
 	defer rows.Close()
 
-	type scoredMemory struct {
-		memory RecalledMemory
-		score  float64
-	}
-	scored := make([]scoredMemory, 0, limit)
+	candidates := make([]memorySearchCandidate, 0, limit)
 	for rows.Next() {
 		memory, err := s.scanMemory(rows)
 		if err != nil {
 			return nil, err
 		}
 		score, matched := memoryRelevanceScore(memory, normalizedQuery, s.now().UTC())
-		if matched {
-			scored = append(scored, scoredMemory{memory: memory, score: score})
-		}
+		candidates = append(candidates, memorySearchCandidate{memory: memory, score: score, matched: matched})
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	var semanticScores map[string]float64
+	if semantic {
+		semanticScores = s.semanticMemoryScores(ctx, scope, normalizedQuery, candidates)
+	}
+	scored := make([]memorySearchCandidate, 0, len(candidates))
+	for _, item := range candidates {
+		if score, found := semanticScores[item.memory.ID]; found {
+			item.score = math.Max(item.score, score)
+			item.matched = true
+		}
+		if item.matched {
+			scored = append(scored, item)
+		}
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].score == scored[j].score {
@@ -763,6 +791,11 @@ func (s *MemoryGroupStore) searchMemories(ctx context.Context, scope, normalized
 	memories := make([]RecalledMemory, 0, len(scored))
 	accessedAt := formatStoreTime(s.now().UTC())
 	for _, item := range scored {
+		// Embedding runs outside the DB read. Do not return a memory that was
+		// forgotten, edited or superseded while that request was in flight.
+		if !s.memoryStillCurrent(ctx, scope, item.memory) {
+			continue
+		}
 		memories = append(memories, item.memory)
 		_, _ = s.runtime.db.ExecContext(ctx, `
 			UPDATE agent_memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?
@@ -958,7 +991,8 @@ func (s *MemoryGroupStore) UpdateMemory(
 	now := s.now().UTC()
 	result, err := s.runtime.db.ExecContext(ctx, `
 		UPDATE agent_memories SET content_cipher = ?, content_digest = ?, source = ?, kind = ?,
-			confidence = ?, importance = ?, expires_at = ?, updated_at = ?
+			confidence = ?, importance = ?, expires_at = ?, updated_at = ?,
+			fact_key_digest = NULL, source_event_digest = NULL, observed_at = NULL
 		WHERE id = ? AND scope_digest = ?
 	`, ciphertext, contentDigest, metadata.Source, metadata.Kind, metadata.Confidence,
 		metadata.Importance, formatOptionalStoreTime(metadata.ExpiresAt), formatStoreTime(now), id, scopeDigest)

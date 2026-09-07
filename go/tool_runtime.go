@@ -1430,7 +1430,8 @@ func (a *AgentRuntime) forgetMemory(ctx context.Context, run runRecord, query st
 		return toolResult{}, errors.New("memory query is required")
 	}
 	scope := personaMemoryScope(run.PersonaID, "user", runtimeScopeFromRun(run).userMemoryRef())
-	memories, err := a.memory.SearchMemories(ctx, scope, query, 20)
+	// Semantic similarity is useful for recall, not authority to delete related facts.
+	memories, err := a.memory.SearchMemoriesKeyword(ctx, scope, query, 20)
 	if err != nil {
 		return toolResult{}, err
 	}

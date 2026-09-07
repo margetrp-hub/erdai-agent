@@ -572,8 +572,9 @@ func TestImageTaskTimeoutUsesImagePolicy(t *testing.T) {
 		"enabled": true, "model": "image-model", "timeoutSeconds": 90,
 	})
 	_ = configDB.Close()
+	databasePath := filepath.Join(t.TempDir(), "runtime.sqlite3")
 	runtime, err := NewAgentRuntime(RuntimeConfig{
-		DatabasePath: filepath.Join(t.TempDir(), "runtime.sqlite3"), ConfigDatabasePath: configPath,
+		DatabasePath: databasePath, ConfigDatabasePath: configPath,
 		AdminToken: "admin-test-token", RuntimeToken: testRuntimeToken,
 		ModelAPIKey: "model-test-key", EncryptionKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)),
 		MediaDir: filepath.Join(t.TempDir(), "media"),
@@ -581,7 +582,7 @@ func TestImageTaskTimeoutUsesImagePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close()
+	defer assertRuntimeClosedFile(t, runtime, databasePath)
 	if got := runtime.imageTaskTimeout(context.Background(), 30); got != 90*time.Second {
 		t.Fatalf("image task timeout = %s, want 90s", got)
 	}

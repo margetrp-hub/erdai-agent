@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -253,16 +251,5 @@ func nativeAttachmentOnlyPrompt(attachments []transportAttachment) string {
 }
 
 func readNativeMedia(attachment agentAttachment) ([]byte, string, error) {
-	cleanPath := filepath.Clean(strings.TrimSpace(attachment.LocalPath))
-	if !strings.HasPrefix(cleanPath, mediaMountRoot+string(os.PathSeparator)) {
-		return nil, "", errors.New("attachment path is outside the media directory")
-	}
-	data, err := os.ReadFile(cleanPath)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(data) == 0 || len(data) > maxImageBytes {
-		return nil, "", errors.New("attachment size is invalid")
-	}
-	return data, cleanPath, nil
+	return readConfinedNativeMedia(mediaMountRoot, attachment.LocalPath, maxImageBytes)
 }

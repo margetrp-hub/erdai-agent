@@ -2678,6 +2678,7 @@ const nativeGrokPolicyDefaults = `{
 
 const nativeMemoryPolicyDefaults = `{
   "enabled":true,"autoCapture":true,"retrievalLimit":12,"maxMemoriesPerScope":5000,
+	"semanticRecallEnabled":false,
   "allowGroupSharedMemory":false,
   "relationshipPulseEnabled":true,"outputFeedbackEnabled":true,
   "memoryResonanceEnabled":true,"circadianAwarenessEnabled":true,"longingEnabled":true,

@@ -485,6 +485,7 @@ func TestVideoDownloadAcceptsMissingContentTypeWhenMP4MagicIsValid(t *testing.T)
 	}))
 	defer provider.Close()
 	runtime := newIdleRuntime(t)
+	defer runtime.Close()
 	runtime.grokAPIKey = "test-key"
 	runtime.mediaDir = filepath.Join(t.TempDir(), "media")
 	runtime.client = provider.Client()
@@ -685,6 +686,11 @@ func newVideoRuntime(
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close video runtime fixture: %v", err)
+		}
+	})
 	addVisualPlanReference(t, runtime, "doubao")
 	return runtime
 }

@@ -50,6 +50,13 @@ jobs:
             "$RUNNER_TEMP/erdai-release"
           sha256sum "$RUNNER_TEMP/erdai-release/erdai-agent-stable-${{ steps.metadata.outputs.version }}.tar.gz"
 
+      - name: Smoke-test isolated release image
+        run: |
+          python3 scripts/test-release-smoke.py \
+            --image "erdai-agent:${{ steps.metadata.outputs.version }}" \
+            --version "${{ steps.metadata.outputs.version }}" \
+            --schema "${{ steps.metadata.outputs.schema }}"
+
       - name: Publish Stable release
         env:
           GH_TOKEN: ${{ github.token }}

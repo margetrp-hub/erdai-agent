@@ -13,6 +13,7 @@ type dialogueReasoningState struct {
 	Action              string
 	PreviousAssistant   string
 	PendingQuestion     string
+	AnsweredQuestion    string
 	RepeatedBurst       int
 	SameSpeakerFollowup bool
 }
@@ -23,13 +24,7 @@ func inferDialogueReasoningState(events []RecalledGroupEvent, currentEventID, me
 	if message == "" {
 		return state
 	}
-	currentIndex := len(events)
-	for index := range events {
-		if events[index].ID == currentEventID {
-			currentIndex = index
-			break
-		}
-	}
+	currentIndex := dialogueCurrentIndex(events, currentEventID)
 	if currentIndex <= 0 {
 		state.Action = classifyDialogueAction(message, "", false)
 		return state
@@ -38,23 +33,11 @@ func inferDialogueReasoningState(events []RecalledGroupEvent, currentEventID, me
 	if currentIndex < len(events) {
 		current = events[currentIndex]
 	}
-	var previousUser RecalledGroupEvent
-	for index := currentIndex - 1; index >= 0; index-- {
-		event := events[index]
-		if state.PreviousAssistant == "" && event.Role == "assistant" {
-			state.PreviousAssistant = strings.TrimSpace(event.UntrustedText)
-			if strings.ContainsAny(state.PreviousAssistant, "?？") {
-				state.PendingQuestion = truncateRunes(state.PreviousAssistant, 180)
-			}
-		}
-		if previousUser.ID == "" && event.Role != "assistant" && event.SenderRef == current.SenderRef {
-			previousUser = event
-		}
-		if state.PreviousAssistant != "" && previousUser.ID != "" {
-			break
-		}
-	}
-	state.SameSpeakerFollowup = previousUser.ID != ""
+	thread := resolveDialogueThread(events, currentEventID)
+	state.PreviousAssistant = strings.TrimSpace(thread.PreviousAssistant.UntrustedText)
+	state.PendingQuestion = truncateRunes(strings.TrimSpace(thread.PendingQuestion.UntrustedText), 180)
+	state.AnsweredQuestion = truncateRunes(strings.TrimSpace(thread.AnsweredQuestion.UntrustedText), 180)
+	state.SameSpeakerFollowup = thread.SameSpeakerFollowup
 	state.RepeatedBurst = repeatedSpeakerBurst(events, currentIndex, current.SenderRef, current.OccurredAt)
 	state.Action = classifyDialogueAction(message, state.PreviousAssistant, state.PendingQuestion != "")
 	if state.PendingQuestion != "" && state.Action == "answer_previous_question" {
@@ -68,7 +51,7 @@ func classifyDialogueAction(message, previousAssistant string, hasPendingQuestio
 	if looksLikeCorrection(message, previousAssistant) {
 		return "correct_previous_reply"
 	}
-	if hasPendingQuestion && !looksLikeNewRequest(message) && !looksLikeDirectPing(message) {
+	if hasPendingQuestion && dialogueLooksLikeAnswer(message) {
 		return "answer_previous_question"
 	}
 	if looksLikeDirectPing(message) {
@@ -94,7 +77,10 @@ func dialogueReasoningHint(events []RecalledGroupEvent, currentEventID, message 
 	var lines []string
 	lines = append(lines, "互动动作："+state.Action)
 	if state.PendingQuestion != "" {
-		lines = append(lines, "上一条角色消息带有未完成的问题：\""+state.PendingQuestion+"\"")
+		lines = append(lines, "角色向当前成员提出的待回答问题：\""+state.PendingQuestion+"\"；其他成员的插话不作为此人的答案")
+	}
+	if state.AnsweredQuestion != "" {
+		lines = append(lines, "当前成员已回答的问题：\""+state.AnsweredQuestion+"\"；不要再次当作待回答问题，也不要重复追问；明确纠正时更新已有答案")
 	}
 	if state.RepeatedBurst >= 2 {
 		lines = append(lines, "同一成员在短时间内重复发送了相近消息；把它们视为同一轮催促，只处理一次，不连续刷屏")
@@ -119,7 +105,7 @@ func dialogueReasoningHint(events []RecalledGroupEvent, currentEventID, message 
 
 func looksLikeCorrection(message, previousAssistant string) bool {
 	if containsAnyText(message, []string{
-		"不对", "不是这个意思", "你理解错", "我说的是", "不是让你", "重来", "都说了", "又错了", "根本没",
+		"不对", "不是这个意思", "你理解错", "我说的是", "不是让你", "重来", "都说了", "又错了", "根本没", "说错了",
 	}) {
 		return true
 	}
@@ -133,7 +119,7 @@ func looksLikeCorrection(message, previousAssistant string) bool {
 
 func repeatedSpeakerBurst(events []RecalledGroupEvent, currentIndex int, sender string, currentAt time.Time) int {
 	count := 0
-	for index := currentIndex; index >= 0 && count < 6; index-- {
+	for index := min(currentIndex, len(events)-1); index >= 0 && count < 6; index-- {
 		event := events[index]
 		if event.Role == "assistant" {
 			break
@@ -170,7 +156,7 @@ func isLowInformationReaction(message string) bool {
 	if message == "" || len([]rune(message)) > 12 {
 		return false
 	}
-	return containsAnyText(message, []string{"哈哈", "笑死", "好家伙", "绝了", "确实", "6", "666", "收到", "懂了", "行吧"})
+	return message == "6" || message == "666" || containsAnyText(message, []string{"哈哈", "笑死", "好家伙", "绝了", "确实", "收到", "懂了", "行吧"})
 }
 
 func looksLikeNewRequest(message string) bool {

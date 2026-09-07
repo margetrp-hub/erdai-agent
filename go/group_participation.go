@@ -239,7 +239,7 @@ func (a *AgentRuntime) shouldOwnUnaddressedGroup(
 			if directErr != nil {
 				return false, "group_continuation_failed", directErr
 			}
-			if direct {
+			if direct || targeted {
 				recent, recentErr := a.memory.RecentPersonaGroupEvents(
 					ctx, memoryConversation, personaID, max(policy.MaxContextMessages, 12),
 				)
@@ -247,7 +247,11 @@ func (a *AgentRuntime) shouldOwnUnaddressedGroup(
 					return false, "group_continuation_failed", recentErr
 				}
 				recent = selectThreadContext(recent, event.EventID, max(policy.MaxContextMessages, 12))
-				if clearlyContinuesRecentAssistant(recent, event.EventID, message) {
+				thread := resolveDialogueThread(recent, event.EventID)
+				questionAge := time.Since(thread.PendingQuestion.OccurredAt)
+				ownsPending := thread.PendingQuestion.ID != "" && thread.QuestionTarget == scope.memorySenderRef() &&
+					questionAge >= 0 && questionAge <= duration
+				if (direct || ownsPending) && clearlyContinuesRecentAssistant(recent, event.EventID, message) {
 					return true, "direct_continuation", nil
 				}
 			}

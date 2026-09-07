@@ -32,5 +32,11 @@ jobs:
             --tmpfs /tmp:size=16m,noexec,nosuid \
             --mount "type=bind,source=$PWD/media-check/test_server.py,target=/app/test_server.py,readonly" \
             erdai-media-check:verify python -m unittest -v test_server
+      - name: Smoke-test isolated release image
+        run: |
+          docker build --tag erdai-agent:verify --progress plain .
+          version=$(sed -n 's/^const erdaiRuntimeVersion = "\([0-9][0-9.]*\)"$/\1/p' go/version.go)
+          schema=$(sed -n 's/^const nativeCoreSchemaVersion = \([0-9][0-9]*\)$/\1/p' go/core_schema.go)
+          python3 scripts/test-release-smoke.py --image erdai-agent:verify --version "$version" --schema "$schema"
       - name: Race-check recovery, delivery, points and agent optimization
         run: docker build --target verify-race --progress plain .

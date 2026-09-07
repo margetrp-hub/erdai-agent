@@ -71,7 +71,7 @@ func TestConversationEmotionUsesMessageEvidence(t *testing.T) {
 		"今天真的很难过": "难过",
 		"这到底怎么回事": "困惑",
 		"好耶，终于好了": "开心",
-		"正常问个问题":  "平静",
+		"正常问个问题":  "",
 	} {
 		if actual := detectConversationEmotion(message); actual != expected {
 			t.Fatalf("emotion for %q = %q, want %q", message, actual, expected)

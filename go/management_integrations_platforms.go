@@ -90,6 +90,7 @@ var mgmtIntegrationFields = map[string]map[string]struct{}{
 	),
 	"memory_policy": coreFieldSet(
 		"enabled", "autoCapture", "retrievalLimit", "maxMemoriesPerScope",
+		"semanticRecallEnabled",
 		"allowGroupSharedMemory", "relationshipPulseEnabled", "outputFeedbackEnabled",
 		"memoryResonanceEnabled", "circadianAwarenessEnabled", "longingEnabled",
 		"dreamMemoryIsolation", "pulseMinInteractions", "rhythmWindowEvents",

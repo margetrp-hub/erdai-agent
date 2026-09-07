@@ -1121,16 +1121,15 @@ func (c *qqOfficialConnector) sendAttachment(ctx context.Context, route platform
 	if route.Kind != "group" && route.Kind != "c2c" {
 		return &platformDeliveryError{Retryable: false, Reason: "qq_attachment_kind_unsupported"}
 	}
-	cleanPath := filepath.Clean(attachment.LocalPath)
-	if !strings.HasPrefix(cleanPath, mediaMountRoot+string(os.PathSeparator)) {
-		return &platformDeliveryError{Retryable: false, Reason: "qq_attachment_path_invalid"}
-	}
-	data, err := os.ReadFile(cleanPath)
+	data, cleanPath, err := readNativeMedia(attachment)
 	if err != nil {
+		if errors.Is(err, errNativeMediaPath) {
+			return &platformDeliveryError{Retryable: false, Reason: "qq_attachment_path_invalid", Cause: err}
+		}
+		if errors.Is(err, errNativeMediaSize) {
+			return &platformDeliveryError{Retryable: false, Reason: "qq_attachment_size_invalid", Cause: err}
+		}
 		return &platformDeliveryError{Retryable: false, Reason: "qq_attachment_missing", Cause: err}
-	}
-	if len(data) == 0 || len(data) > maxImageBytes {
-		return &platformDeliveryError{Retryable: false, Reason: "qq_attachment_size_invalid"}
 	}
 	fileType := uint64(4)
 	switch strings.ToLower(attachment.Kind) {

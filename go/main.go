@@ -181,7 +181,10 @@ func checkSQLiteIntegrity(databasePath string) error {
 	if databasePath == "" {
 		return errors.New("database path is required")
 	}
-	dsn := (&url.URL{Scheme: "file", Path: databasePath, RawQuery: "mode=ro"}).String()
+	dsn, err := readOnlySQLiteURI(databasePath)
+	if err != nil {
+		return fmt.Errorf("resolve database path: %w", err)
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)

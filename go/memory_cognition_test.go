@@ -8,7 +8,8 @@ import (
 )
 
 func TestMemoryCognitionPreferenceUpdateAndReplay(t *testing.T) {
-	a := newIdleRuntime(t)
+	// Control pruning explicitly while asserting both active and historical rows.
+	a := newDormantRuntime(t)
 	defer a.Close()
 	ctx := context.Background()
 	run := memoryLedgerTestRun("cognition", "qq")
@@ -36,6 +37,19 @@ func TestMemoryCognitionPreferenceUpdateAndReplay(t *testing.T) {
 	var count int
 	if err := a.db.QueryRow("SELECT count(*) FROM agent_memories").Scan(&count); err != nil || count != 2 {
 		t.Fatalf("historical rows = %d, err=%v", count, err)
+	}
+	if err := a.memory.PruneExpiredMemories(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow("SELECT count(*) FROM agent_memories").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("pruned rows = %d, err=%v", count, err)
+	}
+	// Removing expired history must not let an older, now-deleted fact return.
+	run.EventID, run.CreatedAt = "preference-change", first.Add(time.Minute).Format(time.RFC3339Nano)
+	a.captureStableMemory(ctx, run, "我不喜欢咖啡")
+	assertCurrentMemory("我喜欢咖啡")
+	if err := a.db.QueryRow("SELECT count(*) FROM agent_memories").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("replay after prune created history: count=%d, err=%v", count, err)
 	}
 }
 

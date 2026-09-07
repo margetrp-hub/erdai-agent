@@ -14,6 +14,10 @@ func (a *AgentRuntime) handlePointsReadBridge(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	if strings.HasPrefix(r.URL.Path, "/points-bridge/v1/site/") {
+		a.handlePointsSiteBridge(w, r)
+		return true
+	}
 	if len(a.pointsReadToken) < 32 || a.pointsReadToken == a.adminToken || a.pointsReadToken == a.runtimeToken ||
 		!tokenMatches(r.Header.Get("X-ErDai-Points-Token"), a.pointsReadToken) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"code": "unauthorized", "message": "points read credential required"}})

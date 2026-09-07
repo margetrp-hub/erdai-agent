@@ -40,6 +40,7 @@ var managedCredentialPrefixes = []string{
 var blockedManagedCredentials = map[string]struct{}{
 	"ERDAI_ADMIN_TOKEN":             {},
 	"ERDAI_POINTS_READ_TOKEN":       {},
+	"ERDAI_POINTS_SITE_CLIENTS":     {},
 	"ERDAI_RUN_ENCRYPTION_KEY":      {},
 	"ERDAI_RUNTIME_IDENTITY_SECRET": {},
 	"ERDAI_ADMIN_PASSWORD":          {},

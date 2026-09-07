@@ -41,6 +41,7 @@ type RuntimeConfig struct {
 	LegacyRuntimeDatabasePath     string
 	AdminToken                    string
 	PointsReadToken               string
+	PointsSiteClients             string
 	RuntimeToken                  string
 	ModelAPIKey                   string
 	GrokAPIKey                    string
@@ -65,6 +66,7 @@ type AgentRuntime struct {
 	configStore                   *coreConfigStore
 	adminToken                    string
 	pointsReadToken               string
+	pointsSiteClients             []pointsSiteClient
 	runtimeToken                  string
 	modelAPIKey                   string
 	grokAPIKey                    string
@@ -237,6 +239,10 @@ type providerPolicyConfig struct {
 }
 
 func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
+	siteClients, err := parsePointsSiteClients(config)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(config.DatabasePath) == "" {
 		return nil, errors.New("ERDAI_RUNTIME_DATABASE is required")
 	}
@@ -702,6 +708,7 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		db: db, configStore: configStore,
 		adminToken:             strings.TrimSpace(config.AdminToken),
 		pointsReadToken:        strings.TrimSpace(config.PointsReadToken),
+		pointsSiteClients:      siteClients,
 		runtimeToken:           strings.TrimSpace(config.RuntimeToken),
 		modelAPIKey:            strings.TrimSpace(config.ModelAPIKey),
 		grokAPIKey:             strings.TrimSpace(config.GrokAPIKey),

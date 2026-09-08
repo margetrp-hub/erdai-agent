@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -155,6 +156,154 @@ func TestMediaQualityCancellationIsNotFailOpen(t *testing.T) {
 	}
 }
 
+func TestMediaQualityTargetHonorsExplicitRouteAndSkipsUnusableAutomaticRoutes(t *testing.T) {
+	for _, scenario := range []string{"disabled-endpoint", "not-vision", "disabled-connection", "missing-credential", "unsupported-protocol"} {
+		t.Run(scenario, func(t *testing.T) {
+			runtime := newIdleRuntime(t)
+			defer runtime.Close()
+			if _, err := runtime.configStore.db.Exec("UPDATE model_endpoints SET enabled=0"); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"quality-bad", "quality-good"} {
+				insertTestEndpoint(t, runtime.configStore.db, id, id, []string{"vision", "chat"}, "llm", "openai")
+				bindTestModelConnection(t, runtime.configStore.db, id, "https://quality.example.test/v1")
+			}
+			queries := map[string]string{
+				"disabled-endpoint":    "UPDATE model_endpoints SET enabled=0 WHERE id='quality-bad'",
+				"not-vision":           "UPDATE model_endpoints SET capabilities_json='[\"chat\"]' WHERE id='quality-bad'",
+				"disabled-connection":  "UPDATE provider_connections SET enabled=0 WHERE id='test-bound-quality-bad'",
+				"missing-credential":   "UPDATE provider_connections SET credential_ref='ERDAI_UNCONFIGURED_QUALITY_TEST_KEY' WHERE id='test-bound-quality-bad'",
+				"unsupported-protocol": "UPDATE provider_connections SET protocol='anthropic_messages' WHERE id='test-bound-quality-bad'",
+			}
+			if _, err := runtime.configStore.db.Exec(queries[scenario]); err != nil {
+				t.Fatal(err)
+			}
+			if target, err := runtime.mediaQualityTarget(t.Context(), ""); err != nil || target.EndpointID != "quality-good" {
+				t.Fatalf("automatic selection did not skip unavailable route: endpoint=%s err=%v", target.EndpointID, err)
+			}
+			if target, err := runtime.mediaQualityTarget(t.Context(), "quality-bad"); err == nil || target.EndpointID != "" {
+				t.Fatalf("explicit unavailable endpoint silently fell back: endpoint=%s err=%v", target.EndpointID, err)
+			}
+		})
+	}
+}
+
+type qualityRoundTripper func(*http.Request) (*http.Response, error)
+
+func (transport qualityRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func TestMediaQualityVideoPhaseBudgetsAndParentCancellation(t *testing.T) {
+	for _, scenario := range []string{"independent-budgets", "parent-deadline", "parent-cancel"} {
+		t.Run(scenario, func(t *testing.T) {
+			runtime := newIdleRuntime(t)
+			defer runtime.Close()
+			insertTestEndpoint(t, runtime.configStore.db, "quality-test", "vision-test", []string{"vision"}, "llm", "openai")
+			bindTestModelConnection(t, runtime.configStore.db, "quality-test", "https://quality.example.test")
+			t.Setenv("ERDAI_MEDIA_CHECK_URL", "http://127.0.0.1:19272")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if scenario == "parent-deadline" {
+				var cancelDeadline context.CancelFunc
+				ctx, cancelDeadline = context.WithTimeout(ctx, 5*time.Second)
+				defer cancelDeadline()
+			}
+			var probeDeadline, visionDeadline time.Time
+			calls := 0
+			runtime.client = &http.Client{Transport: qualityRoundTripper(func(r *http.Request) (*http.Response, error) {
+				calls++
+				deadline, found := r.Context().Deadline()
+				if !found {
+					t.Fatal("quality phase has no deadline")
+				}
+				var body any
+				if r.URL.Path == "/inspect" {
+					probeDeadline = deadline
+					if scenario == "parent-cancel" {
+						cancel()
+						return nil, r.Context().Err()
+					}
+					options := videoGenerationOptionsForPrompt("")
+					var width, height int
+					_, _ = fmt.Sscanf(options.AspectRatio, "%d:%d", &width, &height)
+					frames := make([]string, 8)
+					for index := range frames {
+						frames[index] = "data:image/jpeg;base64,dGVzdA=="
+					}
+					body = mediaCheckResponse{Valid: true, Duration: float64(options.Duration), Width: width, Height: height, Frames: frames}
+				} else {
+					visionDeadline = deadline
+					body = map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"status":"passed","identityIssues":[],"constraintIssues":[],"qualityIssues":[]}`}}}}
+				}
+				encoded, _ := json.Marshal(body)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+			})}
+			assessment, err := runtime.assessMediaQuality(ctx, runRecord{}, mediaQualityRequest{MediaType: "video"},
+				toolResult{Attachments: []agentAttachment{{Kind: "video", Name: "test.mp4", LocalPath: "/erdai-media/test.mp4"}}},
+				mediaQualityPolicy{EndpointID: "quality-test"})
+			if scenario == "parent-cancel" {
+				if !errors.Is(err, context.Canceled) || calls != 1 {
+					t.Fatalf("parent cancellation proceeded to vision or delivery: calls=%d err=%v", calls, err)
+				}
+				return
+			}
+			if err != nil || assessment.Status != "passed" || assessment.EndpointID != "quality-test" || assessment.CheckedAt == "" || calls != 2 {
+				t.Fatalf("assessment=%+v calls=%d err=%v", assessment, calls, err)
+			}
+			if scenario == "parent-deadline" {
+				parentDeadline, _ := ctx.Deadline()
+				if !probeDeadline.Equal(parentDeadline) || !visionDeadline.Equal(parentDeadline) {
+					t.Fatal("quality phases exceeded the parent deadline")
+				}
+			} else if !visionDeadline.After(probeDeadline.Add(4 * time.Second)) {
+				t.Fatal("local extraction and visual assessment still share a deadline")
+			}
+		})
+	}
+}
+
+func TestMediaQualityUnavailableAssessmentKeepsSafeRouteEvidence(t *testing.T) {
+	for _, scenario := range []string{"http", "timeout", "empty-response", "missing-route"} {
+		t.Run(scenario, func(t *testing.T) {
+			runtime := newIdleRuntime(t)
+			defer runtime.Close()
+			insertTestEndpoint(t, runtime.configStore.db, "quality-test", "vision-test", []string{"vision"}, "llm", "openai")
+			bindTestModelConnection(t, runtime.configStore.db, "quality-test", "https://quality.example.test")
+			if scenario == "missing-route" {
+				if _, err := runtime.configStore.db.Exec("UPDATE model_endpoints SET enabled=0 WHERE id='quality-test'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			runtime.client = &http.Client{Transport: qualityRoundTripper(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if scenario == "timeout" {
+					return nil, context.DeadlineExceeded
+				}
+				code, body := http.StatusServiceUnavailable, "private-upstream-error-body"
+				if scenario == "empty-response" {
+					code, body = http.StatusOK, `{"choices":[]}`
+				}
+				return &http.Response{StatusCode: code, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			assessment, err := runtime.assessMediaQuality(t.Context(), runRecord{}, mediaQualityRequest{MediaType: "image"},
+				qualityTestArtifact(t, runtime, "unavailable.png"), mediaQualityPolicy{EndpointID: "quality-test"})
+			want := map[string]string{"http": "vision_check_http_503", "timeout": "vision_check_timeout", "empty-response": "vision_check_invalid_response", "missing-route": "vision_route_unavailable"}[scenario]
+			if err != nil || assessment.Status != "unverified" || assessment.Reason != want || assessment.EndpointID != "quality-test" || assessment.CheckedAt == "" || assessment.ElapsedMS < 0 {
+				t.Fatalf("missing failure evidence: assessment=%+v err=%v", assessment, err)
+			}
+			if scenario == "missing-route" && calls != 0 {
+				t.Fatal("disabled quality endpoint was invoked")
+			}
+			encoded, _ := json.Marshal(assessment)
+			if strings.Contains(string(encoded), "private-upstream-error-body") {
+				t.Fatal("upstream body leaked into quality evidence")
+			}
+		})
+	}
+}
+
 func TestMediaQualityCorrectionGenerationFailureRetainsFirstArtifact(t *testing.T) {
 	for _, kind := range []string{"image", "video"} {
 		t.Run(kind, func(t *testing.T) {
@@ -227,7 +376,8 @@ func TestMediaQualitySelectedResultDisclosesStateWithoutDuplicating(t *testing.T
 					if result.UserMessage != "original completion" || result.PreserveUserMessage {
 						t.Fatal("passing quality replaced normal completion")
 					}
-				} else if !result.PreserveUserMessage || !strings.Contains(result.UserMessage, "质量核验") {
+				} else if !result.PreserveUserMessage || status == "failed" && !strings.Contains(result.UserMessage, "质量核验仍未通过") ||
+					status == "unverified" && (!strings.Contains(result.UserMessage, "这次没能完成画面检查") || strings.Contains(result.UserMessage, "尚未")) {
 					t.Fatal("quality warning was not preserved")
 				}
 				receipt.Results[0] = result

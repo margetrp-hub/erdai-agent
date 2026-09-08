@@ -535,7 +535,7 @@ func mediaQualityToolWarning(adapter string, result toolResult) string {
 	case "failed":
 		return label + "已生成，但质量核验仍未通过。"
 	case "unverified":
-		return label + "已生成，尚未完成质量核验。"
+		return label + "已生成，但这次没能完成画面检查。"
 	default:
 		return ""
 	}

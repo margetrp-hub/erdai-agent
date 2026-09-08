@@ -163,13 +163,18 @@ func (a *AgentRuntime) shouldOwnUnaddressedGroup(
 	if !policy.Enabled || !groupEnabled(policy.EnabledGroups, event.Conversation.Key) {
 		return false, "group_participation_disabled", nil
 	}
-	activePersonaID := ""
-	effectiveProfile := personaRuntimeProfile{}
-	if personaID, personaErr := a.activePersonaIDForInstance(event.TransportInstance, event.Transport, event.Conversation.Key); personaErr == nil {
-		activePersonaID = personaID
-		if profile, profileErr := a.configStore.effectivePersonaRuntimeProfile(personaID, scope.AgentInstanceID); profileErr == nil {
-			effectiveProfile = profile
-		}
+	activePersonaID, err := a.activePersonaIDForInstance(event.TransportInstance, event.Transport, event.Conversation.Key)
+	if err != nil {
+		return false, "persona_resolution_failed", err
+	}
+	effectiveProfile, err := a.configStore.effectivePersonaRuntimeProfile(activePersonaID, scope.AgentInstanceID)
+	if err != nil {
+		return false, "group_participation_profile_failed", err
+	}
+	// The merged role/template/instance decision endpoint overrides only the
+	// global default. An unavailable explicit endpoint still fails closed.
+	if endpointID := personaRuntimeEndpoint(effectiveProfile, "decision"); endpointID != "" {
+		policy.DecisionProviderID = endpointID
 	}
 	participationMode := effectiveParticipationMode(policy, effectiveProfile)
 	if participationMode == "addressed_only" {
@@ -704,7 +709,9 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": prompt.String()},
 		},
-		"stream": false,
+		"stream":      false,
+		"max_tokens":  160,
+		"temperature": 0,
 	}
 	var completion chatCompletion
 	apiKey := a.providerCredential(connection.CredentialRef)

@@ -124,7 +124,7 @@ func TestMediaQualityToolWarningsAreDeterministicAndDeduplicated(t *testing.T) {
 		Attachments: []agentAttachment{{Kind: "video"}}}
 	imageWarning := mediaQualityToolWarning("grok_generate_image", image)
 	videoWarning := mediaQualityToolWarning("grok_generate_video", video)
-	if imageWarning != "图片已生成，但质量核验仍未通过。" || videoWarning != "视频已生成，尚未完成质量核验。" {
+	if imageWarning != "图片已生成，但质量核验仍未通过。" || videoWarning != "视频已生成，但这次没能完成画面检查。" {
 		t.Fatalf("unexpected media warnings: %q / %q", imageWarning, videoWarning)
 	}
 	reply := appendMediaQualityWarnings(agentReply{Text: "其它任务已完成。\n" + imageWarning,
@@ -195,7 +195,7 @@ func testAgentToolLoopMediaQuality(t *testing.T, validImage, modelFailure bool) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		warning = "图片已生成，尚未完成质量核验。"
+		warning = "图片已生成，但这次没能完成画面检查。"
 		qualityStatus = "unverified"
 	}
 	service := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

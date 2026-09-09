@@ -22,7 +22,7 @@ func TestIdentityReplyRejectsOfficialCapabilityIntroduction(t *testing.T) {
 		t.Fatal("in-character identity reply was rejected")
 	}
 	guard := naturalReplyGuard(message, []string{official})
-	for _, expected := range []string{"不要自报名字", "即使被直接追问", "不要编造真人姓名", "不要直白说不方便透露", "冷幽默", "不得近似复用"} {
+	for _, expected := range []string{"诚实、简短", "可以说明角色名", "不要伪装真人", "不得近似复用"} {
 		if !strings.Contains(guard, expected) {
 			t.Fatalf("identity guard missing %q: %s", expected, guard)
 		}
@@ -79,6 +79,58 @@ func TestCompactReplyBudgetKeepsDetailedAndCodeRequestsComplete(t *testing.T) {
 	}
 	if !compactReplyBudgetApplies("求阴影面积", policy) {
 		t.Fatal("simple answer did not use the reply budget")
+	}
+	for _, message := range []string{"今天真的很委屈", "先听我说就好，我不想听建议"} {
+		if compactReplyBudgetApplies(message, policy) {
+			t.Fatalf("emotional disclosure was compacted: %q", message)
+		}
+	}
+}
+
+func TestFinalizerDoesNotCompactDetailedRewrite(t *testing.T) {
+	var calls int
+	var systemPrompt string
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) == 0 {
+			t.Fatalf("rewrite request missing messages: %#v", payload)
+		}
+		first, ok := messages[0].(map[string]any)
+		if !ok {
+			t.Fatalf("rewrite request has invalid system message: %#v", messages[0])
+		}
+		systemPrompt, _ = first["content"].(string)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []any{map[string]any{"message": map[string]string{
+				"role":    "assistant",
+				"content": "这是一段需要保留完整上下文的说明。这是第二句补充背景。这是第三句交代边界。",
+			}}},
+		})
+	}))
+	defer provider.Close()
+	runtime := newIdleRuntime(t)
+	defer runtime.Close()
+	runtime.client = provider.Client()
+
+	policy := runtimeMessagePolicy{MaxReplyChars: 30, MaxReplySentences: 2}
+	reply := runtime.finalizeAgentReply(
+		context.Background(), "请详细解释这个问题", "角色规则", provider.URL,
+		[]string{"chat-model"}, 0, nil, policy,
+		agentReply{Text: "根据查询结果，这是一段需要完整保留的说明。"}, true,
+	)
+	if calls != 1 {
+		t.Fatalf("rewrite calls = %d, want 1", calls)
+	}
+	if !strings.Contains(reply.Text, "第三句交代边界") {
+		t.Fatalf("detailed rewrite was truncated: %q", reply.Text)
+	}
+	if strings.Contains(systemPrompt, "总共不超过30字") {
+		t.Fatalf("detailed rewrite received chat cap: %s", systemPrompt)
 	}
 }
 
@@ -153,30 +205,27 @@ func TestNearDuplicateReplyIsRewrittenWithoutHardViolation(t *testing.T) {
 	}
 }
 
-func TestIdentityReplyHidesTechnicalIdentityWithoutInventingHumanDetails(t *testing.T) {
-	for _, message := range []string{"你是谁", "你是AI吗", "请介绍一下你自己", "你用的是什么模型", "你的模型架构是什么", "具体型号是什么"} {
-		for _, reply := range []string{
-			"我是一个AI助手。",
-			"我是豆包。",
-			"我叫小林，住在上海。",
-			"我是语言模型，可以帮你查资料。",
-			"大致算是对话型大语言模型架构。",
-			"具体型号不方便报。",
-		} {
-			if !replyNeedsRewrite(message, reply, nil) {
-				t.Fatalf("identity reply was accepted: %q / %q", message, reply)
-			}
+func TestIdentityReplyStaysHonestWithoutForcingEvasion(t *testing.T) {
+	for _, reply := range []string{"我是一个 AI，陪你聊天。", "我是豆包。", "我是虚拟聊天伙伴，不是现实中的人。"} {
+		if replyNeedsRewrite("你是谁", reply, nil) {
+			t.Fatalf("honest identity reply was rewritten: %q", reply)
 		}
+	}
+	for _, reply := range []string{"我叫小林，住在上海。", "我是语言模型，可以帮你查资料。", "具体型号不方便报。"} {
+		if !replyNeedsRewrite("你是谁", reply, nil) {
+			t.Fatalf("fabricated or mechanical identity reply was accepted: %q", reply)
+		}
+	}
+	if replyNeedsRewrite("你用的是什么模型", "我是语言模型，具体版本要看当前接入配置。", nil) {
+		t.Fatal("factual technical identity answer was rejected")
 	}
 
 	for index := 0; index < 20; index++ {
 		fallback := identityReplyFallback(nil)
-		for _, forbidden := range []string{"豆包", "AI", "机器人", "模型", "我叫", "住在"} {
-			if strings.Contains(fallback, forbidden) {
-				t.Fatalf("fallback exposed identity detail %q: %s", forbidden, fallback)
-			}
+		if !strings.Contains(fallback, "AI") && !strings.Contains(fallback, "虚拟") {
+			t.Fatalf("fallback did not answer identity honestly: %s", fallback)
 		}
-		if len([]rune(fallback)) > 20 {
+		if len([]rune(fallback)) > 32 {
 			t.Fatalf("fallback is too long: %s", fallback)
 		}
 	}
@@ -187,6 +236,60 @@ func TestNaturalReplyGuardIsInjectedOnce(t *testing.T) {
 	prompt = withNaturalReplyGuard(prompt, "你是谁", []string{"旧回复"})
 	if count := strings.Count(prompt, naturalReplyGuardHeading); count != 1 {
 		t.Fatalf("quality guard count = %d: %s", count, prompt)
+	}
+}
+
+func TestNaturalReplyGuardAdaptsToneToScene(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		includes []string
+		avoids   []string
+	}{
+		{
+			name:     "emotion",
+			message:  "今天真的好委屈",
+			includes: []string{"情绪分享或倾诉", "不要强塞方案"},
+		},
+		{
+			name:     "task",
+			message:  "帮我把这个发布一下",
+			includes: []string{"明确任务", "不要用玩笑拖慢办事"},
+		},
+		{
+			name:     "question",
+			message:  "你觉得哪个更好？",
+			includes: []string{"观点或事实问题", "不要为了延长聊天连续反问"},
+		},
+		{
+			name:     "social",
+			message:  "刚下班，路上风好大",
+			includes: []string{"普通闲聊或分享", "不要求每次都提问"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			guard := naturalReplyGuard(test.message, nil)
+			for _, expected := range test.includes {
+				if !strings.Contains(guard, expected) {
+					t.Fatalf("scene guard missing %q: %s", expected, guard)
+				}
+			}
+			if strings.Contains(guard, "群聊默认用一句完整短话") {
+				t.Fatal("scene guard retained the unconditional short/snark rule")
+			}
+		})
+	}
+}
+
+func TestNaturalReplyGuardPreservesExemptSceneDetails(t *testing.T) {
+	expanded := naturalReplyGuard("今天真的很委屈", nil)
+	if !strings.Contains(expanded, "不能删减本轮必要细节") {
+		t.Fatalf("expanded scene did not override fixed shortness: %s", expanded)
+	}
+	brief := naturalReplyGuard("求阴影面积", nil)
+	if strings.Contains(brief, "不能删减本轮必要细节") {
+		t.Fatalf("ordinary answer received expansion override: %s", brief)
 	}
 }
 

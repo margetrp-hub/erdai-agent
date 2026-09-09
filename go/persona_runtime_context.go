@@ -193,6 +193,16 @@ func (a *AgentRuntime) personaContext(ctx context.Context, run runRecord, messag
 			result.RecentMessages = append(result.RecentMessages, conversationEventLine(event, text))
 		}
 	}
+	if events, err := a.memory.DialogueEventsForPrompt(ctx, dialogueEventScope(run), run.EventID, message); err == nil {
+		for _, event := range events {
+			if line := dialogueEventPromptLine(event); line != "" {
+				result.RecentMessages = append(result.RecentMessages, line)
+			}
+			if len(result.RecentMessages) >= contextPolicy.ContextMessagesPerPrompt+3 {
+				break
+			}
+		}
+	}
 	if len(result.RecentMessages) > contextPolicy.ContextMessagesPerPrompt {
 		result.RecentMessages = result.RecentMessages[len(result.RecentMessages)-contextPolicy.ContextMessagesPerPrompt:]
 	}
@@ -303,6 +313,10 @@ func (a *AgentRuntime) captureStableMemory(ctx context.Context, run runRecord, m
 		if err == nil {
 			_ = a.memory.TrimScope(ctx, memoryScope, policy.MaxMemoriesPerScope)
 		}
+	}
+	if event, ok := extractDialogueEvent(message, relationshipObservationTime(run.CreatedAt), policy.TimezoneOffsetMinutes); ok {
+		memoryScope := dialogueEventScope(run)
+		_ = a.memory.CaptureDialogueEvent(ctx, memoryScope, event, run.EventID)
 	}
 }
 

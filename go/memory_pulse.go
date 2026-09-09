@@ -18,10 +18,11 @@ func (s *MemoryGroupStore) RelationshipWithPulse(
 	if err != nil || !found || !policy.RelationshipPulseEnabled {
 		return state, found, err
 	}
+	_, _, eventConversation := parsePersonaMemoryScope(conversation)
 	state.Pulse = s.relationshipPulse(
 		ctx, personaID, sender,
 		s.digest("conversation", conversation), s.digest("sender", sender),
-		state, policy,
+		state, policy, eventConversation,
 	)
 	return state, true, nil
 }
@@ -32,6 +33,7 @@ func (s *MemoryGroupStore) relationshipPulse(
 	conversationDigest, senderDigest []byte,
 	state RelationshipState,
 	policy runtimeMemoryPolicy,
+	conversationRefs ...string,
 ) *RelationshipPulse {
 	pulse := &RelationshipPulse{PreferredHour: -1, ReplyCount: state.ReplyCount}
 	if !policy.RelationshipPulseEnabled {
@@ -41,7 +43,10 @@ func (s *MemoryGroupStore) relationshipPulse(
 
 	eventTimes := s.relationshipEventTimes(ctx, conversationDigest, senderDigest, policy.RhythmWindowEvents)
 	pulse.RecentInteractions = len(eventTimes)
-	pulse.Ready = state.InteractionCount >= policy.PulseMinInteractions && len(eventTimes) >= policy.PulseMinInteractions
+	// A pulse is eligible only after at least one delivered answer. Ambient
+	// group traffic alone must not unlock familiarity, longing, or routine cues.
+	pulse.Ready = state.InteractionCount >= policy.PulseMinInteractions &&
+		len(eventTimes) >= policy.PulseMinInteractions && state.ReplyCount > 0
 	if !state.LastInteraction.IsZero() {
 		pulse.HoursSinceInteraction = roundPulseValue(math.Max(0, s.now().Sub(state.LastInteraction).Hours()))
 	}
@@ -59,14 +64,14 @@ func (s *MemoryGroupStore) relationshipPulse(
 		pulse.BucketHealth = roundPulse(100 * (kindCoverage*0.45 + averageConfidence*0.35 + averageImportance*0.20))
 	}
 
-	if policy.OutputFeedbackEnabled {
-		denominator := state.AddressedCount
-		if denominator == 0 {
-			denominator = state.InteractionCount
+	if policy.OutputFeedbackEnabled && len(conversationRefs) > 0 && conversationRefs[0] != "" {
+		if events, err := s.RecentPersonaGroupEvents(ctx, conversationRefs[0], personaID, policy.RhythmWindowEvents); err == nil {
+			pulse.QuestionsObserved, pulse.QuestionsAnswered = dialogueQuestionFeedback(events, senderRef, s.now())
+			pulse.FeedbackReady = pulse.QuestionsObserved >= 3
+			if pulse.QuestionsObserved > 0 {
+				pulse.OutputReflow = roundPulse(100 * float64(pulse.QuestionsAnswered) / float64(pulse.QuestionsObserved))
+			}
 		}
-		replyRatio := math.Min(1, float64(state.ReplyCount)/float64(maxInt(1, denominator)))
-		evidence := math.Min(1, float64(denominator)/8)
-		pulse.OutputReflow = roundPulse(100 * replyRatio * (0.55 + 0.45*evidence))
 	}
 
 	typicalGap, regularity, preferredHour := relationshipRhythm(eventTimes, policy.TimezoneOffsetMinutes)
@@ -207,7 +212,7 @@ func relationshipPulsePrompt(pulse RelationshipPulse) string {
 	if pulse.Sharing >= 58 {
 		parts = append(parts, "可主动分享一个与当前话题有关的小细节")
 	}
-	if pulse.OutputReflow < 30 {
+	if pulse.FeedbackReady && pulse.OutputReflow < 30 {
 		parts = append(parts, "降低追问密度，给对方留出回应空间")
 	}
 	if len(parts) == 0 {

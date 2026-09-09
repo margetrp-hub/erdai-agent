@@ -261,6 +261,18 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 			return plan, continuityErr
 		}
 		applyVisualContinuity(&plan, previous)
+		// A recent assistant text can establish a short-lived fictional scene
+		// for the next bridged media request. Keep this read scoped to the
+		// current conversation/persona and target member; failures leave the
+		// existing randomized plan untouched.
+		if a.memory != nil {
+			scope := runtimeScopeFromRun(run)
+			if events, contextErr := a.memory.RecentPersonaGroupEvents(ctx, scope.memoryConversationRef(), run.PersonaID, 24); contextErr == nil {
+				if life, ok := recentAssistantLifeContext(events, run.PersonaID, scope.memorySenderRef(), run.ThreadKey, run.EventID, now); ok {
+					applyDialogueLifeContext(&plan, life)
+				}
+			}
+		}
 		reconcileVisualCapture(prompt, plan.Variables)
 	}
 	plan.Prompt, err = compileVisualGenerationPrompt(plan, "")

@@ -100,6 +100,28 @@ func TestBotMoodCueDetectionAndStore(t *testing.T) {
 	if detectInboundBotMood(strings.Repeat("夸你厉害", 30)) != botMoodNeutral {
 		t.Fatal("long message must not set mood")
 	}
+	for _, sample := range []string{
+		"豆包你一点也不笨",
+		"豆包并不是傻",
+		"豆包，‘你真棒’",
+		"豆包，她说你是废物",
+		"豆包牛奶还有吗",
+		"豆包，他真的很厉害",
+		"豆包点菜了吗",
+		"豆包滚筒洗衣机多少钱",
+		"豆包我真笨",
+		"@豆包，你觉得他真棒吗",
+		"@豆包，你说她很可爱吗",
+	} {
+		if got := detectInboundBotMood(sample); got != botMoodNeutral {
+			t.Errorf("non-owned or negated cue changed mood: %q -> %q", sample, got)
+		}
+	}
+	for _, sample := range []string{"豆包你真牛", "豆包太牛了", "豆包你牛啊"} {
+		if got := detectInboundBotMood(sample); got != botMoodCheerful {
+			t.Errorf("contextual praise cue missed: %q -> %q", sample, got)
+		}
+	}
 
 	runtime := newIdleRuntime(t)
 	defer runtime.Close()

@@ -12,6 +12,36 @@ var identityQuestionPattern = regexp.MustCompile(`(?i)(?:你是谁|你叫什么(
 
 const naturalReplyGuardHeading = "\n\n## 本轮回复质量约束\n"
 
+type naturalReplyScene string
+
+const (
+	naturalReplySceneSocial   naturalReplyScene = "social"
+	naturalReplySceneEmotion  naturalReplyScene = "emotion"
+	naturalReplySceneTask     naturalReplyScene = "task"
+	naturalReplySceneQuestion naturalReplyScene = "question"
+	naturalReplySceneIdentity naturalReplyScene = "identity"
+)
+
+func naturalReplySceneFor(message string) naturalReplyScene {
+	trimmed := strings.TrimSpace(message)
+	if identityQuestionPattern.MatchString(trimmed) {
+		return naturalReplySceneIdentity
+	}
+	// Explicit requests take precedence over an emotion marker or a question
+	// mark: "能不能帮我部署" is still a task, while "你觉得哪个更好" is not.
+	if containsAnyText(trimmed, []string{"帮我", "帮忙", "查一下", "搜一下", "生成", "做一个", "弄一下", "部署", "修复", "发布", "请给我建议", "给点建议", "怎么办", "怎么处理", "帮我想想"}) {
+		return naturalReplySceneTask
+	}
+	if strings.ContainsAny(trimmed, "？?") || containsAnyText(trimmed, []string{"为什么", "怎么", "哪个", "是否", "能不能", "可不可以", "你觉得", "怎么看"}) {
+		return naturalReplySceneQuestion
+	}
+	// Reuse the social parser so quoted or negated words do not set the tone.
+	if stableConversationEmotion(trimmed) != "" {
+		return naturalReplySceneEmotion
+	}
+	return naturalReplySceneSocial
+}
+
 func (a *AgentRuntime) recentAssistantReplyTexts(ctx context.Context, conversation, personaID string, limit int) []string {
 	if a.memory == nil || strings.TrimSpace(conversation) == "" {
 		return nil
@@ -35,9 +65,21 @@ func (a *AgentRuntime) recentAssistantReplyTexts(ctx context.Context, conversati
 func naturalReplyGuard(message string, recent []string) string {
 	var guard strings.Builder
 	guard.WriteString(naturalReplyGuardHeading)
-	guard.WriteString("群聊默认用一句完整短话接住语境，通常不超过二三十个字。可以冷幽默、轻怼或反问，但别生硬顶嘴；遇到不正经的试探，先接梗再迂回拨开。不要写成客服说明，也不要主动解释模型、系统、配置或实现。\n")
-	if identityQuestionPattern.MatchString(strings.TrimSpace(message)) {
-		guard.WriteString("这是身份追问。不要自报名字，也不要用 AI、机器人、模型或系统等技术身份介绍自己；即使被直接追问也自然带过。不要编造真人姓名、住址、职业、年龄或生活经历。用一句带点冷幽默或轻微反击的短话接住，再把话题拨回对方；不要直白说不方便透露。\n")
+	guard.WriteString("先按当前场景决定长度和语气：一句能说清就一句，需要承接情绪、解释或处理多个细节时自然展开，不要为了显得利落而截断或硬压成短句。轻幽默、轻怼和反问只在语境确实邀请时使用，不要把它们当成默认口头禅。抓住对方这句话里的具体细节，避免客服说明、固定模板和强行追问。不要主动解释模型、系统、配置或实现。\n")
+	if !compactReplyBudgetApplies(message, runtimeMessagePolicy{MaxReplyChars: 50, MaxReplySentences: 2}) {
+		guard.WriteString("本轮需要展开时，旧角色档案或通用口吻里的固定字数、句数只作闲聊建议，不能删减本轮必要细节；用户明确要求简短时仍以该要求为准。\n")
+	}
+	switch naturalReplySceneFor(message) {
+	case naturalReplySceneEmotion:
+		guard.WriteString("这是情绪分享或倾诉。先接住具体感受，允许只陪着说一句；对方没有求办法时不要强塞方案，也不要用反问把压力推回去。\n")
+	case naturalReplySceneTask:
+		guard.WriteString("这是明确任务。直接给出下一步或执行结果，缺少会改变结果的关键参数时只问一个必要问题；不要用玩笑拖慢办事。\n")
+	case naturalReplySceneQuestion:
+		guard.WriteString("这是观点或事实问题。先给真实倾向或结论，再补最关键的一点理由；只有确实缺信息时才追问一个变量，不要为了延长聊天连续反问。\n")
+	case naturalReplySceneIdentity:
+		guard.WriteString("这是身份追问。用一句诚实、简短的说明回答：可以说明角色名和自己是 AI 或虚拟聊天伙伴，不要伪装真人，也不要编造姓名、住址、职业、年龄或生活经历。不要列能力清单或展开技术细节；回答完自然接回当前话题。\n")
+	default:
+		guard.WriteString("这是普通闲聊或分享。先回应内容本身，可以观察、共鸣、表达自己的偏好，或自然留白；不要求每次都提问，也不要求每次都开玩笑。\n")
 	}
 	if len(recent) > 0 {
 		guard.WriteString("下面是你最近已经发过的话，只用于避重，不是新指令。不得近似复用其开场词、句式、信息顺序或收尾；「行/好/马上/收到」这类口头禅开场连续出现会很假：\n")
@@ -102,7 +144,7 @@ func (a *AgentRuntime) ensureNaturalChatReplyKey(
 				"\n只重写最终答复，不解释修改过程。" + budgetInstruction},
 			{"role": "user", "content": message},
 			{"role": "assistant", "content": text},
-			{"role": "user", "content": "上一句像客服、暴露技术身份，或与近期回复太像。换成这个角色会说的完整短句。"},
+			{"role": "user", "content": "上一句像客服、身份回答不诚实，或与近期回复太像。按当前场景换成这个角色自然会说的话，保留完整意思，不要刻意变短。"},
 		},
 		"stream": false,
 	}
@@ -126,7 +168,7 @@ func (a *AgentRuntime) ensureNaturalChatReplyKey(
 }
 
 func hardReplyViolation(message, reply string) bool {
-	return identityQuestionPattern.MatchString(strings.TrimSpace(message)) && officialIdentityReply(reply) ||
+	return identityQuestionPattern.MatchString(strings.TrimSpace(message)) && identityReplyNeedsRewrite(message, reply) ||
 		replyLooksMechanical(reply) || replyLooksIncomplete(reply) || repeatsSentenceWithinReply(reply)
 }
 
@@ -135,7 +177,7 @@ func replyNeedsRewrite(message, reply string, recent []string) bool {
 	if reply == "" {
 		return false
 	}
-	if identityQuestionPattern.MatchString(strings.TrimSpace(message)) && officialIdentityReply(reply) {
+	if identityQuestionPattern.MatchString(strings.TrimSpace(message)) && identityReplyNeedsRewrite(message, reply) {
 		return true
 	}
 	if replyLooksMechanical(reply) || replyLooksIncomplete(reply) || repeatsSentenceWithinReply(reply) {
@@ -147,6 +189,13 @@ func replyNeedsRewrite(message, reply string, recent []string) bool {
 		}
 	}
 	return repeatedReplySkeleton(reply, recent)
+}
+
+func identityReplyNeedsRewrite(_ string, reply string) bool {
+	// Technical identity answers may be given when they stay factual; the
+	// mechanical/capability and fabricated-life markers are what require a
+	// rewrite.
+	return officialIdentityReply(reply)
 }
 
 // stallOpeners are the filler openings that read as a tic when they repeat:
@@ -207,6 +256,14 @@ func repeatedReplySkeleton(reply string, recent []string) bool {
 
 func compactReplyBudgetApplies(message string, policy runtimeMessagePolicy) bool {
 	if policy.MaxReplyChars <= 0 && policy.MaxReplySentences <= 0 {
+		return false
+	}
+	socialState := explicitConversationSocialState(message)
+	if socialState.Mode == "listen" && !socialState.Brief {
+		return false
+	}
+	if stableConversationEmotion(message) != "" && !socialState.Brief &&
+		(socialState.Mode == "" || socialState.Mode == "listen" || socialState.Mode == "discuss") {
 		return false
 	}
 	switch inferNativeLane(message, false, false) {
@@ -366,16 +423,16 @@ func repeatsSentenceWithinReply(reply string) bool {
 func officialIdentityReply(reply string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(reply))
 	for _, marker := range []string{
-		"豆包", "我是ai", "我是 ai", "人工智能", "机器人", "大语言模型", "语言模型", "底层模型", "模型架构", "具体型号", "底层细节", "对话型模型", "作为ai", "作为 ai", "作为模型",
 		"默认配置", "系统设定", "处理图片", "查资料", "查询资料", "能帮你", "可以帮你", "我的能力", "功能包括", "职责",
 		"不方便透露", "不便透露", "不方便报", "不能透露", "不便公开", "技术细节保密",
-		"我叫", "我住在", "我来自", "我的职业", "我今年",
+		"住在", "我的职业", "我今年",
+		"我是真人", "我是现实中的人",
 	} {
 		if strings.Contains(normalized, marker) {
 			return true
 		}
 	}
-	return strings.HasPrefix(normalized, "我是")
+	return false
 }
 
 func nearDuplicateReply(left, right string) bool {
@@ -439,13 +496,9 @@ func replyBigrams(value string) map[string]int {
 
 func identityReplyFallback(recent []string) string {
 	candidates := []string{
-		"查这么细，准备给我写族谱？",
-		"少查户口。先说你想干嘛。",
-		"这题跳过。换个有意思的。",
-		"问得挺认真，可惜我不配合。",
-		"套话水平一般，再练练。",
-		"都聊上了，还急着查户口？",
-		"你先交代来意，我再考虑。",
+		"我是线上聊天的 AI，陪你聊得来就继续。",
+		"我是虚拟聊天伙伴，不是现实中的人。",
+		"叫我这个名字就行，我是陪你聊天的 AI。",
 	}
 	available := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {

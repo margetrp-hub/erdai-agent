@@ -591,11 +591,20 @@ func (a *AgentRuntime) finalizeAgentReplyKey(
 	}
 	budgetApplies := compactReplyBudgetApplies(message, messagePolicy)
 	preserveFormatting := replyHasFormalLayout(text) && !budgetApplies
+	// Detailed explanations and other non-chat lanes are deliberately exempt
+	// from the compact reply budget. Do not pass the chat caps into the
+	// natural-language rewrite either, otherwise a rewrite failure (or a
+	// perfectly valid longer rewrite) gets compacted on the way out.
+	rewriteMaxChars, rewriteMaxSentences := 0, 0
+	if budgetApplies {
+		rewriteMaxChars = messagePolicy.MaxReplyChars
+		rewriteMaxSentences = messagePolicy.MaxReplySentences
+	}
 	if allowRewrite && !preserveFormatting {
 		text = a.ensureNaturalChatReplyKey(
 			ctx, message, systemPrompt, text, apiBase, apiKey,
 			models, modelIndex, recent,
-			messagePolicy.MaxReplyChars, messagePolicy.MaxReplySentences,
+			rewriteMaxChars, rewriteMaxSentences,
 		)
 	}
 	if budgetApplies {
@@ -1550,6 +1559,21 @@ func (a *AgentRuntime) forgetMemory(ctx context.Context, run runRecord, query st
 			return toolResult{}, err
 		}
 		if ok {
+			deleted++
+		}
+	}
+	// Temporary dialogue events live in their own instance/user/conversation
+	// scope. Explicit forget requests should clear those too, without widening
+	// deletion to durable user facts in another scope.
+	eventScope := dialogueEventScope(run)
+	eventMemories, eventErr := a.memory.SearchMemoriesKeyword(ctx, eventScope, query, 20)
+	if eventErr != nil {
+		return toolResult{}, eventErr
+	}
+	for _, memory := range eventMemories {
+		if ok, forgetErr := a.memory.ForgetMemory(ctx, eventScope, memory.ID); forgetErr != nil {
+			return toolResult{}, forgetErr
+		} else if ok {
 			deleted++
 		}
 	}

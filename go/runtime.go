@@ -1197,7 +1197,7 @@ func (a *AgentRuntime) acceptTransportEventWithTrust(ctx context.Context, event 
 		}
 		if _, _, err = a.memory.ObserveRelationship(
 			ctx, event.EventID, personaConversationRef(personaID, memoryConversation), memorySender,
-			event.Flags.IsWake || event.Flags.IsMentionBot, occurredAt, RelationshipIdentity{
+			event.Conversation.Kind == "private" || event.Flags.IsWake || event.Flags.IsMentionBot, occurredAt, RelationshipIdentity{
 				PersonaID: personaID, ConversationRef: memoryConversation,
 				SenderRef: memorySender, SenderDisplayName: event.Sender.DisplayName,
 			},

@@ -232,7 +232,7 @@ func TestCoreConfigSchemaInitializesNatively(t *testing.T) {
 	if strings.Contains(description, "群高级管家") || strings.Contains(scenario, "资料查询") {
 		t.Fatalf("fresh persona still reads like a duty list: %q / %q", description, scenario)
 	}
-	for _, expected := range []string{"不要把自己说成一份角色说明", "平台显示名", "不使用 AI", "不编造真人姓名", "不要近似复用", "不要把执行拆成多轮口头确认"} {
+	for _, expected := range []string{"不要把自己说成一份角色说明", "平台显示名", "诚实说明这是 AI", "不编造真人姓名", "不要近似复用", "不要把执行拆成多轮口头确认"} {
 		if !strings.Contains(systemPrompt, expected) {
 			t.Fatalf("fresh persona prompt missing %q: %s", expected, systemPrompt)
 		}

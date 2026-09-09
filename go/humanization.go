@@ -101,9 +101,13 @@ const (
 )
 
 var botMoodPraiseHints = []string{
-	"厉害", "牛", "真棒", "好聪明", "太强", "可爱", "喜欢你", "爱你", "谢谢", "辛苦",
+	// Keep single-character cues out of this list.  A bare "牛" is common in
+	// ordinary words (for example, "牛奶") and is not praise by itself.
+	"厉害", "真棒", "好聪明", "太强", "可爱", "喜欢你", "爱你", "谢谢", "辛苦",
 	"靠谱", "真行", "666", "nb", "好用", "真好",
 }
+
+var botMoodPraisePhraseHints = []string{"牛啊", "真牛", "太牛", "牛逼", "牛批", "牛！", "牛!"}
 
 var botMoodTeaseHints = []string{
 	"笨", "傻", "菜", "垃圾", "废物", "没用", "智障", "闭嘴", "滚", "烦人",
@@ -117,17 +121,110 @@ func detectInboundBotMood(message string) string {
 	if message == "" || runeCount(message) > 80 {
 		return botMoodNeutral
 	}
-	for _, hint := range botMoodTeaseHints {
-		if strings.Contains(message, hint) {
-			return botMoodTeased
-		}
+	// Strip quoted and attributed clauses before looking for cues.  A member
+	// quoting another person's insult or compliment must not change the bot's
+	// own mood.  socialOwnClauses also keeps punctuation-separated direct
+	// address clauses intact for the existing negation helper.
+	clauses := socialOwnClauses(message)
+	if len(clauses) == 0 {
+		return botMoodNeutral
 	}
-	for _, hint := range botMoodPraiseHints {
-		if strings.Contains(message, hint) {
-			return botMoodCheerful
+	for _, clause := range clauses {
+		clause = strings.ToLower(strings.TrimSpace(clause))
+		if clause == "" || moodClauseTargetsSomeoneElse(clause) {
+			continue
+		}
+		for _, hint := range botMoodTeaseHints {
+			if moodCuePresent(clause, hint) {
+				return botMoodTeased
+			}
+		}
+		for _, hint := range botMoodPraiseHints {
+			if moodCuePresent(clause, hint) {
+				return botMoodCheerful
+			}
+		}
+		for _, hint := range botMoodPraisePhraseHints {
+			if moodCuePresent(clause, hint) {
+				return botMoodCheerful
+			}
 		}
 	}
 	return botMoodNeutral
+}
+
+// moodCuePresent requires the cue to be in an un-negated span.  This keeps
+// corrections such as "你一点也不笨" from making the bot sulk and avoids
+// treating "不谢谢"/"不用谢谢" as praise.
+func moodCuePresent(clause, cue string) bool {
+	for offset := 0; offset < len(clause); {
+		index := strings.Index(clause[offset:], cue)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		offset = index + len(cue)
+		prefix := clause[:index]
+		if !moodCueOwned(clause, index, cue) {
+			continue
+		}
+		// "是不是傻/笨" is a rhetorical tease, not a negated cue.  Keep
+		// the normal negation handling for "是不是不笨" and similar forms.
+		rhetorical := strings.HasSuffix(prefix, "是不是") || strings.HasSuffix(prefix, "难道是")
+		if rhetorical || !socialNegated(prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// moodCueOwned rejects lexical matches and cues whose grammatical subject is
+// somebody else.  The message is only sampled after an explicit wake/mention,
+// so a nearby "你" or the bot name is sufficient evidence of direct address.
+func moodCueOwned(clause string, index int, cue string) bool {
+	suffix := clause[index+len(cue):]
+	if cue == "菜" && strings.HasSuffix(clause[:index], "点") {
+		return false // 点菜
+	}
+	if cue == "滚" && strings.HasPrefix(suffix, "筒") {
+		return false // 滚筒洗衣机
+	}
+	if cue == "笨" && strings.HasPrefix(suffix, "重") {
+		return false // 笨重
+	}
+	prefix := clause[:index]
+	// In comparisons such as "你比他厉害", the third-person name is the
+	// comparator, while the grammatical subject remains the addressed bot.
+	if strings.Contains(prefix, "比") && strings.Contains(prefix, "你") {
+		return true
+	}
+	for _, target := range []string{"他", "她", "他们", "她们", "别人", "有人"} {
+		if targetIndex := strings.LastIndex(prefix, target); targetIndex >= 0 {
+			between := prefix[targetIndex+len(target):]
+			if !strings.ContainsAny(between, "你豆包") {
+				return false
+			}
+		}
+	}
+	if targetIndex := strings.LastIndex(prefix, "我"); targetIndex >= 0 {
+		between := prefix[targetIndex+len("我"):]
+		if !strings.ContainsAny(between, "你豆包") {
+			return false
+		}
+	}
+	return true
+}
+
+// moodClauseTargetsSomeoneElse filters the common third-person forms that
+// survive socialOwnClauses when they are not explicitly attributed.  Direct
+// "你" address and bot-name mentions remain eligible.
+func moodClauseTargetsSomeoneElse(clause string) bool {
+	for _, prefix := range []string{"他", "她", "他们", "她们", "别人", "有人", "朋友", "同事"} {
+		if strings.HasPrefix(clause, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // failureDeflatesMood 判断一次失败是否应该让机器人蔫一会儿。

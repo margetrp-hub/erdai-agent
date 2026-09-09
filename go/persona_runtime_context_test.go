@@ -97,7 +97,7 @@ func TestImaginaryMemoryContextIsNotPromotedToFact(t *testing.T) {
 func TestRelationshipPulsePromptUsesQualitativeBoundaries(t *testing.T) {
 	prompt := relationshipPulsePrompt(RelationshipPulse{
 		Ready: true, MemoryResonance: 72, RoutineExpectation: 68,
-		Longing: 55, Sharing: 64, OutputReflow: 20, PreferredHour: 21,
+		Longing: 55, Sharing: 64, OutputReflow: 20, FeedbackReady: true, PreferredHour: 21,
 	})
 	for _, expected := range []string{"自然接住", "不要声称监控作息", "不催促", "降低追问密度"} {
 		if !strings.Contains(prompt, expected) {

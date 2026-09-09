@@ -114,6 +114,9 @@ type RelationshipState struct {
 type RelationshipPulse struct {
 	Ready                 bool    `json:"ready"`
 	OutputReflow          float64 `json:"outputReflow"`
+	FeedbackReady         bool    `json:"feedbackReady"`
+	QuestionsObserved     int     `json:"questionsObserved"`
+	QuestionsAnswered     int     `json:"questionsAnswered"`
 	MemoryResonance       float64 `json:"memoryResonance"`
 	RoutineExpectation    float64 `json:"routineExpectation"`
 	Longing               float64 `json:"longing"`
@@ -1645,7 +1648,7 @@ func (s *MemoryGroupStore) ListRelationships(ctx context.Context, personaID stri
 				return nil, 0, err
 			}
 		}
-		item.State.AutoIntimacy = relationshipIntimacy(item.State.InteractionCount, item.State.AddressedCount, item.State.LastInteraction, s.now())
+		item.State.AutoIntimacy = relationshipIntimacy(item.State.InteractionCount, item.State.AddressedCount, item.State.ReplyCount, item.State.LastInteraction, s.now())
 		item.State.Intimacy = item.State.AutoIntimacy
 		item.State.IntimacyLocked = locked == 1 && manual.Valid
 		if item.State.IntimacyLocked {
@@ -1673,7 +1676,7 @@ func (s *MemoryGroupStore) ListRelationships(ctx context.Context, personaID stri
 	for index := range items {
 		input := pulseInputs[index]
 		if input.senderRef != "" {
-			items[index].State.Pulse = s.relationshipPulse(ctx, items[index].PersonaID, input.senderRef, input.conversationDigest, input.senderDigest, items[index].State, policy)
+			items[index].State.Pulse = s.relationshipPulse(ctx, items[index].PersonaID, input.senderRef, input.conversationDigest, input.senderDigest, items[index].State, policy, items[index].ConversationRef)
 		}
 	}
 	return items, total, nil
@@ -1784,7 +1787,7 @@ func (s *MemoryGroupStore) relationshipByID(ctx context.Context, id string) (Man
 			return ManagedRelationship{}, false, err
 		}
 	}
-	item.State.AutoIntimacy = relationshipIntimacy(item.State.InteractionCount, item.State.AddressedCount, item.State.LastInteraction, s.now())
+	item.State.AutoIntimacy = relationshipIntimacy(item.State.InteractionCount, item.State.AddressedCount, item.State.ReplyCount, item.State.LastInteraction, s.now())
 	item.State.Intimacy = item.State.AutoIntimacy
 	item.State.IntimacyLocked = locked == 1 && manual.Valid
 	if item.State.IntimacyLocked {
@@ -1796,7 +1799,7 @@ func (s *MemoryGroupStore) relationshipByID(ctx context.Context, id string) (Man
 		if decryptErr != nil {
 			return ManagedRelationship{}, false, decryptErr
 		}
-		item.State.Pulse = s.relationshipPulse(ctx, item.PersonaID, string(value), conversationDigest, senderDigest, item.State, s.runtime.memoryPolicy(ctx))
+		item.State.Pulse = s.relationshipPulse(ctx, item.PersonaID, string(value), conversationDigest, senderDigest, item.State, s.runtime.memoryPolicy(ctx), item.ConversationRef)
 	}
 	return item, true, nil
 }
@@ -1815,7 +1818,7 @@ func relationshipStateFromRow(row rowScanner, now time.Time) (RelationshipState,
 	if err == nil && lastReply.Valid {
 		state.LastReply, err = parseStoreTime(lastReply.String)
 	}
-	state.AutoIntimacy = relationshipIntimacy(state.InteractionCount, state.AddressedCount, state.LastInteraction, now)
+	state.AutoIntimacy = relationshipIntimacy(state.InteractionCount, state.AddressedCount, state.ReplyCount, state.LastInteraction, now)
 	state.Intimacy = state.AutoIntimacy
 	state.IntimacyLocked = locked == 1 && manual.Valid
 	if state.IntimacyLocked {
@@ -1825,8 +1828,28 @@ func relationshipStateFromRow(row rowScanner, now time.Time) (RelationshipState,
 	return state, err
 }
 
-func relationshipIntimacy(interactions, addressed int, lastInteraction, now time.Time) float64 {
-	score := math.Log1p(float64(interactions))*13 + math.Log1p(float64(addressed))*11
+func relationshipIntimacy(interactions, addressed, replies int, lastInteraction, now time.Time) float64 {
+	// Seeing a member in the group is a familiarity signal, not evidence of a
+	// close relationship. Cap unaddressed observations so a busy group cannot
+	// promote a lurker to "亲近的人" without reciprocal turns.
+	if interactions < 0 {
+		interactions = 0
+	}
+	if addressed < 0 {
+		addressed = 0
+	}
+	if replies < 0 {
+		replies = 0
+	}
+	// Allow the current inbound turn, but require delivered replies before
+	// further directed-message volume can strengthen the relationship.
+	addressed = minInt(addressed, replies+1)
+	observedForRelationship := interactions
+	maximumObserved := addressed*4 + 3
+	if observedForRelationship > maximumObserved {
+		observedForRelationship = maximumObserved
+	}
+	score := math.Log1p(float64(observedForRelationship))*13 + math.Log1p(float64(addressed))*11
 	if !lastInteraction.IsZero() && now.After(lastInteraction) {
 		days := now.Sub(lastInteraction).Hours() / 24
 		score *= 0.55 + 0.45*math.Exp(-days/180)

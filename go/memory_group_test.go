@@ -121,8 +121,27 @@ func TestRelationshipObservationIsIdempotentAndStagesInteraction(t *testing.T) {
 	state, inserted, err = store.ObserveRelationship(
 		ctx, "event-11", "group-one", "sender-one", true, now.Add(11*time.Minute),
 	)
-	if err != nil || !inserted || state.InteractionCount != 11 || state.AddressedCount != 2 || state.Stage != "熟悉群友" {
-		t.Fatalf("mature relationship = %+v inserted=%v err=%v", state, inserted, err)
+	if err != nil || !inserted || state.InteractionCount != 11 || state.AddressedCount != 2 || state.Stage != "普通群友" {
+		t.Fatalf("one-sided relationship = %+v inserted=%v err=%v", state, inserted, err)
+	}
+	if err = store.ObserveRelationshipReply(ctx, "reply-11", "group-one", "sender-one", now.Add(12*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err = store.Relationship(ctx, "group-one", "sender-one")
+	if err != nil || state.Stage != "熟悉群友" {
+		t.Fatalf("reciprocal relationship = %+v err=%v", state, err)
+	}
+}
+
+func TestRelationshipIntimacyDoesNotTreatUnaddressedGroupVolumeAsCloseness(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	state := relationshipIntimacy(1000, 0, 0, now, now)
+	if state >= 38 {
+		t.Fatalf("unaddressed observations must not reach familiar-group stage: %.1f", state)
+	}
+	withReciprocalTurns := relationshipIntimacy(11, 2, 2, now, now)
+	if withReciprocalTurns <= state {
+		t.Fatalf("reciprocal turns should carry more relationship evidence: unaddressed=%.1f reciprocal=%.1f", state, withReciprocalTurns)
 	}
 }
 

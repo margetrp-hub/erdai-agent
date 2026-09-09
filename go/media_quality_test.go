@@ -49,6 +49,61 @@ func TestMediaQualityParserAndSelection(t *testing.T) {
 	}
 }
 
+func TestMediaQualityParserRejectsIncompleteOrAmbiguousOutput(t *testing.T) {
+	valid := `{"status":"passed","identityIssues":[],"constraintIssues":[],"qualityIssues":[]}`
+	for _, raw := range []string{
+		valid + valid,
+		valid + "\n" + valid,
+		valid + " extra explanation",
+		"Review result: " + valid,
+		"```json\n" + valid,
+		"```json\n" + valid + "\n```\nextra explanation",
+		"```json\n" + valid + "\n```\n```json\n" + valid + "\n```",
+		"```javascript\n" + valid + "\n```",
+		"```json\n" + valid + valid + "\n```",
+		"```json\n" + valid + " extra explanation\n```",
+		"```json\n{\"status\":\"passed\",\"unexpected\":true}\n```",
+		"```json\n{\"status\":\"passed\",\"identityIssues\":\"none\"}\n```",
+		`{"status":"passed","identityIssues":[`,
+		`{"status":"passed","identityIssues":"none"}`,
+	} {
+		if got := parseQualityAssessment(raw); got.Status != "unverified" || got.Reason != "invalid_assessment" {
+			t.Fatalf("ambiguous or incomplete assessment accepted: %+v", got)
+		}
+	}
+}
+
+func TestMediaQualityParserAcceptsOneWholeJSONFence(t *testing.T) {
+	for _, status := range []string{"passed", "failed"} {
+		for _, fence := range []struct {
+			name   string
+			label  string
+			ending string
+		}{
+			{"json", "json", "\n"},
+			{"unlabeled", "", "\n"},
+			{"json-crlf", "json", "\r\n"},
+			{"unlabeled-crlf", "", "\r\n"},
+		} {
+			t.Run(status+"/"+fence.name, func(t *testing.T) {
+				issues := "[]"
+				if status == "failed" {
+					issues = `["wrong outfit color"]`
+				}
+				raw := fmt.Sprintf(`{"status":%q,"identityIssues":[],"constraintIssues":%s,"qualityIssues":[]}`, status, issues)
+				wrapped := " \n```" + fence.label + fence.ending + raw + fence.ending + "```\n "
+				got := parseQualityAssessment(wrapped)
+				if got.Status != status || got.Reason != "" || status == "failed" && (len(got.ConstraintIssues) != 1 || got.ConstraintIssues[0] != "wrong outfit color") {
+					t.Fatalf("complete fenced assessment changed: %+v", got)
+				}
+			})
+		}
+	}
+	if got := parseQualityAssessment("```json\n{\"status\":\"passed\",\"qualityIssues\":[\"wrong face\"]}\n```"); got.Status != "unverified" || got.Reason != "inconsistent_assessment" {
+		t.Fatalf("fence bypassed status consistency: %+v", got)
+	}
+}
+
 func TestMediaQualityTwoAttemptsAndPersistedSelection(t *testing.T) {
 	for _, secondStatus := range []string{"failed", "unverified", "passed"} {
 		t.Run(secondStatus, func(t *testing.T) {
@@ -299,6 +354,47 @@ func TestMediaQualityUnavailableAssessmentKeepsSafeRouteEvidence(t *testing.T) {
 			encoded, _ := json.Marshal(assessment)
 			if strings.Contains(string(encoded), "private-upstream-error-body") {
 				t.Fatal("upstream body leaked into quality evidence")
+			}
+		})
+	}
+}
+
+func TestMediaQualityUsesLowReasoningOnlyForSupportedModels(t *testing.T) {
+	for _, model := range []string{"grok-4.5", "grok-4.6", "grok-4.20", "gpt-5.6-terra", "grok-4.5-preview"} {
+		t.Run(model, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if model == "grok-4.5" || model == "grok-4.6" {
+					if payload["reasoning_effort"] != "low" {
+						t.Error("latency-sensitive visual check did not select low reasoning")
+					}
+				} else if _, found := payload["reasoning_effort"]; found {
+					t.Error("unsupported model received a reasoning parameter")
+				}
+				if payload["model"] != model || payload["max_tokens"] != float64(1000) {
+					t.Error("quality model or output budget changed")
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]string{
+					"content": `{"status":"passed","identityIssues":[],"constraintIssues":[],"qualityIssues":[]}`,
+				}}}})
+			}))
+			defer server.Close()
+			runtime := newIdleRuntime(t)
+			defer runtime.Close()
+			runtime.client = server.Client()
+			insertTestEndpoint(t, runtime.configStore.db, "quality-test", model, []string{"vision"}, "llm", "openai")
+			bindTestModelConnection(t, runtime.configStore.db, "quality-test", server.URL)
+			assessment, err := runtime.assessMediaQuality(t.Context(), runRecord{}, mediaQualityRequest{MediaType: "image"},
+				qualityTestArtifact(t, runtime, "quality.png"), mediaQualityPolicy{EndpointID: "quality-test"})
+			if err != nil || assessment.Status != "passed" || calls.Load() != 1 {
+				t.Fatalf("visual assessment failed: assessment=%+v calls=%d err=%v", assessment, calls.Load(), err)
 			}
 		})
 	}

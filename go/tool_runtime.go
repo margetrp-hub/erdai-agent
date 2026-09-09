@@ -2842,6 +2842,15 @@ func secureServiceBase(raw string) (string, error) {
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
+// Use only for bounded decisions and visual checks. These models default to
+// high reasoning effort; primary chat keeps its own normal model behavior.
+func applyLowLatencyReasoning(payload map[string]any, model string) {
+	switch model {
+	case "grok-4.5", "grok-4.6":
+		payload["reasoning_effort"] = "low"
+	}
+}
+
 func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key string, payload, target any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -2853,7 +2862,14 @@ func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key strin
 	}
 	request.Header.Set("Authorization", "Bearer "+key)
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json, text/event-stream")
+	var options struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &options)
+	request.Header.Set("Accept", "application/json")
+	if options.Stream {
+		request.Header.Set("Accept", "text/event-stream")
+	}
 	started := time.Now()
 	response, err := a.client.Do(request)
 	if err != nil {
@@ -2865,11 +2881,29 @@ func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key strin
 		return &providerHTTPError{StatusCode: response.StatusCode, Message: string(body)}
 	}
 	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		// Some gateways label a complete JSON response as SSE even when
+		// stream=false. Inspect only the first non-whitespace byte so genuine
+		// event streams keep their incremental decoding and bounded reads.
+		reader := bufio.NewReader(io.LimitReader(response.Body, maxToolBody))
+		for {
+			prefix, err := reader.Peek(1)
+			if err != nil {
+				return err
+			}
+			if bytes.ContainsAny(prefix, " \t\r\n") {
+				_, _ = reader.Discard(1)
+				continue
+			}
+			if prefix[0] == '{' || prefix[0] == '[' {
+				return json.NewDecoder(reader).Decode(target)
+			}
+			break
+		}
 		switch value := target.(type) {
 		case *chatCompletion:
-			return decodeChatCompletionStream(response.Body, value, started)
+			return decodeChatCompletionStream(reader, value, started)
 		case *xaiResponsesResponse:
-			return decodeXAIResponsesStream(response.Body, value)
+			return decodeXAIResponsesStream(reader, value)
 		default:
 			return errors.New("streaming provider response is unsupported for this request")
 		}
@@ -2901,6 +2935,7 @@ func decodeChatCompletionStream(body io.Reader, completion *chatCompletion, star
 	scanner.Buffer(make([]byte, 64*1024), maxToolBody)
 	var content strings.Builder
 	toolCalls := []chatToolCall{}
+	sawChoice := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -2920,6 +2955,7 @@ func decodeChatCompletionStream(body io.Reader, completion *chatCompletion, star
 			}
 			continue
 		}
+		sawChoice = true
 		if chunk.Usage != nil {
 			completion.Usage = *chunk.Usage
 		}
@@ -2947,6 +2983,9 @@ func decodeChatCompletionStream(body io.Reader, completion *chatCompletion, star
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	if !sawChoice {
+		return errors.New("provider stream returned no completion choices")
 	}
 	completion.Choices = make([]struct {
 		Message struct {

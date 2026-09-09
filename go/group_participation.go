@@ -74,7 +74,7 @@ func effectiveParticipationMode(policy groupParticipationPolicy, profile persona
 
 func isProactiveOwnershipReason(reason string) bool {
 	switch strings.TrimSpace(reason) {
-	case "group_participation", "group_participation_local_fallback", "trigger_keyword_local_fallback":
+	case "group_participation", "group_participation_local_fallback", "trigger_keyword", "trigger_keyword_local_fallback":
 		return true
 	default:
 		return false
@@ -713,6 +713,7 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 		"max_tokens":  160,
 		"temperature": 0,
 	}
+	applyLowLatencyReasoning(payload, endpoint.Model)
 	var completion chatCompletion
 	apiKey := a.providerCredential(connection.CredentialRef)
 	if apiKey == "" {

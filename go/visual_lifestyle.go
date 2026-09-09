@@ -22,7 +22,7 @@ func visualLifestyleInstruction(kind string) string {
 	if kind == "video" {
 		return common + "像真实相机记录同一次生活瞬间：同一场景、同一套衣服、单镜头，一个主要小动作配自然眨眼或呼吸，保留真实短暂停顿。按选定构图取景，不安排表演、转场、慢动作或换装；用户明确要求舞蹈时照办。自然肤质，脸清楚，不固定杯子或背景。"
 	}
-	return common + "像真实相机随手记录的生活照，按选定构图取景；近景可以前置自拍，全身使用合理距离的镜面、定时拍摄或朋友视角，头脚完整入镜。角度和姿势自然，脸仍清晰、自然肤质，不过度磨皮。衣物保留真实材质和自然褶皱，不固定背景、杯子或摆拍道具。"
+	return common + "像真实相机随手记录的生活照，按选定构图和本次拍法取景；手机成像质感不等于人物举手机或照镜。全身照使用合理拍摄距离，头脚完整入镜。角度和姿势自然，脸仍清晰、自然肤质，不过度磨皮。衣物保留真实材质和自然褶皱，不固定背景、杯子或摆拍道具。"
 }
 
 type visualLifestyleMoment struct {
@@ -97,6 +97,7 @@ func visualLifestyleActionSpecified(prompt string) bool {
 			continue
 		}
 		markers := []string{"坐着", "坐下", "坐在", "坐姿", "你坐", "坐一会", "站着", "站在", "站立", "站姿", "你站", "站一会", "躺着", "躺在", "躺下", "躺姿", "你躺", "躺一会", "走路", "走着", "走几步", "走两步", "你走", "你跑", "散步", "跑步", "跳舞", "舞蹈", "托腮", "趴着", "靠着", "倚着", "看书", "阅读", "回头", "转头", "转身", "抬头", "低头", "歪头", "挥手", "举手", "举起", "举杯", "拿着", "拿起", "拿杯", "端着", "手势", "备餐", "做饭", "吃饭", "喝水", "喝茶", "喝一口", "打字", "刷手机"}
+		markers = append(markers, "坐稳", "站稳", "侧身", "整理衣摆", "整理衣服", "拿手机", "举手机", "手持手机", "看手机")
 		markers = append(markers, visualLifestyleEnglishAction.FindAllString(clause, -1)...)
 		for _, marker := range markers {
 			if index := strings.Index(clause, marker); index >= 0 && !visualClauseNegated(clause[:index]) {

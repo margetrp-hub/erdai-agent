@@ -9,7 +9,9 @@ import (
 // missing scene, wardrobe and framing choices; it never supplies identity.
 func allocateStyledVisualVariables(prompt string, now time.Time, seed uint64, policy imageVisualDirectorPolicy, outfitLength string, history []visualGenerationPlan, style *visualStyleDefaults) map[string]string {
 	if style == nil {
-		return allocateVisualVariables(prompt, now, seed, policy, outfitLength, history)
+		values := allocateVisualVariables(prompt, now, seed, policy, outfitLength, history)
+		applyVisualCapture(prompt, seed, history, values)
+		return values
 	}
 	if len(style.SelfieTypes) > 0 {
 		policy.SelfieTypes = style.SelfieTypes
@@ -54,15 +56,39 @@ func allocateStyledVisualVariables(prompt string, now time.Time, seed uint64, po
 			values["activity"] = "只延续本次允许的生活情境"
 		}
 	} else if len(style.Scenes) > 0 && !visualSceneSpecified(constraints) && !visualLifestyleActionSpecified(constraints) {
-		values["scene"] = visualStyleChoice(&seed, style.Scenes, previous["scene"])
+		previousScene := previous["sourceScene"]
+		if previousScene == "" {
+			previousScene = previous["scene"]
+		}
+		values["scene"] = visualStyleChoice(&seed, style.Scenes, previousScene)
 		values["activity"] = "在本次选定地点短暂停留，随手记录日常片刻，不额外安排另一项活动"
 		values["light"] = "本次地点和时间的实际环境光，脸部清楚，不添加冲突的窗光、天气或棚灯"
-		values["action"] = "在本次选定地点自然停下，肩膀放松，不沿用其他场地的动作或道具"
+		values["action"] = visualStylePose(&seed, values["camera"], values["scene"], previous["action"])
 		if strings.Contains(values["camera"], "全身") || strings.Contains(values["camera"], "穿搭") {
 			values["action"] += "；按选定构图保持头部到双脚完整入镜，留出自然边距，机位与身体比例合理"
 		}
 	}
+	applyVisualCapture(prompt, seed, history, values)
 	return values
+}
+
+func visualStylePose(seed *uint64, camera, scene, previous string) string {
+	var choices []string
+	switch {
+	case strings.Contains(camera, "坐姿") || videoHasAny(scene, "沙发", "座位", "椅子", "长椅"):
+		choices = []string{"在现场可坐的位置自然坐稳，肩膀放松", "自然坐稳后微微侧身，双手轻松放好"}
+	case strings.Contains(camera, "近景"):
+		choices = []string{"微微歪头，自然看向镜头", "轻轻侧过脸后回看镜头，神情放松", "下巴自然放松，平静看向镜头"}
+	default:
+		choices = []string{"自然站稳，双臂轻松放好", "轻轻侧身回看镜头，身体保持放松", "轻轻整理衣摆后自然停顿"}
+	}
+	for _, choice := range choices {
+		if strings.HasPrefix(previous, choice) {
+			previous = choice
+			break
+		}
+	}
+	return visualStyleChoice(seed, choices, previous) + "，不额外添加道具或另一项活动"
 }
 
 func visualStyleEnvironmentSpecified(prompt string) bool {

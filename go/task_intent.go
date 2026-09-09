@@ -346,6 +346,25 @@ func (a *AgentRuntime) effectiveMediaTaskPrompt(ctx context.Context, run runReco
 	return canonical + "\n工具执行细节（不得覆盖用户的明确要求）：" + strings.TrimSpace(prompt), nil
 }
 
+// Self portraits use the persisted user intent as their constraint source. Tool
+// descriptions are useful for generic images, but must not become user orders
+// merely because they are appended after the canonical selfie request.
+func (a *AgentRuntime) authoritativeVisualPrompt(ctx context.Context, run runRecord, prompt, kind string) (string, error) {
+	if a == nil || a.db == nil || run.ID == "" {
+		return prompt, nil
+	}
+	intent, found, err := a.taskIntentForRun(ctx, run.ID)
+	if err != nil || !found {
+		return prompt, err
+	}
+	canonical := intent.prompt()
+	// The current video pipeline always resolves the selected persona appearance.
+	if kind == "video" || nativeSelfImageRequestPattern.MatchString(canonical) {
+		return canonical, nil
+	}
+	return prompt, nil
+}
+
 func (a *AgentRuntime) ensureToolTaskIntent(ctx context.Context, run runRecord, message string) error {
 	if !a.taskUnderstandingEnabled(ctx) {
 		return nil

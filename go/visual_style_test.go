@@ -81,13 +81,61 @@ func TestVisualStyleAbsentAndDirectorDisabled(t *testing.T) {
 	want := allocateVisualVariables("来张自拍", now, 17, policy, "short", nil)
 	for _, style := range []*visualStyleDefaults{nil, {}} {
 		got := allocateStyledVisualVariables("来张自拍", now, 17, policy, "short", nil, style)
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("unconfigured behavior changed: %+v != %+v", got, want)
+		if got["captureMode"] == "" || got["capture"] == "" {
+			t.Fatal("unconfigured style omitted independent capture selection")
+		}
+		for _, key := range []string{"outfit", "scene", "primaryColor", "makeup", "mood", "light", "time", "season"} {
+			if !reflect.DeepEqual(got[key], want[key]) {
+				t.Fatalf("unconfigured non-capture default changed: %s %q != %q", key, got[key], want[key])
+			}
 		}
 	}
 	policy.Enabled = false
 	got := allocateStyledVisualVariables("来张自拍", now, 17, policy, "short", nil, &visualStyleDefaults{SelfieTypes: []string{"全身生活照"}, Scenes: []string{"城市街角"}})
 	if len(got) != 0 {
 		t.Fatalf("disabled director was re-enabled: %+v", got)
+	}
+}
+
+func TestVisualStylePoseMatchesFramingAndPreservesActionConstraints(t *testing.T) {
+	for _, camera := range []string{"坐姿生活照", "近景自拍", "半身生活照", "全身生活照"} {
+		style := &visualStyleDefaults{SelfieTypes: []string{camera}, Scenes: []string{"家中客厅"}}
+		seen := map[string]bool{}
+		history := []visualGenerationPlan{}
+		for seed := uint64(0); seed < 16; seed++ {
+			values := allocateStyledVisualVariables("来张生活照", time.Now(), seed, defaultImageVisualDirectorPolicy(), "short", history, style)
+			if camera == "坐姿生活照" && !strings.Contains(values["action"], "坐稳") {
+				t.Fatalf("sitting frame used an incompatible pose: %+v", values)
+			}
+			if len(history) > 0 && values["action"] == history[0].Variables["action"] {
+				t.Fatalf("pose repeated despite other compatible poses: %+v", values)
+			}
+			seen[values["action"]] = true
+			history = []visualGenerationPlan{{Variables: values}}
+		}
+		if len(seen) < 2 {
+			t.Fatalf("pose stayed fixed for %s", camera)
+		}
+		for _, prompt := range []string{"坐着看书的生活照", "来张生活照，不要站着，也不要整理衣服", "生活照，不要侧身", "自拍，不要整理衣摆", "让朋友拍，手里拿手机"} {
+			values := allocateStyledVisualVariables(prompt, time.Now(), 3, defaultImageVisualDirectorPolicy(), "short", nil, style)
+			if !strings.Contains(values["action"], "明确") {
+				t.Fatalf("default pose overrode an action constraint: %+v", values)
+			}
+		}
+	}
+}
+
+func TestVisualStyleMirrorSceneSourceStillPreventsRepeats(t *testing.T) {
+	style := &visualStyleDefaults{SelfieTypes: []string{"半身生活照"}, Scenes: []string{"家中全身镜前", "河畔步道"}}
+	history := []visualGenerationPlan{}
+	for seed := uint64(0); seed < 24; seed++ {
+		values := allocateStyledVisualVariables("让朋友拍张生活照", time.Now(), seed, defaultImageVisualDirectorPolicy(), "short", history, style)
+		if len(history) > 0 && values["scene"] == history[0].Variables["scene"] {
+			t.Fatal("normalized mirror scene defeated scene rotation")
+		}
+		if values["scene"] != "河畔步道" && values["sourceScene"] != "家中全身镜前" {
+			t.Fatalf("mirror scene origin lost: %+v", values)
+		}
+		history = []visualGenerationPlan{{Variables: values}}
 	}
 }

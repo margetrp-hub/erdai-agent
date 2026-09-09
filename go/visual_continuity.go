@@ -39,7 +39,7 @@ func applyVisualContinuity(current *visualGenerationPlan, previous *visualGenera
 	keys := []string{}
 	if !visualSceneSpecified(constraints) && !videoHasAny(prompt, "换场景", "换个场景", "换一个场景", "换地点", "换个地方", "change location", "different scene") {
 		keys = append(keys, "scene", "light")
-		if !visualLifestyleActionSpecified(constraints) {
+		if !visualLifestyleActionSpecified(constraints) && current.Variables["captureMode"] == "" {
 			keys = append(keys, "activity", "action")
 		}
 	}
@@ -62,6 +62,9 @@ func applyVisualContinuity(current *visualGenerationPlan, previous *visualGenera
 				}
 			}
 			current.Variables[key] = value
+			if key == "scene" {
+				current.Variables["sourceScene"] = previous.Variables["sourceScene"]
+			}
 		}
 	}
 	if len(keys) > 0 {

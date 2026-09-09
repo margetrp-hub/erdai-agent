@@ -204,6 +204,10 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 		}
 	}
 	if !found {
+		prompt, err = a.authoritativeVisualPrompt(ctx, run, prompt, kind)
+		if err != nil {
+			return visualGenerationPlan{}, err
+		}
 		snapshot, err = a.resolveVisualAppearance(ctx, run, prompt, kind)
 		if err != nil {
 			return visualGenerationPlan{}, err
@@ -242,7 +246,7 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 		CreatedAt: now.Format(time.RFC3339Nano)}
 	history := []visualGenerationPlan{}
 	if persistent && snapshot.AppearanceID != "" {
-		history, err = a.recentVisualPlans(ctx, name, 8)
+		history, err = a.recentVisualPlans(ctx, name, 8, run)
 		if err != nil {
 			return plan, err
 		}
@@ -257,6 +261,7 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 			return plan, continuityErr
 		}
 		applyVisualContinuity(&plan, previous)
+		reconcileVisualCapture(prompt, plan.Variables)
 	}
 	plan.Prompt, err = compileVisualGenerationPrompt(plan, "")
 	if err != nil {
@@ -305,9 +310,26 @@ func sameVisualStyleDefaults(left, right *visualStyleDefaults) bool {
 	return slices.Equal(left.SelfieTypes, right.SelfieTypes) && slices.Equal(left.Outfits, right.Outfits) && slices.Equal(left.Scenes, right.Scenes)
 }
 
-func (a *AgentRuntime) recentVisualPlans(ctx context.Context, name string, limit int) ([]visualGenerationPlan, error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT output_cipher FROM agent_task_steps
-		WHERE kind = 'tool' AND name = ? AND status = 'succeeded' ORDER BY created_at DESC LIMIT ?`, name, limit)
+func (a *AgentRuntime) recentVisualPlans(ctx context.Context, name string, limit int, scope ...runRecord) ([]visualGenerationPlan, error) {
+	// Reserve variations for active requests as well as delivered ones, but do
+	// not let another conversation/instance or a failed request displace them.
+	query := `SELECT s.output_cipher FROM agent_task_steps s
+		WHERE s.kind='tool' AND s.name=? AND s.status='succeeded'
+		ORDER BY s.created_at DESC,s.rowid DESC LIMIT ?`
+	args := []any{name, limit}
+	if len(scope) > 0 {
+		query = `SELECT s.output_cipher FROM agent_task_steps s
+		JOIN agent_runs r ON r.id=s.run_id JOIN agent_runs c ON c.id=?
+		WHERE s.kind='tool' AND s.name=? AND s.status='succeeded'
+		AND r.persona_id=c.persona_id AND r.agent_instance_id=c.agent_instance_id
+		AND r.transport=c.transport AND r.transport_instance=c.transport_instance
+		AND r.memory_namespace=c.memory_namespace AND r.conversation_ref=c.conversation_ref
+		AND r.sender_ref=c.sender_ref AND r.thread_key=c.thread_key
+		AND r.state NOT IN ('failed','cancelled','error')
+		ORDER BY s.created_at DESC,s.rowid DESC LIMIT ?`
+		args = []any{scope[0].ID, name, limit}
+	}
+	rows, err := a.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -519,11 +541,12 @@ func explicitVisualColor(prompt string) (string, map[string]bool) {
 	return positive, forbidden
 }
 
-func visualCameraChoice(prompt string, seed *uint64, configured []string) string {
+func visualCameraChoice(prompt string, seed *uint64, configured []string, history ...visualGenerationPlan) string {
 	forbidden := map[string]bool{}
 	explicit := ""
 	inferred := ""
 	for _, clause := range visualConstraintClauses(prompt) {
+		clause = visualCaptureFramingText(clause)
 		kind := explicitSelfieType(clause)
 		if kind == "" {
 			continue
@@ -566,7 +589,34 @@ func visualCameraChoice(prompt string, seed *uint64, configured []string) string
 	if len(choices) == 0 {
 		return "按用户机位要求，不增加冲突的默认构图"
 	}
+	if len(history) > 0 {
+		previous := visualFramingKey(history[0].Variables["camera"])
+		alternatives := []string{}
+		for _, choice := range choices {
+			if visualFramingKey(choice) != previous {
+				alternatives = append(alternatives, choice)
+			}
+		}
+		if len(alternatives) > 0 {
+			choices = alternatives
+		}
+	}
 	return visualChoice(seed, choices)
+}
+
+func visualFramingKey(camera string) string {
+	switch {
+	case strings.Contains(camera, "近景"), strings.Contains(camera, "特写"):
+		return "close"
+	case strings.Contains(camera, "半身"):
+		return "half"
+	case strings.Contains(camera, "全身"), strings.Contains(camera, "穿搭"):
+		return "full"
+	case strings.Contains(camera, "坐姿"):
+		return "seated"
+	default:
+		return camera
+	}
 }
 
 func visualSceneSpecified(prompt string) bool {
@@ -621,7 +671,7 @@ func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy i
 	if lifestyle && slices.Equal(types, defaultSelfieTypes) {
 		types = []string{"近景自拍", "半身生活照"}
 	}
-	photoType := visualCameraChoice(prompt, &seed, types)
+	photoType := visualCameraChoice(prompt, &seed, types, history...)
 	variables["camera"] = photoType
 	scenes := []string{"明亮玄关", "书店", "展览空间", "商场露台", "树影街边", "河畔步道", "咖啡店外摆", "城市街角", "公园步道", "室内窗边"}
 	outfits := []string{"针织上衣配半裙", "衬衫配连衣裙", "轻薄外套配裙装", "修身上衣配裤装", "无袖上衣配高腰裙", "连体裙装"}
@@ -740,13 +790,13 @@ func compileVisualGenerationPrompt(plan visualGenerationPlan, correction string)
 	}
 	if len(plan.Variables) > 0 {
 		variables := []string{}
-		for _, key := range []string{"primaryColor", "outfit", "scene", "camera", "activity", "makeup", "action", "mood", "light", "time", "season", "continuity", "variationReason"} {
+		for _, key := range []string{"primaryColor", "outfit", "scene", "camera", "capture", "activity", "makeup", "action", "mood", "light", "time", "season", "continuity", "variationReason"} {
 			if value := plan.Variables[key]; value != "" {
 				variables = append(variables, key+"="+value)
 			}
 		}
 		variablePrompt := "只用于未指定项目的本次随机变量，任何冲突均按用户要求：" + strings.Join(variables, "；")
-		if plan.Style != nil && (len(plan.Style.SelfieTypes) > 0 || len(plan.Style.Outfits) > 0 || len(plan.Style.Scenes) > 0) {
+		if plan.Variables["capture"] != "" || plan.Style != nil && (len(plan.Style.SelfieTypes) > 0 || len(plan.Style.Outfits) > 0 || len(plan.Style.Scenes) > 0) {
 			mandatory += "\n" + variablePrompt
 		} else {
 			parts = append(parts, variablePrompt)

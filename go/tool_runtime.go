@@ -316,7 +316,7 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 			payload["max_tokens"] = defaultChatCompletionMaxToken
 		}
 		modelStarted := time.Now()
-		requestTargets := boundedProviderTargets(message, len(run.Attachments) > 0, targets)
+		requestTargets, stepBudget := boundedModelStepTargets(message, len(run.Attachments) > 0, targets, targetIndex)
 		if targetIndex >= len(requestTargets) {
 			targetIndex = 0
 		}
@@ -343,12 +343,8 @@ func (a *AgentRuntime) runAgentLoopWithTargets(
 				"endpointId": requestTargets[targetIndex].EndpointID, "model": requestTargets[targetIndex].Model,
 			})
 			// Every lane gets a per-step wall budget across the whole fallback
-			// chain. A single slow endpoint must not consume the run, and a chain
-			// of fallbacks must never stretch one message into a minute-scale wait.
-			stepBudget := nonChatModelStepBudget
-			if plainChatProviderBudgetApplies(message, len(run.Attachments) > 0) {
-				stepBudget = plainChatProviderBudget
-			}
+			// chain. The starting target determines this budget once; a slower
+			// fallback cannot extend it, and the caller's deadline still applies.
 			requestContext, cancelRequest := context.WithTimeout(ctx, stepBudget)
 			completion, usedTarget, err = a.chatCompletionWithTargets(requestContext, payload, requestTargets, targetIndex, func(target runtimeProviderTarget, duration time.Duration, attemptErr error) {
 				_, _ = a.db.Exec("UPDATE agent_runs SET provider_calls = provider_calls + 1 WHERE id = ?", run.ID)
@@ -1181,6 +1177,30 @@ func (a *AgentRuntime) progressMessageForRun(
 		return ""
 	}
 	return a.personaFixedReply(ctx, run, scene, candidates)
+}
+
+func boundedModelStepTargets(message string, hasAttachments bool, targets []runtimeProviderTarget, startIndex int) ([]runtimeProviderTarget, time.Duration) {
+	bounded := boundedProviderTargets(message, hasAttachments, targets)
+	if !plainChatProviderBudgetApplies(message, hasAttachments) {
+		return bounded, nonChatModelStepBudget
+	}
+	if len(bounded) == 0 {
+		return bounded, plainChatProviderBudget
+	}
+	if startIndex < 0 || startIndex >= len(bounded) {
+		startIndex = 0
+	}
+	starting := targets[startIndex]
+	// Grok 4.6 may need more than the ordinary 15-second chat allowance.
+	// Honor only its explicitly configured starting connection, with a hard
+	// ceiling and five seconds of shared fallback time. Other targets retain
+	// the usual attempt limit, target count, and zero additional retries.
+	if starting.Model == "grok-4.6" && starting.TimeoutSeconds > 0 {
+		timeout := min(starting.TimeoutSeconds, 60)
+		bounded[startIndex].TimeoutSeconds = timeout
+		return bounded, time.Duration(timeout+5) * time.Second
+	}
+	return bounded, plainChatProviderBudget
 }
 
 func boundedProviderTargets(message string, hasAttachments bool, targets []runtimeProviderTarget) []runtimeProviderTarget {

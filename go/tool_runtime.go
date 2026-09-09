@@ -2619,7 +2619,7 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 				continue
 			}
 			model := candidate.Model
-			if strings.TrimSpace(reference) != "" && strings.TrimSpace(policy.ImageEditModel) != "" {
+			if strings.TrimSpace(reference) != "" && !isGPTImageModel(model) && strings.TrimSpace(policy.ImageEditModel) != "" {
 				model = policy.ImageEditModel
 			}
 			if key := getenv(candidate.Connection.CredentialRef); key != "" {
@@ -2677,9 +2677,12 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 				URL    string `json:"url"`
 			} `json:"data"`
 		}
-		payload := map[string]any{"model": target.model, "prompt": fitImageProviderPrompt(prompt), "n": 1, "response_format": "b64_json"}
-		if aspectRatio := imageAspectRatioForPrompt(prompt); aspectRatio != "" {
-			payload["aspect_ratio"] = aspectRatio
+		payload := map[string]any{"model": target.model, "prompt": fitImageProviderPrompt(prompt), "n": 1}
+		if !isGPTImageModel(target.model) {
+			payload["response_format"] = "b64_json"
+			if aspectRatio := imageAspectRatioForPrompt(prompt); aspectRatio != "" {
+				payload["aspect_ratio"] = aspectRatio
+			}
 		}
 		endpoint := base + "/images/generations"
 		if strings.TrimSpace(reference) != "" {
@@ -2687,7 +2690,13 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 			payload["image"] = map[string]string{"url": strings.TrimSpace(reference)}
 		}
 		attemptContext, cancelAttempt := context.WithTimeout(ctx, target.timeout)
-		err = a.postProviderJSON(attemptContext, endpoint, target.key, payload, &response)
+		if strings.TrimSpace(reference) != "" && isGPTImageModel(target.model) {
+			err = a.postGPTImageEdit(attemptContext, endpoint, target.key, target.model, fitImageProviderPrompt(prompt), reference, &response)
+		} else if isGPTImageModel(target.model) {
+			err = a.postProviderJSONWithLimit(attemptContext, endpoint, target.key, payload, &response, maxImageProviderResponseBytes)
+		} else {
+			err = a.postProviderJSON(attemptContext, endpoint, target.key, payload, &response)
+		}
 		if err != nil {
 			cancelAttempt()
 			if !imageProviderRejectedWithoutExecution(err) {
@@ -2726,9 +2735,9 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 func referenceImageCandidate(candidate mediaProviderCandidate) bool {
 	provider := strings.ToLower(strings.TrimSpace(candidate.Connection.Provider))
 	model := strings.ToLower(strings.TrimSpace(candidate.Model))
-	// This adapter speaks the existing Grok JSON reference-edit contract. A
-	// generic image-generation route is not proof that reference edits work.
-	return provider == "grok2api" || provider == "grok" || strings.HasPrefix(model, "grok-imagine-image")
+	// Only the supported Grok JSON and GPT Image multipart edit contracts are
+	// eligible; generic generation capability alone is not enough.
+	return isGPTImageModel(model) || provider == "grok2api" || provider == "grok" || strings.HasPrefix(model, "grok-imagine-image")
 }
 
 func imageProviderRejectedWithoutExecution(err error) bool {
@@ -2872,6 +2881,10 @@ func applyLowLatencyReasoning(payload map[string]any, model string) {
 }
 
 func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key string, payload, target any) error {
+	return a.postProviderJSONWithLimit(ctx, endpoint, key, payload, target, maxToolBody)
+}
+
+func (a *AgentRuntime) postProviderJSONWithLimit(ctx context.Context, endpoint, key string, payload, target any, maxResponseBytes int64) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -2890,6 +2903,10 @@ func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key strin
 	if options.Stream {
 		request.Header.Set("Accept", "text/event-stream")
 	}
+	return a.doProviderRequest(request, target, maxResponseBytes)
+}
+
+func (a *AgentRuntime) doProviderRequest(request *http.Request, target any, maxResponseBytes int64) error {
 	started := time.Now()
 	response, err := a.client.Do(request)
 	if err != nil {
@@ -2904,7 +2921,7 @@ func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key strin
 		// Some gateways label a complete JSON response as SSE even when
 		// stream=false. Inspect only the first non-whitespace byte so genuine
 		// event streams keep their incremental decoding and bounded reads.
-		reader := bufio.NewReader(io.LimitReader(response.Body, maxToolBody))
+		reader := bufio.NewReader(io.LimitReader(response.Body, maxResponseBytes))
 		for {
 			prefix, err := reader.Peek(1)
 			if err != nil {
@@ -2928,7 +2945,7 @@ func (a *AgentRuntime) postProviderJSON(ctx context.Context, endpoint, key strin
 			return errors.New("streaming provider response is unsupported for this request")
 		}
 	}
-	return json.NewDecoder(io.LimitReader(response.Body, maxToolBody)).Decode(target)
+	return json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(target)
 }
 
 func decodeChatCompletionStream(body io.Reader, completion *chatCompletion, started time.Time) error {

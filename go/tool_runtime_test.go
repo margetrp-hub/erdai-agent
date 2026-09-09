@@ -498,8 +498,10 @@ func TestGrokImageFallsBackToStandardProviderWhenGrokIsUnavailable(t *testing.T)
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload["response_format"] != "b64_json" {
-				t.Fatalf("standard response format = %v", payload["response_format"])
+			if payload["model"] != "gpt-image-2" || payload["n"] != float64(1) || payload["response_format"] != nil {
+				t.Errorf("GPT fallback must use its own model and default base64 response: %+v", payload)
+				http.Error(w, "invalid GPT image payload", http.StatusBadRequest)
+				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"data": []any{map[string]string{"b64_json": base64.StdEncoding.EncodeToString(png)}},

@@ -211,8 +211,11 @@ func TestVisualPlanImageFallbackOnlyOnDefiniteRejection(t *testing.T) {
 			t.Fatalf("definitive rejection %d cannot fall back", status)
 		}
 	}
-	if referenceImageCandidate(mediaProviderCandidate{Model: "gpt-image-2"}) {
-		t.Fatal("generic generation capability treated as Grok reference-edit support")
+	if !referenceImageCandidate(mediaProviderCandidate{Model: "gpt-image-2"}) {
+		t.Fatal("GPT Image multipart reference-edit route excluded")
+	}
+	if referenceImageCandidate(mediaProviderCandidate{Model: "dall-e-3"}) {
+		t.Fatal("generic generation capability treated as reference-edit support")
 	}
 	if !referenceImageCandidate(mediaProviderCandidate{Model: "grok-imagine-image-lite"}) {
 		t.Fatal("existing Grok reference-capable route excluded")

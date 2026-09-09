@@ -102,7 +102,10 @@ func TestVideoRouteSurvivesTransientPollsAndDeliversMP4(t *testing.T) {
 
 	defer releaseFinal()
 
-	configPath := videoTestConfig(t, provider.URL+"/grok", 10)
+	// This test measures the retry count and eventual delivery, not TLS loopback
+	// throughput. Leave scheduling headroom for 450 polls on a loaded test host;
+	// TestVideoTimeoutCreatesFailedTerminalDelivery checks the deadline itself.
+	configPath := videoTestConfig(t, provider.URL+"/grok", 30)
 
 	mediaDir := filepath.Join(t.TempDir(), "media")
 	runtime := newVideoRuntime(t, configPath, provider.Client(), mediaDir, time.Microsecond, 450)
@@ -126,8 +129,8 @@ func TestVideoRouteSurvivesTransientPollsAndDeliversMP4(t *testing.T) {
 	decodeRecorder(t, response, &accepted)
 	select {
 	case <-finalPollReached:
-	case <-time.After(10 * time.Second):
-		t.Fatal("video polling did not survive 450 transient responses")
+	case <-time.After(35 * time.Second):
+		t.Fatalf("video polling did not survive 450 transient responses; observed polls=%d", pollCalls.Load())
 	}
 
 	lease := runtimeRequest(t, runtime, "/api/v1/transport/deliveries/lease", map[string]any{

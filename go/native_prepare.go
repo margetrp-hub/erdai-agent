@@ -1337,6 +1337,11 @@ func (s *coreConfigStore) preferNativeRouteModel(route nativeRouteDecision, mode
 	if err != nil {
 		return route, err
 	}
+	// A text-only task preference must leave image understanding on the
+	// eligible vision route. Other scene preferences retain their behavior.
+	if route.Lane == "vision" && (endpoint.ExecutionKind != "llm" || !containsNativeString(endpoint.Capabilities, "vision")) {
+		return route, nil
+	}
 	if !pinned && (endpoint.Health == "unhealthy" || nativeHealthStale(endpoint, time.Now().UTC(), 5*time.Minute)) {
 		return route, nil
 	}

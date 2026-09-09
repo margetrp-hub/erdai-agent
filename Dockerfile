@@ -41,7 +41,7 @@ RUN apk add --no-cache gcc musl-dev
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=tmpfs,target=/tmp \
     CGO_ENABLED=1 /usr/local/go/bin/go test -race -p=1 -timeout 20m \
-    -run 'Test(Hardening|Optimization|Repair|Points|TaskIntent|TaskModel|ModelCheckpoint|ModelStepBudget|Doubao|AgentInstance.*Participation|GroupParticipation|ProviderResponse|RuntimeNonDirectKeyword|RuntimeCoalescesBurst|RuntimeKeepsQuietWhenProactive|RuntimeDirectName|VisualPlan|VisualContinuity|VisualLifestyle|VideoLifestyle|MediaQuality|Dialogue|Memory|NativePrepareSocial|NativePrepareLifestyle|SQLiteQueryCancellation|RuntimeClose|RuntimeFixture)' .
+    -run 'Test(Hardening|Optimization|Repair|Points|TaskIntent|TaskModel|ModelCheckpoint|ModelStepBudget|PrepareInstanceTaskEndpoint|Doubao|AgentInstance.*Participation|GroupParticipation|ProviderResponse|RuntimeNonDirectKeyword|RuntimeCoalescesBurst|RuntimeKeepsQuietWhenProactive|RuntimeDirectName|VisualPlan|VisualContinuity|VisualLifestyle|VideoLifestyle|MediaQuality|Dialogue|Memory|NativePrepareSocial|NativePrepareLifestyle|SQLiteQueryCancellation|RuntimeClose|RuntimeFixture)' .
 
 FROM scratch AS final
 

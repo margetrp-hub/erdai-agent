@@ -239,7 +239,7 @@ func TestProcessNextSerializesConversation(t *testing.T) {
 // A crashed run stuck in 'running' past the staleness guard stops blocking
 // its conversation.
 func TestProcessNextStaleRunningDoesNotBlock(t *testing.T) {
-	runtime := newIdleRuntime(t)
+	runtime := newDormantRuntime(t)
 	defer runtime.Close()
 	now := time.Now().UTC()
 	stale := insertHonestyTestRun(t, runtime, "stale-run", "group-stale", "sender-a", "group", "running", now.Add(-time.Hour))

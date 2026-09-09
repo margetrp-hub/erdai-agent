@@ -39,7 +39,7 @@ func personaRuntimeEndpoint(profile personaRuntimeProfile, lane string) string {
 	switch lane {
 	case "chat":
 		return strings.TrimSpace(profile.ChatEndpointID)
-	case "task", "search", "vision", "document":
+	case "task", "tools", "code", "reasoning", "search", "vision", "document":
 		return strings.TrimSpace(profile.TaskEndpointID)
 	case "decision":
 		return strings.TrimSpace(profile.DecisionEndpointID)

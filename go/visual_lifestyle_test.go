@@ -27,14 +27,14 @@ func TestVisualLifestyleInstructionKeepsScopeAndSmallMotion(t *testing.T) {
 		if utf8.RuneCountInString(value) > 300 {
 			t.Fatalf("%s instruction exceeds compact budget", kind)
 		}
-		for _, marker := range []string{"未指定", "要求优先", "虚构情境", "真实人类事实", "用户说的", "近景或半身", "自然肤质", "脸"} {
+		for _, marker := range []string{"未指定", "要求优先", "虚构情境", "真实人类事实", "用户说的", "按选定构图", "自然肤质", "脸"} {
 			if !strings.Contains(value, marker) {
 				t.Fatalf("%s missing %q", kind, marker)
 			}
 		}
 	}
 	video := visualLifestyleInstruction("video")
-	for _, marker := range []string{"单镜头", "一个主要小动作", "短暂停顿", "不安排表演、转场、慢动作或换装", "明确要求舞蹈或全身时照办"} {
+	for _, marker := range []string{"单镜头", "一个主要小动作", "短暂停顿", "不安排表演、转场、慢动作或换装", "明确要求舞蹈时照办"} {
 		if !strings.Contains(video, marker) {
 			t.Fatalf("video missing %q", marker)
 		}

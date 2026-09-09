@@ -359,18 +359,23 @@ func explicitSelfieType(prompt string) string {
 	prompt = strings.ToLower(strings.TrimSpace(prompt))
 	switch {
 	case strings.Contains(prompt, "全身") || strings.Contains(prompt, "穿搭") ||
-		strings.Contains(prompt, "裙子") || strings.Contains(prompt, "鞋子"):
+		strings.Contains(prompt, "full body") || strings.Contains(prompt, "full-body"):
 		return "全身穿搭照"
 	case strings.Contains(prompt, "镜面") || strings.Contains(prompt, "镜子"):
 		return "镜面穿搭自拍"
 	case strings.Contains(prompt, "头像") || strings.Contains(prompt, "大头") ||
-		strings.Contains(prompt, "近照"):
+		strings.Contains(prompt, "近照") || strings.Contains(prompt, "近景") ||
+		strings.Contains(prompt, "close-up") || strings.Contains(prompt, "closeup"):
 		return "近景自拍"
+	case strings.Contains(prompt, "半身") || strings.Contains(prompt, "half body") || strings.Contains(prompt, "half-body"):
+		return "半身生活照"
 	case strings.Contains(prompt, "坐着") || strings.Contains(prompt, "坐姿"):
 		return "坐姿生活照"
 	case strings.Contains(prompt, "抓拍") || strings.Contains(prompt, "他拍") ||
 		strings.Contains(prompt, "朋友拍"):
 		return "朋友视角抓拍"
+	case strings.Contains(prompt, "裙子") || strings.Contains(prompt, "鞋子"):
+		return "全身穿搭照"
 	default:
 		return ""
 	}

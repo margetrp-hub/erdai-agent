@@ -217,6 +217,13 @@ func mergeAgentRuntimeProfile(base, override personaRuntimeProfile) personaRunti
 	if value := strings.TrimSpace(override.VisualPromptOverride); value != "" {
 		base.VisualPromptOverride = value
 	}
+	if override.VisualStyle != nil {
+		style := *override.VisualStyle
+		style.SelfieTypes = append([]string(nil), style.SelfieTypes...)
+		style.Outfits = append([]string(nil), style.Outfits...)
+		style.Scenes = append([]string(nil), style.Scenes...)
+		base.VisualStyle = &style
+	}
 	if value := strings.TrimSpace(override.ExpressionPrompt); value != "" {
 		base.ExpressionPrompt = value
 	}
@@ -267,6 +274,13 @@ func validAgentInstanceJSON(value json.RawMessage) (string, error) {
 	}
 	if !validSearchMode(runtimeProfile.SearchMode) || !validSearchReplyStyle(runtimeProfile.SearchReplyStyle) {
 		return "", coreInvalid("searchMode or searchReplyStyle is invalid")
+	}
+	if raw, present := object["visualStyle"]; present {
+		style, err := decodeVisualStyleDefaults(raw)
+		if err != nil {
+			return "", err
+		}
+		object["visualStyle"], _ = json.Marshal(style)
 	}
 	encoded, _ := json.Marshal(object)
 	return string(encoded), nil

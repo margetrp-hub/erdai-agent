@@ -17,33 +17,37 @@ import (
 )
 
 type visualGenerationPlan struct {
-	Version            int               `json:"version"`
-	OperationID        string            `json:"operationId"`
-	MediaType          string            `json:"mediaType"`
-	Attempt            int               `json:"attempt"`
-	AppearanceID       string            `json:"appearanceId,omitempty"`
-	AppearanceRevision string            `json:"appearanceRevision,omitempty"`
-	BindingRevision    string            `json:"bindingRevision,omitempty"`
-	ReferenceDigest    string            `json:"referenceDigest,omitempty"`
-	Reference          string            `json:"-"`
-	Seed               uint64            `json:"seed"`
-	UserPrompt         string            `json:"userPrompt"`
-	Identity           string            `json:"identity,omitempty"`
-	OutfitLength       string            `json:"outfitLength,omitempty"`
-	Variables          map[string]string `json:"variables"`
-	Prompt             string            `json:"prompt"`
-	CreatedAt          string            `json:"createdAt"`
+	Version            int                  `json:"version"`
+	OperationID        string               `json:"operationId"`
+	MediaType          string               `json:"mediaType"`
+	Attempt            int                  `json:"attempt"`
+	AppearanceID       string               `json:"appearanceId,omitempty"`
+	AppearanceRevision string               `json:"appearanceRevision,omitempty"`
+	BindingRevision    string               `json:"bindingRevision,omitempty"`
+	ReferenceDigest    string               `json:"referenceDigest,omitempty"`
+	Reference          string               `json:"-"`
+	Seed               uint64               `json:"seed"`
+	UserPrompt         string               `json:"userPrompt"`
+	Identity           string               `json:"identity,omitempty"`
+	OutfitLength       string               `json:"outfitLength,omitempty"`
+	StylePrompt        string               `json:"stylePrompt,omitempty"`
+	Style              *visualStyleDefaults `json:"style,omitempty"`
+	Variables          map[string]string    `json:"variables"`
+	Prompt             string               `json:"prompt"`
+	CreatedAt          string               `json:"createdAt"`
 }
 
 type visualAppearanceSnapshot struct {
-	UserPrompt      string `json:"userPrompt"`
-	AppearanceID    string `json:"appearanceId"`
-	Revision        string `json:"revision"`
-	BindingRevision string `json:"bindingRevision"`
-	ReferenceDigest string `json:"referenceDigest"`
-	Reference       string `json:"reference"`
-	Identity        string `json:"identity"`
-	OutfitLength    string `json:"outfitLength"`
+	UserPrompt      string               `json:"userPrompt"`
+	AppearanceID    string               `json:"appearanceId"`
+	Revision        string               `json:"revision"`
+	BindingRevision string               `json:"bindingRevision"`
+	ReferenceDigest string               `json:"referenceDigest"`
+	Reference       string               `json:"reference"`
+	Identity        string               `json:"identity"`
+	OutfitLength    string               `json:"outfitLength"`
+	StylePrompt     string               `json:"stylePrompt,omitempty"`
+	Style           *visualStyleDefaults `json:"style,omitempty"`
 }
 
 // Serialize only plan allocation, never provider execution. Concurrent requests
@@ -105,6 +109,15 @@ func (a *AgentRuntime) resolveVisualAppearance(ctx context.Context, run runRecor
 	}
 	if resolvedID == "" {
 		return snapshot, nil
+	}
+	profile, err := a.configStore.effectivePersonaRuntimeProfile(resolvedID, run.AgentInstanceID)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.StylePrompt = strings.TrimSpace(profile.VisualPromptOverride)
+	snapshot.Style, err = normalizeVisualStyleDefaults(profile.VisualStyle)
+	if err != nil {
+		return snapshot, err
 	}
 	tx, err := a.configStore.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -225,6 +238,7 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 		AppearanceID: snapshot.AppearanceID, AppearanceRevision: snapshot.Revision, BindingRevision: snapshot.BindingRevision,
 		ReferenceDigest: snapshot.ReferenceDigest, Reference: snapshot.Reference, Identity: snapshot.Identity,
 		OutfitLength: snapshot.OutfitLength, UserPrompt: prompt, Seed: nextSelfieVariationSeed(prompt, snapshot.AppearanceID, now),
+		StylePrompt: snapshot.StylePrompt, Style: snapshot.Style,
 		CreatedAt: now.Format(time.RFC3339Nano)}
 	history := []visualGenerationPlan{}
 	if persistent && snapshot.AppearanceID != "" {
@@ -235,7 +249,7 @@ func (a *AgentRuntime) prepareVisualGeneration(ctx context.Context, run runRecor
 	}
 	plan.Variables = map[string]string{}
 	if snapshot.AppearanceID != "" {
-		plan.Variables = allocateVisualVariables(prompt, now, plan.Seed, a.imageVisualDirectorPolicy(ctx), snapshot.OutfitLength, history)
+		plan.Variables = allocateStyledVisualVariables(prompt, now, plan.Seed, a.imageVisualDirectorPolicy(ctx), snapshot.OutfitLength, history, snapshot.Style)
 	}
 	if persistent && len(plan.Variables) > 0 && visualLifestyleEnabled(prompt) {
 		previous, continuityErr := a.continuingVisualPlan(ctx, run, plan, now)
@@ -278,7 +292,17 @@ func (a *AgentRuntime) validateVisualGeneration(ctx context.Context, run runReco
 		current.Identity != plan.Identity || current.OutfitLength != plan.OutfitLength {
 		return fmt.Errorf("%w: appearance binding changed", errTaskSuperseded)
 	}
+	if current.StylePrompt != plan.StylePrompt || !sameVisualStyleDefaults(current.Style, plan.Style) {
+		return fmt.Errorf("%w: visual style changed", errTaskSuperseded)
+	}
 	return nil
+}
+
+func sameVisualStyleDefaults(left, right *visualStyleDefaults) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return slices.Equal(left.SelfieTypes, right.SelfieTypes) && slices.Equal(left.Outfits, right.Outfits) && slices.Equal(left.Scenes, right.Scenes)
 }
 
 func (a *AgentRuntime) recentVisualPlans(ctx context.Context, name string, limit int) ([]visualGenerationPlan, error) {
@@ -394,6 +418,7 @@ func (a *AgentRuntime) pruneVisualGenerationMetadata(ctx context.Context, cutoff
 				return err
 			}
 			snapshot.Reference, snapshot.Identity, snapshot.UserPrompt = "", "", ""
+			snapshot.StylePrompt, snapshot.Style = "", nil
 			plain, err = json.Marshal(snapshot)
 		} else {
 			var plan visualGenerationPlan
@@ -402,6 +427,7 @@ func (a *AgentRuntime) pruneVisualGenerationMetadata(ctx context.Context, cutoff
 				return err
 			}
 			plan.UserPrompt, plan.Identity, plan.Prompt = "", "", ""
+			plan.StylePrompt, plan.Style = "", nil
 			if rank > 8 {
 				plan.Variables = nil
 			}
@@ -496,14 +522,26 @@ func explicitVisualColor(prompt string) (string, map[string]bool) {
 func visualCameraChoice(prompt string, seed *uint64, configured []string) string {
 	forbidden := map[string]bool{}
 	explicit := ""
+	inferred := ""
 	for _, clause := range visualConstraintClauses(prompt) {
 		kind := explicitSelfieType(clause)
 		if kind == "" {
 			continue
 		}
+		// Clothing can suggest framing only when no actual camera request exists.
+		withoutClothing := strings.NewReplacer("裙子", "", "鞋子", "", "穿搭", "").Replace(clause)
+		if explicitSelfieType(withoutClothing) == "" {
+			if visualClauseNegated(clause) && strings.Contains(clause, "穿搭") {
+				forbidden["全身生活照"], forbidden["全身穿搭照"], forbidden["镜面穿搭自拍"] = true, true, true
+			} else if !visualClauseNegated(clause) {
+				inferred = kind
+			}
+			continue
+		}
+		kind = explicitSelfieType(withoutClothing)
 		if visualClauseNegated(clause) {
 			forbidden[kind] = true
-			if videoHasAny(clause, "全身", "穿搭") {
+			if kind == "全身穿搭照" {
 				forbidden["全身生活照"] = true
 				forbidden["全身穿搭照"] = true
 				forbidden["镜面穿搭自拍"] = true
@@ -515,6 +553,9 @@ func visualCameraChoice(prompt string, seed *uint64, configured []string) string
 	}
 	if explicit != "" && !forbidden[explicit] {
 		return explicit
+	}
+	if inferred != "" && !forbidden[inferred] {
+		return inferred
 	}
 	choices := []string{}
 	for _, kind := range configured {
@@ -684,15 +725,15 @@ func compileVisualGenerationPrompt(plan visualGenerationPlan, correction string)
 	if plan.AppearanceID != "" {
 		mandatory += "\n身份只按当前外观库和附带参考图，不按角色名字换脸。参考图只锁定脸、发型、年龄和体态，不锁定衣服、背景、颜色、动作或机位。固定身份：\n" + plan.Identity
 	}
+	if plan.AppearanceID != "" && strings.TrimSpace(plan.StylePrompt) != "" {
+		mandatory += "\n独立默认风格（仅用于本次未指定的拍法、穿搭、场景和姿态，不得改变当前外观库的脸、年龄或体态；用户本次要求及否定约束优先于默认风格）：\n" + strings.TrimSpace(plan.StylePrompt)
+	}
 	if strings.TrimSpace(correction) != "" {
 		mandatory += "\n修正上次成片的问题，但不新增用户未要求的固定颜色或背景：\n" + strings.TrimSpace(correction)
 	}
-	if len(mandatory) > promptLimit {
-		return "", errors.New("explicit visual requirements and identity exceed provider prompt limit; shorten the request")
-	}
 	parts := []string{mandatory}
 	if plan.OutfitLength != "" {
-		parts = append(parts, "用户未指定长度时外观库默认服装长度="+plan.OutfitLength+"；明确长度要求优先。")
+		parts = append(parts, "用户未指定长度时外观库默认服装长度="+plan.OutfitLength+"；明确长度要求优先。独立样式中的默认穿搭优先于库服长，本次明确要求最高。")
 	}
 	if plan.AppearanceID != "" && visualLifestyleEnabled(plan.UserPrompt) {
 		parts = append(parts, visualLifestyleInstruction(plan.MediaType))
@@ -704,10 +745,18 @@ func compileVisualGenerationPrompt(plan visualGenerationPlan, correction string)
 				variables = append(variables, key+"="+value)
 			}
 		}
-		parts = append(parts, "只用于未指定项目的本次随机变量，任何冲突均按用户要求："+strings.Join(variables, "；"))
+		variablePrompt := "只用于未指定项目的本次随机变量，任何冲突均按用户要求：" + strings.Join(variables, "；")
+		if plan.Style != nil && (len(plan.Style.SelfieTypes) > 0 || len(plan.Style.Outfits) > 0 || len(plan.Style.Scenes) > 0) {
+			mandatory += "\n" + variablePrompt
+		} else {
+			parts = append(parts, variablePrompt)
+		}
 	}
 	if plan.AppearanceID != "" {
 		parts = append(parts, "现实手机摄影，明确成年，自然肤质、合理解剖和物理，不照抄参考图的服装背景；没有固定禁用色。")
+	}
+	if len(mandatory) > promptLimit {
+		return "", errors.New("explicit visual requirements, identity and configured style exceed provider prompt limit; shorten the request or style")
 	}
 	result := mandatory
 	for _, part := range parts[1:] {

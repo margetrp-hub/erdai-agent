@@ -11,28 +11,92 @@ import (
 	"time"
 )
 
+// visualStyleDefaults describes optional presentation preferences, never identity.
+type visualStyleDefaults struct {
+	SelfieTypes []string `json:"selfieTypes,omitempty"`
+	Outfits     []string `json:"outfits,omitempty"`
+	Scenes      []string `json:"scenes,omitempty"`
+}
+
+func normalizeVisualStyleDefaults(style *visualStyleDefaults) (*visualStyleDefaults, error) {
+	if style == nil {
+		return nil, nil
+	}
+	next := &visualStyleDefaults{}
+	for _, field := range []struct {
+		name   string
+		values []string
+		target *[]string
+	}{
+		{"selfieTypes", style.SelfieTypes, &next.SelfieTypes},
+		{"outfits", style.Outfits, &next.Outfits},
+		{"scenes", style.Scenes, &next.Scenes},
+	} {
+		if len(field.values) > 20 {
+			return nil, coreInvalid("visualStyle." + field.name + " must contain at most 20 items")
+		}
+		for _, value := range field.values {
+			value = strings.TrimSpace(value)
+			if len([]rune(value)) > 160 {
+				return nil, coreInvalid("visualStyle." + field.name + " items must contain at most 160 characters")
+			}
+			// The existing camera normalizer accepts short composition names.
+			// Reject oversized names rather than silently dropping saved defaults.
+			if field.name == "selfieTypes" && len([]rune(value)) > 24 {
+				return nil, coreInvalid("visualStyle.selfieTypes items must contain at most 24 characters")
+			}
+		}
+		clean := cleanRuntimeIDs(field.values)
+		if field.name == "selfieTypes" {
+			clean = normalizeSelfieTypes(clean)
+		}
+		if len(clean) > 0 {
+			*field.target = clean
+		}
+	}
+	return next, nil
+}
+
+func decodeVisualStyleDefaults(raw json.RawMessage) (*visualStyleDefaults, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, coreInvalid("visualStyle must be an object or null")
+	}
+	for field := range fields {
+		if field != "selfieTypes" && field != "outfits" && field != "scenes" {
+			return nil, coreInvalid("unsupported visualStyle field: " + field)
+		}
+	}
+	var style *visualStyleDefaults
+	if err := json.Unmarshal(raw, &style); err != nil {
+		return nil, coreInvalid("visualStyle contains an invalid value")
+	}
+	return normalizeVisualStyleDefaults(style)
+}
+
 type personaRuntimeProfile struct {
-	PersonaID               string   `json:"personaId"`
-	ChatEndpointID          string   `json:"chatEndpointId,omitempty"`
-	TaskEndpointID          string   `json:"taskEndpointId,omitempty"`
-	DecisionEndpointID      string   `json:"decisionEndpointId,omitempty"`
-	AllowedToolIDs          []string `json:"allowedToolIds,omitempty"`
-	DeniedToolIDs           []string `json:"deniedToolIds,omitempty"`
-	ProactiveEnabled        *bool    `json:"proactiveEnabled,omitempty"`
-	ParticipationMode       string   `json:"participationMode,omitempty"`
-	InitialReplyProbability *float64 `json:"initialReplyProbability,omitempty"`
-	AfterReplyProbability   *float64 `json:"afterReplyProbability,omitempty"`
-	ParticipationStyle      string   `json:"participationStyle,omitempty"`
-	UnaddressedMode         string   `json:"unaddressedMode,omitempty"`
-	AddressKeywords         []string `json:"addressKeywords,omitempty"`
-	MaxReplyChars           *int     `json:"maxReplyChars,omitempty"`
-	MaxReplySentences       *int     `json:"maxReplySentences,omitempty"`
-	MemoryPolicy            string   `json:"memoryPolicy,omitempty"`
-	SearchMode              string   `json:"searchMode,omitempty"`
-	SearchReplyStyle        string   `json:"searchReplyStyle,omitempty"`
-	VisualPromptOverride    string   `json:"visualPromptOverride,omitempty"`
-	ExpressionPrompt        string   `json:"expressionPrompt,omitempty"`
-	UpdatedAt               string   `json:"updatedAt"`
+	PersonaID               string               `json:"personaId"`
+	ChatEndpointID          string               `json:"chatEndpointId,omitempty"`
+	TaskEndpointID          string               `json:"taskEndpointId,omitempty"`
+	DecisionEndpointID      string               `json:"decisionEndpointId,omitempty"`
+	AllowedToolIDs          []string             `json:"allowedToolIds,omitempty"`
+	DeniedToolIDs           []string             `json:"deniedToolIds,omitempty"`
+	ProactiveEnabled        *bool                `json:"proactiveEnabled,omitempty"`
+	ParticipationMode       string               `json:"participationMode,omitempty"`
+	InitialReplyProbability *float64             `json:"initialReplyProbability,omitempty"`
+	AfterReplyProbability   *float64             `json:"afterReplyProbability,omitempty"`
+	ParticipationStyle      string               `json:"participationStyle,omitempty"`
+	UnaddressedMode         string               `json:"unaddressedMode,omitempty"`
+	AddressKeywords         []string             `json:"addressKeywords,omitempty"`
+	MaxReplyChars           *int                 `json:"maxReplyChars,omitempty"`
+	MaxReplySentences       *int                 `json:"maxReplySentences,omitempty"`
+	MemoryPolicy            string               `json:"memoryPolicy,omitempty"`
+	SearchMode              string               `json:"searchMode,omitempty"`
+	SearchReplyStyle        string               `json:"searchReplyStyle,omitempty"`
+	VisualPromptOverride    string               `json:"visualPromptOverride,omitempty"`
+	VisualStyle             *visualStyleDefaults `json:"visualStyle,omitempty"`
+	ExpressionPrompt        string               `json:"expressionPrompt,omitempty"`
+	UpdatedAt               string               `json:"updatedAt"`
 }
 
 func personaRuntimeEndpoint(profile personaRuntimeProfile, lane string) string {
@@ -97,31 +161,32 @@ func applyPersonaSearchMode(policy runtimeToolPolicy, profile personaRuntimeProf
 }
 
 type personaRuntimeProfilePayload struct {
-	ChatEndpointID          *string   `json:"chatEndpointId"`
-	TaskEndpointID          *string   `json:"taskEndpointId"`
-	DecisionEndpointID      *string   `json:"decisionEndpointId"`
-	AllowedToolIDs          *[]string `json:"allowedToolIds"`
-	DeniedToolIDs           *[]string `json:"deniedToolIds"`
-	ProactiveEnabled        *bool     `json:"proactiveEnabled"`
-	ParticipationMode       *string   `json:"participationMode"`
-	InitialReplyProbability *float64  `json:"initialReplyProbability"`
-	AfterReplyProbability   *float64  `json:"afterReplyProbability"`
-	ParticipationStyle      *string   `json:"participationStyle"`
-	UnaddressedMode         *string   `json:"unaddressedMode"`
-	AddressKeywords         *[]string `json:"addressKeywords"`
-	MaxReplyChars           *int      `json:"maxReplyChars"`
-	MaxReplySentences       *int      `json:"maxReplySentences"`
-	MemoryPolicy            *string   `json:"memoryPolicy"`
-	SearchMode              *string   `json:"searchMode"`
-	SearchReplyStyle        *string   `json:"searchReplyStyle"`
-	VisualPromptOverride    *string   `json:"visualPromptOverride"`
-	ExpressionPrompt        *string   `json:"expressionPrompt"`
+	ChatEndpointID          *string              `json:"chatEndpointId"`
+	TaskEndpointID          *string              `json:"taskEndpointId"`
+	DecisionEndpointID      *string              `json:"decisionEndpointId"`
+	AllowedToolIDs          *[]string            `json:"allowedToolIds"`
+	DeniedToolIDs           *[]string            `json:"deniedToolIds"`
+	ProactiveEnabled        *bool                `json:"proactiveEnabled"`
+	ParticipationMode       *string              `json:"participationMode"`
+	InitialReplyProbability *float64             `json:"initialReplyProbability"`
+	AfterReplyProbability   *float64             `json:"afterReplyProbability"`
+	ParticipationStyle      *string              `json:"participationStyle"`
+	UnaddressedMode         *string              `json:"unaddressedMode"`
+	AddressKeywords         *[]string            `json:"addressKeywords"`
+	MaxReplyChars           *int                 `json:"maxReplyChars"`
+	MaxReplySentences       *int                 `json:"maxReplySentences"`
+	MemoryPolicy            *string              `json:"memoryPolicy"`
+	SearchMode              *string              `json:"searchMode"`
+	SearchReplyStyle        *string              `json:"searchReplyStyle"`
+	VisualPromptOverride    *string              `json:"visualPromptOverride"`
+	VisualStyle             *visualStyleDefaults `json:"visualStyle"`
+	ExpressionPrompt        *string              `json:"expressionPrompt"`
 }
 
 var personaRuntimeProfileFields = coreFieldSet(
 	"chatEndpointId", "taskEndpointId", "decisionEndpointId", "allowedToolIds", "deniedToolIds",
 	"proactiveEnabled", "participationMode", "initialReplyProbability", "afterReplyProbability", "participationStyle", "unaddressedMode", "addressKeywords",
-	"maxReplyChars", "maxReplySentences", "memoryPolicy", "searchMode", "searchReplyStyle", "visualPromptOverride", "expressionPrompt",
+	"maxReplyChars", "maxReplySentences", "memoryPolicy", "searchMode", "searchReplyStyle", "visualPromptOverride", "visualStyle", "expressionPrompt",
 )
 
 func (s *coreConfigStore) personaRuntimeProfile(personaID string) (personaRuntimeProfile, error) {
@@ -274,6 +339,12 @@ func (s *coreConfigStore) handlePersonaRuntimeRequest(w http.ResponseWriter, r *
 	if err != nil {
 		return err
 	}
+	if raw, present := fields["visualStyle"]; present {
+		payload.VisualStyle, err = decodeVisualStyleDefaults(raw)
+		if err != nil {
+			return err
+		}
+	}
 	var exists int
 	if err = s.db.QueryRow("SELECT count(*) FROM personas WHERE id = ?", id).Scan(&exists); err != nil {
 		return err
@@ -398,6 +469,9 @@ func applyPersonaRuntimeProfilePayload(current *personaRuntimeProfile, payload p
 	}
 	if payload.VisualPromptOverride != nil {
 		current.VisualPromptOverride = strings.TrimSpace(*payload.VisualPromptOverride)
+	}
+	if _, present := fields["visualStyle"]; present {
+		current.VisualStyle = payload.VisualStyle
 	}
 	if payload.ExpressionPrompt != nil {
 		current.ExpressionPrompt = strings.TrimSpace(*payload.ExpressionPrompt)

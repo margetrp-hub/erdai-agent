@@ -630,7 +630,7 @@ func TestGrokSelfImageUsesSelectedAppearanceReference(t *testing.T) {
 			if image["url"] != avatar || payload["model"] != "grok-imagine-edit" {
 				t.Fatalf("reference payload = %+v", payload)
 			}
-			if payload["aspect_ratio"] != "9:16" {
+			if payload["aspect_ratio"] != "3:4" {
 				t.Fatalf("selfie aspect ratio = %v", payload["aspect_ratio"])
 			}
 			writeJSON(w, http.StatusOK, map[string]any{

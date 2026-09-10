@@ -146,15 +146,16 @@ var coreRuntimePrepareFields = coreFieldSet(
 )
 
 var (
-	nativeVideoLanePattern        = regexp.MustCompile(`(?i)(生|生成|制作|做|来|弄).{0,48}(视频|短片)|(视频|短片).{0,24}(生成|制作|做|弄|来|拍)|generate.{0,48}video`)
-	nativeVideoRequestPattern     = regexp.MustCompile(`(?i)(给我|发我|发个|想看|要看|来个|来一段|来条).{0,40}(视频|短片)|(视频|短片).{0,24}(发我|给我|发个|来个|来一段|来条)`)
-	nativeImageLanePattern        = regexp.MustCompile(`(?i)画一|画张|生成.*图|生图|做.*图|image|\b(draw|sketch)\b|\b(generate|create|make).{0,12}(image|picture|photo)\b|(^|[，,。！？!?；;：:\n])\s*(请|麻烦|帮我|给我|请帮我|请给我|麻烦帮我)?(生成|制作|画|做).{0,32}(照片|相片|全身照|穿搭照|生活照)|(给我|来|拍|发).{0,12}(自拍|照片|相片|全身照|穿搭照|生活照)|(自拍|照片|相片|全身照|穿搭照|生活照).{0,6}(来一张|拍一张|发一张)`)
-	nativePhotoRequestPattern     = regexp.MustCompile(`(?i)(给我|来|拍|发).{0,6}(自拍|照片)|(自拍|照片).{0,6}(来一张|拍一张|发一张)`)
-	nativeSelfImageRequestPattern = regexp.MustCompile(`(?i)自拍|你(本人|自己)?的.{0,6}(照片|相片|样子|画像|头像|全身照|穿搭照|生活照)|你.{0,4}长什么样|拍.{0,4}你|selfie|photo.{0,8}of you|picture.{0,8}of you|your.{0,4}(photo|portrait|picture)`)
-	nativeSearchLanePattern       = regexp.MustCompile(`(?i)最新|搜索|搜一下|查一下|查找|资料|新闻|联网|\b(search|latest|news)\b|\blook.{0,3}up\b`)
-	nativeCodeLanePattern         = regexp.MustCompile(`(?i)代码|报错|bug|函数|接口|数据库|部署|服务器|github|git\b|api\b`)
-	nativeReasonLanePattern       = regexp.MustCompile(`(?i)分析|比较|规划|为什么|推理|方案`)
-	nativeKnowledgeSplitPattern   = regexp.MustCompile(`[，,。！？!?；;\n]+`)
+	nativeVideoLanePattern              = regexp.MustCompile(`(?i)(生|生成|制作|做|来|弄).{0,48}(视频|短片)|(视频|短片).{0,24}(生成|制作|做|弄|来|拍)|generate.{0,48}video`)
+	nativeVideoRequestPattern           = regexp.MustCompile(`(?i)(给我|发我|发个|想看|要看|来个|来一段|来条).{0,40}(视频|短片)|(视频|短片).{0,24}(发我|给我|发个|来个|来一段|来条)`)
+	nativeImageLanePattern              = regexp.MustCompile(`(?i)画一|画张|生成.*图|生图|做.*图|image|\b(draw|sketch)\b|\b(generate|create|make).{0,12}(image|picture|photo)\b|(^|[，,。！？!?；;：:\n])\s*(请|麻烦|帮我|给我|请帮我|请给我|麻烦帮我)?(生成|制作|画|做).{0,32}(照片|相片|全身照|穿搭照|生活照)|(给我|来|拍|发).{0,12}(自拍|照片|相片|全身照|穿搭照|生活照)|(自拍|照片|相片|全身照|穿搭照|生活照).{0,6}(来一张|拍一张|发一张)`)
+	nativePhotoRequestPattern           = regexp.MustCompile(`(?i)(给我|来|拍|发).{0,6}(自拍|照片)|(自拍|照片).{0,6}(来一张|拍一张|发一张)`)
+	nativeColloquialPhotoRequestPattern = regexp.MustCompile(`(?i)给(我)?(个|张|一张|一个).{0,8}(自拍|照片|相片|全身照|穿搭照|生活照)`)
+	nativeSelfImageRequestPattern       = regexp.MustCompile(`(?i)自拍|你(本人|自己)?的.{0,6}(照片|相片|样子|画像|头像|全身照|穿搭照|生活照)|你.{0,4}长什么样|拍.{0,4}你|selfie|photo.{0,8}of you|picture.{0,8}of you|your.{0,4}(photo|portrait|picture)`)
+	nativeSearchLanePattern             = regexp.MustCompile(`(?i)最新|搜索|搜一下|查一下|查找|资料|新闻|联网|\b(search|latest|news)\b|\blook.{0,3}up\b`)
+	nativeCodeLanePattern               = regexp.MustCompile(`(?i)代码|报错|bug|函数|接口|数据库|部署|服务器|github|git\b|api\b`)
+	nativeReasonLanePattern             = regexp.MustCompile(`(?i)分析|比较|规划|为什么|推理|方案`)
+	nativeKnowledgeSplitPattern         = regexp.MustCompile(`[，,。！？!?；;\n]+`)
 )
 
 var videoExplanationMarkers = []string{
@@ -195,6 +196,45 @@ func imageLaneMessage(message string) string {
 		"照片视频", "视频",
 		"图片视频", "视频",
 	).Replace(message)
+}
+
+func explicitImageGenerationIntent(message string) bool {
+	for _, clause := range visualConstraintClauses(imageLaneMessage(message)) {
+		match := nativeImageLanePattern.FindStringIndex(clause)
+		if colloquial := nativeColloquialPhotoRequestPattern.FindStringIndex(clause); colloquial != nil && (match == nil || colloquial[0] < match[0]) {
+			match = colloquial
+		}
+		if match == nil {
+			continue
+		}
+		prefix := clause[:match[0]]
+		// A search question before a separate image command is not a question
+		// about generating the image itself.
+		if !visualClauseNegated(prefix) && !visualNegationSuffix.MatchString(prefix) {
+			for _, boundary := range []string{"然后", "并且", "并"} {
+				if index := strings.LastIndex(prefix, boundary); index >= 0 {
+					prefix = prefix[index+len(boundary):]
+				}
+			}
+		}
+		if visualClauseNegated(prefix) || visualNegationSuffix.MatchString(prefix) ||
+			containsAnyText(prefix, []string{"怎么", "如何", "什么是", "是什么意思", "讲讲", "讲解", "解释", "讨论"}) {
+			continue
+		}
+		// Only reject an explanatory request prefix or a tutorial noun at the
+		// end; explanation words may legitimately describe the requested image.
+		request := strings.TrimSpace(clause[match[0]:])
+		for _, lead := range []string{"请", "麻烦", "给我", "帮我"} {
+			request = strings.TrimSpace(strings.TrimPrefix(request, lead))
+		}
+		if strings.HasSuffix(request, "教程") || strings.HasSuffix(request, "知识") ||
+			strings.HasPrefix(request, "讲讲") || strings.HasPrefix(request, "讲解") ||
+			strings.HasPrefix(request, "解释") || strings.HasPrefix(request, "讨论") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func explicitImageEditIntent(message string) bool {
@@ -281,7 +321,7 @@ func inferNativeLane(message string, hasImage, _ bool, hasDocument ...bool) stri
 	}
 	lower := strings.ToLower(message)
 	videoIntent := explicitVideoGenerationIntent(lower)
-	imageIntent := nativeImageLanePattern.MatchString(imageLaneMessage(lower))
+	imageIntent := explicitImageGenerationIntent(lower)
 	// Search is an explicit capability, never the default answer path for a
 	// declarative message that merely contains a knowledge noun.
 	searchIntent := explicitWebSearchIntent(lower)

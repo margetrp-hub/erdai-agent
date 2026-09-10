@@ -793,6 +793,11 @@ func compileVisualGenerationPrompt(plan visualGenerationPlan, correction string)
 	if strings.TrimSpace(correction) != "" {
 		mandatory += "\n修正上次成片的问题，但不新增用户未要求的固定颜色或背景：\n" + strings.TrimSpace(correction)
 	}
+	if plan.MediaType == "image" {
+		if ratio := imageAspectRatioForPrompt(plan.UserPrompt); ratio != "" {
+			mandatory += "\n本次照片比例：" + ratio + "；外观库、默认风格和随机变量中的方向描述不得覆盖此比例。"
+		}
+	}
 	parts := []string{mandatory}
 	if plan.OutfitLength != "" {
 		parts = append(parts, "用户未指定长度时外观库默认服装长度="+plan.OutfitLength+"；明确长度要求优先。独立样式中的默认穿搭优先于库服长，本次明确要求最高。")

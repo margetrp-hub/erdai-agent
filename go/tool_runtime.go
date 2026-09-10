@@ -2396,6 +2396,8 @@ func (a *AgentRuntime) generateImageForRun(ctx context.Context, run runRecord, p
 	if err != nil {
 		return toolResult{}, err
 	}
+	// Provider options come from the request, never the appearance or style text.
+	ctx = context.WithValue(ctx, imageRequestAspectRatioKey{}, imageAspectRatioForPrompt(initial.UserPrompt))
 	result, err := a.executeMediaQuality(ctx, run, mediaQualityRequest{
 		MediaType: "image", Prompt: initial.UserPrompt, Reference: initial.Reference, OperationID: initial.OperationID,
 	}, func(attemptContext context.Context, attempt int, correction string) (toolResult, error) {
@@ -2433,6 +2435,7 @@ func (a *AgentRuntime) generateImageForRun(ctx context.Context, run runRecord, p
 }
 
 type visualGenerationGuardKey struct{}
+type imageRequestAspectRatioKey struct{}
 
 func personaImagePrompt(prompt string, persona *nativeActivePersona) string {
 	now := time.Now()
@@ -2460,12 +2463,16 @@ func personaImagePromptAt(
 	if persona == nil || !nativeSelfImageRequestPattern.MatchString(prompt) {
 		return prompt
 	}
+	framing := "静态照片采用普通手机原生相机构图；"
+	if ratio := imageAspectRatioForPrompt(prompt); ratio != "" {
+		framing = "静态照片采用手机原生相机的" + ratio + "比例；"
+	}
 	parts := []string{
 		"生成同一位成年女性角色本人的现实世界生活照，保持脸型、五官、发型、发色、年龄、体态和整体气质稳定；这是同一个人，不是换脸。照片像她本人或朋友用手机随手拍到的瞬间，不是为了展示商品而摆拍。",
 		"固定人物外观：" + strings.TrimSpace(persona.VisualDescription),
 		visualReferenceVariationInstruction(persona.ID),
 		"用户这次的场景要求：" + prompt,
-		"静态照片默认采用手机原生相机的竖拍3:4比例；保持普通手机视角和合理拍摄距离，允许轻微歪斜、自然留白或不完美裁切。除非用户明确指定比例，不要生成海报、壁纸、宣传图或电影宽幅构图。",
+		framing + "保持普通手机视角和合理拍摄距离，允许轻微歪斜、自然留白或不完美裁切，不生成海报、壁纸或宣传图。",
 		"场景必须符合现实：季节、天气、时间、地点、光线、衣着和物体相互匹配；炎热夏天穿透气的短袖或轻薄裙装，寒冷天气才穿厚外套。动作、手脚、镜面反射和透视符合真实物理。构图允许轻微歪斜、人物偏一侧、裁切不完美、自然抓拍和一点点运动感，不要每次正面居中看镜头。",
 	}
 	shortOutfit := personaPrefersShortOutfit(prompt, persona)
@@ -2705,7 +2712,11 @@ func (a *AgentRuntime) generateImageOnce(ctx context.Context, prompt string, gro
 		payload := map[string]any{"model": target.model, "prompt": fitImageProviderPrompt(prompt), "n": 1}
 		if !isGPTImageModel(target.model) {
 			payload["response_format"] = "b64_json"
-			if aspectRatio := imageAspectRatioForPrompt(prompt); aspectRatio != "" {
+			aspectRatio, fromRequest := ctx.Value(imageRequestAspectRatioKey{}).(string)
+			if !fromRequest {
+				aspectRatio = imageAspectRatioForPrompt(prompt)
+			}
+			if aspectRatio != "" {
 				payload["aspect_ratio"] = aspectRatio
 			}
 		}
@@ -2779,27 +2790,58 @@ func imageProviderRejectedWithoutExecution(err error) bool {
 }
 
 func imageAspectRatioForPrompt(prompt string) string {
-	normalized := strings.ToLower(strings.ReplaceAll(prompt, "：", ":"))
-	latest := ""
+	normalized := strings.NewReplacer("：", ":", "竖拍", "竖屏").Replace(strings.ToLower(prompt))
+	positive := []string{}
+	forbidden := map[string]bool{}
 	for _, clause := range visualConstraintClauses(normalized) {
-		for _, ratio := range []string{"16:9", "1:1", "4:3", "3:4", "9:16"} {
-			if index := strings.Index(clause, ratio); index >= 0 && !visualClauseNegated(clause[:index]) {
-				latest = ratio
+		matches := videoAspectRatioToken.FindAllStringIndex(clause, -1)
+		previousEnd, previousNegated := 0, false
+		exact, directions := []string{}, []string{}
+		for index, match := range matches {
+			prefix := strings.TrimSpace(clause[previousEnd:match[0]])
+			negated := visualClauseNegated(prefix) || visualNegationSuffix.MatchString(prefix) || strings.HasSuffix(prefix, "instead of")
+			if previousNegated && (prefix == "" || videoAspectRatioConjunction(prefix)) {
+				negated = true
 			}
+			if index == len(matches)-1 {
+				suffix := strings.TrimSpace(clause[match[1]:])
+				if suffix == "不要" || suffix == "不要了" || suffix == "不用" {
+					negated = true
+				}
+			}
+			token := strings.Join(strings.Fields(clause[match[0]:match[1]]), "")
+			ratio := token
+			switch token {
+			case "横屏", "横版", "landscape", "horizontal", "widescreen":
+				ratio = "16:9"
+			case "竖屏", "竖版", "竖拍", "portrait", "vertical":
+				ratio = "3:4"
+			case "正方形", "方形", "square":
+				ratio = "1:1"
+			}
+			if negated {
+				forbidden[ratio] = true
+			} else if strings.Contains(token, ":") {
+				exact = append(exact, ratio)
+				delete(forbidden, ratio)
+			} else {
+				directions = append(directions, ratio)
+				delete(forbidden, ratio)
+			}
+			previousEnd, previousNegated = match[1], negated
 		}
-		switch {
-		case videoHasAny(clause, "横屏", "横版", "landscape") && !visualClauseNegated(clause):
-			latest = "16:9"
-		case videoHasAny(clause, "竖屏", "竖版", "竖拍", "portrait") && !visualClauseNegated(clause):
-			latest = "3:4"
-		case videoHasAny(clause, "正方形", "square") && !visualClauseNegated(clause):
-			latest = "1:1"
+		if len(exact) > 0 {
+			positive = append(positive, exact...)
+		} else {
+			positive = append(positive, directions...)
 		}
 	}
-	if latest != "" {
-		return latest
+	for index := len(positive) - 1; index >= 0; index-- {
+		if !forbidden[positive[index]] {
+			return positive[index]
+		}
 	}
-	if nativeSelfImageRequestPattern.MatchString(strings.TrimSpace(prompt)) {
+	if nativeSelfImageRequestPattern.MatchString(strings.TrimSpace(prompt)) && !forbidden["3:4"] {
 		return "3:4"
 	}
 	return ""

@@ -113,7 +113,7 @@ func TestGPTImageEditPreservesDefiniteRejectionFallback(t *testing.T) {
 					}
 					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil ||
 						payload.Model != "grok-imagine-edit" || payload.Image.URL != testVideoPersonaAvatar ||
-						payload.AspectRatio != "9:16" || payload.ResponseFormat != "b64_json" {
+						payload.AspectRatio != "3:4" || payload.ResponseFormat != "b64_json" {
 						t.Error("Grok fallback lost its JSON contract, edit model or reference")
 					}
 					writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]string{"b64_json": strings.SplitN(testVideoPersonaAvatar, ",", 2)[1]}}})

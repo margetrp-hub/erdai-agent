@@ -1,3 +1,3 @@
 package main
 
-const erdaiRuntimeVersion = "0.15.11"
+const erdaiRuntimeVersion = "0.15.12"

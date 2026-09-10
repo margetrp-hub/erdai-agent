@@ -2465,6 +2465,7 @@ func personaImagePromptAt(
 		"固定人物外观：" + strings.TrimSpace(persona.VisualDescription),
 		visualReferenceVariationInstruction(persona.ID),
 		"用户这次的场景要求：" + prompt,
+		"静态照片默认采用手机原生相机的竖拍3:4比例；保持普通手机视角和合理拍摄距离，允许轻微歪斜、自然留白或不完美裁切。除非用户明确指定比例，不要生成海报、壁纸、宣传图或电影宽幅构图。",
 		"场景必须符合现实：季节、天气、时间、地点、光线、衣着和物体相互匹配；炎热夏天穿透气的短袖或轻薄裙装，寒冷天气才穿厚外套。动作、手脚、镜面反射和透视符合真实物理。构图允许轻微歪斜、人物偏一侧、裁切不完美、自然抓拍和一点点运动感，不要每次正面居中看镜头。",
 	}
 	shortOutfit := personaPrefersShortOutfit(prompt, persona)
@@ -2494,7 +2495,7 @@ func personaImagePromptAt(
 	case strings.Contains(normalized, "开心") || strings.Contains(normalized, "笑") || strings.Contains(normalized, "可爱"):
 		parts = append(parts, "表情明亮俏皮，笑容自然克制，不做幼态夸张表情。")
 	default:
-		parts = append(parts, "按手机前置镜头的自然自拍构图，轻微生活感，避免商业人像和冷峻时尚大片。")
+		parts = append(parts, "按本次选定的拍摄方式采用自然手机构图；不预设为前置自拍，避免商业人像和冷峻时尚大片。")
 	}
 	parts = append(parts,
 		"必须是现实摄影中的自然人形象；整体可爱、灵动、亲近，但明确成年，不幼态化。保留真实皮肤纹理、细小发丝、轻微表情不对称和普通手机镜头的自然质感。",
@@ -2778,20 +2779,28 @@ func imageProviderRejectedWithoutExecution(err error) bool {
 }
 
 func imageAspectRatioForPrompt(prompt string) string {
-	normalized := strings.ToLower(prompt)
-	for _, ratio := range []string{"16:9", "1:1", "4:3", "3:4", "9:16"} {
-		if strings.Contains(normalized, ratio) {
-			return ratio
+	normalized := strings.ToLower(strings.ReplaceAll(prompt, "：", ":"))
+	latest := ""
+	for _, clause := range visualConstraintClauses(normalized) {
+		for _, ratio := range []string{"16:9", "1:1", "4:3", "3:4", "9:16"} {
+			if index := strings.Index(clause, ratio); index >= 0 && !visualClauseNegated(clause[:index]) {
+				latest = ratio
+			}
+		}
+		switch {
+		case videoHasAny(clause, "横屏", "横版", "landscape") && !visualClauseNegated(clause):
+			latest = "16:9"
+		case videoHasAny(clause, "竖屏", "竖版", "竖拍", "portrait") && !visualClauseNegated(clause):
+			latest = "3:4"
+		case videoHasAny(clause, "正方形", "square") && !visualClauseNegated(clause):
+			latest = "1:1"
 		}
 	}
-	if videoHasAny(normalized, "横屏", "横版", "landscape") {
-		return "16:9"
-	}
-	if videoHasAny(normalized, "正方形", "square") {
-		return "1:1"
+	if latest != "" {
+		return latest
 	}
 	if nativeSelfImageRequestPattern.MatchString(strings.TrimSpace(prompt)) {
-		return "9:16"
+		return "3:4"
 	}
 	return ""
 }

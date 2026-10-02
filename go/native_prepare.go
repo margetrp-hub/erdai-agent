@@ -151,12 +151,28 @@ var (
 	nativeImageLanePattern              = regexp.MustCompile(`(?i)画一|画张|生成.*图|生图|做.*图|image|\b(draw|sketch)\b|\b(generate|create|make).{0,12}(image|picture|photo)\b|(^|[，,。！？!?；;：:\n])\s*(请|麻烦|帮我|给我|请帮我|请给我|麻烦帮我)?(生成|制作|画|做).{0,32}(照片|相片|全身照|穿搭照|生活照)|(给我|来|拍|发).{0,12}(自拍|照片|相片|全身照|穿搭照|生活照)|(自拍|照片|相片|全身照|穿搭照|生活照).{0,6}(来一张|拍一张|发一张)`)
 	nativePhotoRequestPattern           = regexp.MustCompile(`(?i)(给我|来|拍|发).{0,6}(自拍|照片)|(自拍|照片).{0,6}(来一张|拍一张|发一张)`)
 	nativeColloquialPhotoRequestPattern = regexp.MustCompile(`(?i)给(我)?(个|张|一张|一个).{0,8}(自拍|照片|相片|全身照|穿搭照|生活照)`)
+	nativeGroupPhotoRequestPattern      = regexp.MustCompile(`(?i)(拍|来|给我|发我|生成|制作|做).{0,20}(和|跟).{0,20}(一起|合影|合照)`)
 	nativeSelfImageRequestPattern       = regexp.MustCompile(`(?i)自拍|你(本人|自己)?的.{0,6}(照片|相片|样子|画像|头像|全身照|穿搭照|生活照)|你.{0,4}长什么样|拍.{0,4}你|selfie|photo.{0,8}of you|picture.{0,8}of you|your.{0,4}(photo|portrait|picture)`)
 	nativeSearchLanePattern             = regexp.MustCompile(`(?i)最新|搜索|搜一下|查一下|查找|资料|新闻|联网|\b(search|latest|news)\b|\blook.{0,3}up\b`)
 	nativeCodeLanePattern               = regexp.MustCompile(`(?i)代码|报错|bug|函数|接口|数据库|部署|服务器|github|git\b|api\b`)
 	nativeReasonLanePattern             = regexp.MustCompile(`(?i)分析|比较|规划|为什么|推理|方案`)
 	nativeKnowledgeSplitPattern         = regexp.MustCompile(`[，,。！？!?；;\n]+`)
 )
+
+// A direct @-mention can describe a group photo without saying "自拍" (for
+// example, "拍张和闺蜜一起在泳池的照片"). In that context the addressed
+// persona is still one of the subjects, so use its selected appearance
+// library. Keep this scoped to addressed image requests: a generic request
+// for a landscape or other scene must not unexpectedly bind the persona.
+func personaVisualImageRequest(run runRecord, prompt string) bool {
+	if nativeSelfImageRequestPattern.MatchString(prompt) {
+		return true
+	}
+	if !run.IsMentionBot {
+		return false
+	}
+	return nativeGroupPhotoRequestPattern.MatchString(prompt)
+}
 
 var videoExplanationMarkers = []string{
 	"简称", "缩写", "意思是", "指的是", "所谓", "也就是", "不是要你", "不是让你", "不是叫你",

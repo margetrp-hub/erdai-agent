@@ -94,7 +94,7 @@ func (a *AgentRuntime) writeVisualRecord(run runRecord, name string, attempt int
 
 func (a *AgentRuntime) resolveVisualAppearance(ctx context.Context, run runRecord, prompt, kind string) (visualAppearanceSnapshot, error) {
 	var snapshot visualAppearanceSnapshot
-	if a == nil || a.configStore == nil || (kind == "image" && !nativeSelfImageRequestPattern.MatchString(prompt)) {
+	if a == nil || a.configStore == nil || (kind == "image" && !personaVisualImageRequest(run, prompt)) {
 		return snapshot, nil
 	}
 	resolvedID := strings.TrimSpace(run.PersonaID)

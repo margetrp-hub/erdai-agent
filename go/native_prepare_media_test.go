@@ -17,6 +17,8 @@ func TestNativeMediaNaturalPhotoRequestsPreserveIdentityAndLane(t *testing.T) {
 		{"豆包，生成一张你本人的穿搭照", "image", true},
 		{"生成你自己的照片", "image", true},
 		{"给我一张你本人的照片", "image", true},
+		{"拍张和闺蜜一起在泳池戏水的照片", "image", false},
+		{"来一张跟朋友一起的照片", "image", false},
 		{"给个自拍", "image", true},
 		{"给张照片", "image", false},
 		{"给一张你的生活照", "image", true},
@@ -52,5 +54,18 @@ func TestNativeMediaNaturalPhotoRequestsPreserveIdentityAndLane(t *testing.T) {
 				t.Fatalf("self=%v want=%v", self, test.self)
 			}
 		})
+	}
+}
+
+func TestPersonaVisualImageRequestUsesMentionForGroupPhoto(t *testing.T) {
+	const prompt = "拍张和闺蜜一起在泳池戏水的照片"
+	if personaVisualImageRequest(runRecord{IsMentionBot: false}, prompt) {
+		t.Fatal("unaddressed group photo should not bind the persona appearance")
+	}
+	if !personaVisualImageRequest(runRecord{IsMentionBot: true}, prompt) {
+		t.Fatal("an addressed group photo should bind the selected persona appearance")
+	}
+	if personaVisualImageRequest(runRecord{IsMentionBot: true}, "生成一张海边风景照片") {
+		t.Fatal("an addressed scenic image should remain a generic image")
 	}
 }

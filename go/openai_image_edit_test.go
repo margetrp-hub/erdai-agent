@@ -93,14 +93,26 @@ func TestGPTImageEditSelectedRouteUsesMultipartReference(t *testing.T) {
 }
 
 func TestGPTImageEditPreservesDefiniteRejectionFallback(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusBadGateway} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		fallback bool
+	}{
+		{name: "generic-bad-request", status: http.StatusBadRequest, body: "test rejection"},
+		{name: "upstream-empty-response", status: http.StatusBadRequest, body: `{"code":"GPT_IMAGE_UPSTREAM_EMPTY_RESPONSE"}`, fallback: true},
+		{name: "unauthorized", status: http.StatusUnauthorized, body: "test rejection", fallback: true},
+		{name: "too-many-requests", status: http.StatusTooManyRequests, body: "test rejection", fallback: true},
+		{name: "bad-gateway", status: http.StatusBadGateway, body: "test rejection"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
 			var gptCalls, grokCalls atomic.Int32
 			service := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/gpt/images/edits":
 					gptCalls.Add(1)
-					http.Error(w, "test rejection", status)
+					http.Error(w, test.body, test.status)
 				case "/grok/images/edits":
 					grokCalls.Add(1)
 					var payload struct {
@@ -125,14 +137,13 @@ func TestGPTImageEditPreservesDefiniteRejectionFallback(t *testing.T) {
 			defer service.Close()
 			runtime := newGPTImageEditRuntime(t, service, true)
 			result, err := runtime.generateImageOnce(t.Context(), "来一张你的自拍", true, testVideoPersonaAvatar)
-			definite := status == http.StatusUnauthorized || status == http.StatusTooManyRequests
-			if definite {
+			if test.fallback {
 				if err != nil || len(result.Attachments) != 1 || grokCalls.Load() != 1 {
 					t.Fatalf("definite rejection did not preserve reference fallback: err=%v calls=%d", err, grokCalls.Load())
 				}
 			} else {
 				var response *providerHTTPError
-				if !errors.As(err, &response) || response.StatusCode != status || grokCalls.Load() != 0 {
+				if !errors.As(err, &response) || response.StatusCode != test.status || grokCalls.Load() != 0 {
 					t.Fatalf("ambiguous rejection retried or lost HTTP status: err=%v calls=%d", err, grokCalls.Load())
 				}
 			}

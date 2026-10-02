@@ -206,6 +206,12 @@ func TestVisualPlanImageFallbackOnlyOnDefiniteRejection(t *testing.T) {
 			t.Fatalf("ambiguous/policy error permits regeneration: %v", err)
 		}
 	}
+	if !imageProviderRejectedWithoutExecution(&providerHTTPError{
+		StatusCode: http.StatusBadRequest,
+		Message:    `{"code":"GPT_IMAGE_UPSTREAM_EMPTY_RESPONSE"}`,
+	}) {
+		t.Fatal("whitelisted empty image response should try the next provider")
+	}
 	for _, status := range []int{401, 403, 404, 405, 429} {
 		if !imageProviderRejectedWithoutExecution(&providerHTTPError{StatusCode: status}) {
 			t.Fatalf("definitive rejection %d cannot fall back", status)

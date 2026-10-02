@@ -2782,6 +2782,12 @@ func imageProviderRejectedWithoutExecution(err error) bool {
 		return false
 	}
 	switch response.StatusCode {
+	case http.StatusBadRequest:
+		// The image gateway uses this explicit code when GPT Image accepted the
+		// request but returned no usable result. It is safe to move to the next
+		// configured image candidate; other 400 responses may be content or
+		// parameter refusals and must not be replayed.
+		return strings.Contains(response.Message, "GPT_IMAGE_UPSTREAM_EMPTY_RESPONSE")
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusTooManyRequests:
 		return true
 	default:

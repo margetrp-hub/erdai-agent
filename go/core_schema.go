@@ -2069,6 +2069,9 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	if err := migrateDoubaoPromptSofteningV88(tx, now); err != nil {
 		return err
 	}
+	if err := migrateDoubaoPromptSofteningV89(tx, now); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`
 		INSERT OR IGNORE INTO tools (
 			id, name, description, capabilities_json, risk_level, enabled,
@@ -2569,6 +2572,28 @@ func migrateDoubaoPromptSofteningV88(tx coreSchemaTx, now string) error {
 		WHERE id = 'group_chat_policy'
 		  AND json_extract(config_json, '$.replyExtraPrompt') = ?`, softenedGroupPrompt, now, legacyGroupPrompt); err != nil {
 		return fmt.Errorf("soften Doubao group reply prompt for v88: %w", err)
+	}
+	return nil
+}
+
+func migrateDoubaoPromptSofteningV89(tx coreSchemaTx, now string) error {
+	// Some installs already passed the earlier prompt migrations but still have
+	// the older approximate 8-35/45 character guidance and the compact group
+	// reply hint. Remove those exact seeded phrases without touching custom text.
+	const legacyStyle = "普通聊天默认一句，通常八到三十五个汉字；确实需要补充时最多两句，总字数尽量不超过四十五个汉字。"
+	const softenedStyle = "普通闲聊可以简短，但按当前情绪、话题和用户要求自然伸缩；需要承接或解释时完整说清，不把固定字数和句数当硬规则。"
+	if _, err := tx.Exec(`UPDATE runtime_config
+		SET reply_style = replace(reply_style, ?, ?), updated_at = ?
+		WHERE id = 1 AND instr(reply_style, ?) > 0`, legacyStyle, softenedStyle, now, legacyStyle); err != nil {
+		return fmt.Errorf("soften approximate global reply style for v89: %w", err)
+	}
+	const legacyGroupPrompt = "顺着当前群聊自然接话。完整优先，闲聊可以短；别复述，也别为了显得能干而展开。"
+	const softenedGroupPrompt = "顺着当前群聊自然接话：先回应具体内容，闲聊可以短，需要承接情绪或解释时自然展开；别复述，也不要为了显得能干强行扩展。"
+	if _, err := tx.Exec(`UPDATE integration_settings
+		SET config_json = json_set(COALESCE(config_json, '{}'), '$.replyExtraPrompt', ?), updated_at = ?
+		WHERE id = 'group_chat_policy'
+		  AND json_extract(config_json, '$.replyExtraPrompt') = ?`, softenedGroupPrompt, now, legacyGroupPrompt); err != nil {
+		return fmt.Errorf("soften compact group reply prompt for v89: %w", err)
 	}
 	return nil
 }

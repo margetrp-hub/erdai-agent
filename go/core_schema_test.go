@@ -1514,3 +1514,48 @@ func TestCoreConfigSchemaV88SoftensGlobalReplyLayers(t *testing.T) {
 		t.Fatalf("group reply prompt was not softened: %s", prompt)
 	}
 }
+
+func TestCoreConfigSchemaV89SoftensApproximateReplyLayers(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacyStyle := "像熟悉的群聊伙伴一样直接接话。普通聊天默认一句，通常八到三十五个汉字；确实需要补充时最多两句，总字数尽量不超过四十五个汉字。"
+	legacyGroupPrompt := "顺着当前群聊自然接话。完整优先，闲聊可以短；别复述，也别为了显得能干而展开。"
+	if _, err := db.Exec(`UPDATE runtime_config SET reply_style = ?, updated_at = 'before-v89' WHERE id = 1`, legacyStyle); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE integration_settings SET config_json = json_set(config_json, '$.replyExtraPrompt', ?), updated_at = 'before-v89' WHERE id = 'group_chat_policy'`, legacyGroupPrompt); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 85"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var style string
+	if err := store.db.QueryRow(`SELECT reply_style FROM runtime_config WHERE id = 1`).Scan(&style); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(style, "八到三十五") || strings.Contains(style, "最多两句") || !strings.Contains(style, "自然伸缩") {
+		t.Fatalf("approximate global reply style was not softened: %s", style)
+	}
+	var raw string
+	if err := store.db.QueryRow(`SELECT config_json FROM integration_settings WHERE id = 'group_chat_policy'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var policy map[string]any
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := policy["replyExtraPrompt"].(string)
+	if strings.Contains(prompt, "完整优先") || !strings.Contains(prompt, "承接情绪") {
+		t.Fatalf("compact group reply prompt was not softened: %s", prompt)
+	}
+}

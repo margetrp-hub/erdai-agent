@@ -125,7 +125,8 @@ func (a *AgentRuntime) ensureNaturalChatReplyKey(
 		maxSentences = budget[1]
 	}
 	overBudget := replyExceedsBudget(text, maxChars, maxSentences)
-	if !replyNeedsRewrite(message, text, recent) && !overBudget {
+	needsStyleRewrite := replyNeedsRewrite(message, text, recent)
+	if !needsStyleRewrite && !overBudget {
 		return text
 	}
 	rewriteContext, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
@@ -138,13 +139,14 @@ func (a *AgentRuntime) ensureNaturalChatReplyKey(
 		}
 		budgetInstruction += "，总共不超过" + itoa(maxChars) + "字。不要输出公式推导、LaTeX、Markdown 或复述题目。"
 	}
+	rewriteInstruction := naturalReplyRewriteInstruction(message, text, recent, needsStyleRewrite, overBudget)
 	payload := map[string]any{
 		"messages": []map[string]any{
 			{"role": "system", "content": withNaturalReplyGuard(systemPrompt, message, recent) +
-				"\n只重写最终答复，不解释修改过程。" + budgetInstruction},
+				"\n" + rewriteInstruction + budgetInstruction},
 			{"role": "user", "content": message},
 			{"role": "assistant", "content": text},
-			{"role": "user", "content": "上一句像客服、身份回答不诚实，或与近期回复太像。按当前场景换成这个角色自然会说的话，保留完整意思，不要刻意变短。"},
+			{"role": "user", "content": "请按系统中列出的修复范围输出最终答复。"},
 		},
 		"stream": false,
 	}
@@ -165,6 +167,61 @@ func (a *AgentRuntime) ensureNaturalChatReplyKey(
 		return compactReplyToBudget(text, maxChars, maxSentences)
 	}
 	return text
+}
+
+// naturalReplyRewriteInstruction keeps the repair pass surgical.  The second
+// model call used to receive the same broad "像客服/不诚实/重复" instruction
+// for every trigger, including a simple length cap.  That encouraged it to
+// rewrite an already natural joke or emotional short reply into a polished,
+// generic answer.  Tell it exactly what failed and preserve the user's tone.
+func naturalReplyRewriteInstruction(message, reply string, recent []string, styleRewrite, overBudget bool) string {
+	reasons := make([]string, 0, 4)
+	if identityQuestionPattern.MatchString(strings.TrimSpace(message)) && identityReplyNeedsRewrite(message, reply) {
+		reasons = append(reasons, "身份回答不诚实或像能力介绍")
+	}
+	if replyLooksMechanical(reply) {
+		reasons = append(reasons, "客服/公告腔")
+	}
+	if replyLooksIncomplete(reply) {
+		reasons = append(reasons, "句子未收完整")
+	}
+	if repeatedReplySkeleton(reply, recent) || anyNearDuplicateReply(reply, recent) {
+		reasons = append(reasons, "与近期回复过于相似")
+	}
+
+	if !styleRewrite && overBudget {
+		return "只做最小幅度的长度整理，保留原答复的事实、情绪、玩笑、称呼、口头语和留白；不要换成客服腔，不要重新解释，不要新增追问或总结。只输出最终答复，不解释修改过程。"
+	}
+
+	instruction := "只重写最终答复，不解释修改过程。保留原答复的事实、情绪、玩笑、称呼和说话人的关系感；只修复"
+	if len(reasons) == 0 {
+		instruction += "当前检测到的问题"
+	} else {
+		instruction += strings.Join(reasons, "、")
+	}
+	instruction += "。不要把短答扩成说明文，不要为了显得自然而补客服式开场、结尾、反问或总结。"
+	switch naturalReplySceneFor(message) {
+	case naturalReplySceneEmotion:
+		instruction += "这是情绪分享：保留原来的情绪分量，先接住具体感受；对方没求办法时不要添加方案。"
+	case naturalReplySceneTask:
+		instruction += "这是明确任务：保留结果和必要细节，直接交代下一步；不要用玩笑冲淡任务。"
+	case naturalReplySceneQuestion:
+		instruction += "这是问题：保留真实倾向或结论，只补确实缺失的关键理由，不要连续追问。"
+	case naturalReplySceneIdentity:
+		instruction += "这是身份追问：诚实说明 AI 或虚拟聊天伙伴，不伪装真人，也不编造个人资料。"
+	default:
+		instruction += "这是普通闲聊：允许一句话、留白、轻微吐槽或自然结束，不要求补齐成完整解释。"
+	}
+	return instruction
+}
+
+func anyNearDuplicateReply(reply string, recent []string) bool {
+	for _, previous := range recent {
+		if nearDuplicateReply(reply, previous) {
+			return true
+		}
+	}
+	return false
 }
 
 func hardReplyViolation(message, reply string) bool {

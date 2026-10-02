@@ -699,10 +699,16 @@ func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy i
 	var life map[string]string
 	if lifestyle {
 		previousScene := ""
+		previousAngle := ""
 		if len(history) > 0 {
 			previousScene = history[0].Variables["scene"]
+			previousAngle = history[0].Variables["cameraAngle"]
 		}
 		life = visualLifestyleVariables(prompt, local, seed, outfitLength, previousScene)
+		// Keep the independent phone placement from repeating immediately. This
+		// is separate from captureMode: a friend shot and a selfie can still use
+		// different, natural placements without turning every result into a pose.
+		life["cameraAngle"] = visualLifestyleCameraAngle(prompt, &seed, previousAngle)
 		scene, outfit = life["scene"], life["outfit"]
 	}
 	if !lifestyle && !sceneSpecified && !outfitSpecified && len(history) > 0 {
@@ -727,7 +733,7 @@ func allocateVisualVariables(prompt string, now time.Time, seed uint64, policy i
 	variables["action"] = visualAction(photoType, seed)
 	variables["mood"] = visualMood(seed / 17)
 	if lifestyle {
-		for _, key := range []string{"makeup", "action", "mood", "light", "activity"} {
+		for _, key := range []string{"makeup", "action", "mood", "light", "activity", "cameraAngle"} {
 			variables[key] = life[key]
 		}
 		if sceneSpecified {
@@ -807,7 +813,7 @@ func compileVisualGenerationPrompt(plan visualGenerationPlan, correction string)
 	}
 	if len(plan.Variables) > 0 {
 		variables := []string{}
-		for _, key := range []string{"primaryColor", "outfit", "scene", "camera", "capture", "activity", "makeup", "action", "mood", "light", "time", "season", "continuity", "variationReason"} {
+		for _, key := range []string{"primaryColor", "outfit", "scene", "camera", "capture", "cameraAngle", "activity", "makeup", "action", "mood", "light", "time", "season", "continuity", "variationReason"} {
 			if value := plan.Variables[key]; value != "" {
 				variables = append(variables, key+"="+value)
 			}

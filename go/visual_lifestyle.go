@@ -39,6 +39,39 @@ var visualLifestyleMoments = []visualLifestyleMoment{
 	{"楼下步道", "楼下步道", "楼下|散步|小区|公园|步道|park", "放慢脚步，自然看向手机", "楼下散步的片刻", true},
 	{"窗边翻书", "窗边", "窗边|看书|阅读|书房|书店|window|reading", "手指停在书页边，抬眼看向手机", "翻书间隙", false},
 	{"餐桌边收拾餐具", "餐桌边", "餐桌|饭后|吃饭|dining table", "放下手边的餐具，自然停顿一下", "饭后整理的片刻", false},
+	{"床边整理小物", "床边", "床边|卧室|整理东西|收拾东西|bedroom|bed", "把手边的小物放好后停一下", "出门前整理东西的间隙", false},
+	{"便利店门口等人", "便利店门口", "便利店|小超市|买饮料|convenience store|supermarket", "拿着刚买的小饮料，抬眼看向镜头", "买东西顺便停一下", false},
+	{"电梯口等电梯", "电梯口", "电梯|楼道|电梯口|elevator|hallway", "按完按钮后站到一旁，自然看向镜头", "等电梯的片刻", false},
+	{"窗边照料绿植", "窗边", "绿植|植物|浇水|花盆|plant|watering", "放下小水壶，回头看一眼镜头", "照料植物的间隙", false},
+}
+
+// These are deliberately ordinary phone-camera placements rather than photo
+// studio poses. A small amount of off-centre framing helps the result feel
+// like a real message sent from a phone instead of a catalogue portrait.
+var visualLifestyleCameraAngles = []string{
+	"手机与眼睛大致同高，人物略偏画面一侧，保留一点周围环境",
+	"手机略高于眼睛一点点的自然俯拍，保留桌面或地面边缘",
+	"手机略低于眼睛的平和视角，避免夸张广角或戏剧化仰拍",
+	"侧前方平视，身体不完全正对镜头，构图有轻微偏移",
+	"从门框或桌角旁边随手拍入，保留一点自然前景遮挡",
+}
+
+func visualLifestyleCameraAngle(prompt string, seed *uint64, previous string) string {
+	for _, clause := range visualConstraintClauses(prompt) {
+		if videoHasAny(clause, "俯拍", "仰拍", "平视", "侧前", "侧面", "正面", "背后", "低机位", "高机位", "机位", "角度", "from above", "from below", "eye level") && !visualClauseNegated(clause) {
+			return "按用户明确指定的机位、角度和构图执行，不追加默认机位"
+		}
+	}
+	choices := make([]string, 0, len(visualLifestyleCameraAngles))
+	for _, value := range visualLifestyleCameraAngles {
+		if value != previous {
+			choices = append(choices, value)
+		}
+	}
+	if len(choices) == 0 {
+		choices = append(choices, visualLifestyleCameraAngles...)
+	}
+	return visualChoice(seed, choices)
 }
 
 var visualLifestyleSubjects = regexp.MustCompile(`(?i)我们|我|你|\b(?:we|i|you)\b`)
@@ -132,12 +165,12 @@ func visualLifestyleVariables(prompt string, now time.Time, seed uint64, outfitL
 		}
 	}
 	if !explicitScene && !explicitAction {
-		choices := []int{0, 1, 3, 4, 5, 6}
+		choices := []int{0, 1, 3, 4, 5, 6, 8, 9, 10, 11}
 		switch hour := now.Hour(); {
 		case hour < 6 || hour >= 22:
-			choices = []int{0, 1, 6}
+			choices = []int{0, 1, 6, 8, 10}
 		case hour < 9 || hour >= 17 && hour < 20:
-			choices = []int{1, 2, 3, 4, 5, 7}
+			choices = []int{1, 2, 3, 4, 5, 7, 8, 9, 10, 11}
 		}
 		candidates := []string{}
 		for _, index := range choices {
@@ -194,5 +227,6 @@ func visualLifestyleVariables(prompt string, now time.Time, seed uint64, outfitL
 	return map[string]string{
 		"scene": moment.scene, "outfit": outfit, "action": moment.action, "activity": moment.activity,
 		"mood": "放松平常的神情，不刻意营业式微笑", "makeup": "自然淡妆或素颜质感，不过度修饰", "light": light,
+		"cameraAngle": visualLifestyleCameraAngle(prompt, &seed, ""),
 	}
 }

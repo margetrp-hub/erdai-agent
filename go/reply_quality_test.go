@@ -282,6 +282,31 @@ func TestNaturalReplyGuardAdaptsToneToScene(t *testing.T) {
 	}
 }
 
+func TestNaturalReplyRewriteInstructionStaysSurgical(t *testing.T) {
+	compact := naturalReplyRewriteInstruction("刚下班，路上风好大", "我先去买杯热的。", nil, false, true)
+	for _, marker := range []string{"最小幅度", "保留原答复的事实、情绪、玩笑", "不要新增追问或总结"} {
+		if !strings.Contains(compact, marker) {
+			t.Fatalf("compact rewrite lost %q: %s", marker, compact)
+		}
+	}
+	if strings.Contains(compact, "换成客服腔") == false {
+		t.Fatalf("compact rewrite did not forbid generic voice: %s", compact)
+	}
+
+	style := naturalReplyRewriteInstruction(
+		"今天真的好委屈",
+		"根据您的描述，希望以上内容能帮到您。",
+		nil,
+		true,
+		false,
+	)
+	for _, marker := range []string{"客服/公告腔", "这是情绪分享", "不要添加方案"} {
+		if !strings.Contains(style, marker) {
+			t.Fatalf("style rewrite lost %q: %s", marker, style)
+		}
+	}
+}
+
 func TestNaturalReplyGuardPreservesExemptSceneDetails(t *testing.T) {
 	expanded := naturalReplyGuard("今天真的很委屈", nil)
 	if !strings.Contains(expanded, "不能删减本轮必要细节") {

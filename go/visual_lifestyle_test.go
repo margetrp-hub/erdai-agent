@@ -62,7 +62,7 @@ func TestVisualLifestyleVariablesCoherentExplicitMoments(t *testing.T) {
 		if values["scene"] != test.scene || !strings.Contains(values["action"], test.action) {
 			t.Fatalf("incoherent %q: %+v", test.prompt, values)
 		}
-		if len(values) != 7 || values["activity"] == "" || !strings.Contains(values["outfit"], "膝上") {
+		if len(values) != 8 || values["activity"] == "" || values["cameraAngle"] == "" || !strings.Contains(values["outfit"], "膝上") {
 			t.Fatalf("missing lifestyle variables: %+v", values)
 		}
 		if strings.Contains(values["outfit"], "大衣") || strings.Contains(values["scene"], "雨") {
@@ -171,5 +171,49 @@ func TestVisualLifestyleVariablesVarietyAndPreviousScene(t *testing.T) {
 	}
 	if len(seen) < 6 {
 		t.Fatalf("too few daily moments: %+v", seen)
+	}
+}
+
+func TestVisualLifestyleCameraAngleVariesAndRespectsExplicitRequest(t *testing.T) {
+	seen := map[string]bool{}
+	previous := ""
+	now := time.Date(2026, 9, 7, 14, 0, 0, 0, time.UTC)
+	for seed := uint64(0); seed < 80; seed++ {
+		values := allocateVisualVariables("来张你的手机生活照", now, seed, defaultImageVisualDirectorPolicy(), "short", func() []visualGenerationPlan {
+			if previous == "" {
+				return nil
+			}
+			return []visualGenerationPlan{{Variables: map[string]string{"cameraAngle": previous}}}
+		}())
+		if values["cameraAngle"] == "" || values["cameraAngle"] == previous {
+			t.Fatalf("phone camera angle repeated or missing: previous=%q values=%+v", previous, values)
+		}
+		seen[values["cameraAngle"]] = true
+		previous = values["cameraAngle"]
+	}
+	if len(seen) < 4 {
+		t.Fatalf("too few phone camera angles: %+v", seen)
+	}
+	for _, prompt := range []string{"给我一张侧前方平视的生活照", "来张低机位自拍", "从上面俯拍一张"} {
+		value := visualLifestyleVariables(prompt, now, 7, "short", "")
+		if !strings.Contains(value["cameraAngle"], "用户明确指定") {
+			t.Fatalf("explicit camera angle was replaced for %q: %+v", prompt, value)
+		}
+	}
+}
+
+func TestVisualLifestyleExpandedDailyMomentsAppear(t *testing.T) {
+	seen := map[string]bool{}
+	previous := ""
+	for seed := uint64(0); seed < 240; seed++ {
+		now := time.Date(2026, 9, 7, int(seed%24), 0, 0, 0, time.UTC)
+		value := visualLifestyleVariables("随手拍", now, seed, "short", previous)
+		seen[value["scene"]] = true
+		previous = value["scene"]
+	}
+	for _, marker := range []string{"床边整理小物", "便利店门口等人", "电梯口等电梯", "窗边照料绿植"} {
+		if !seen[marker] {
+			t.Fatalf("expanded daily moment never selected: %q; seen=%+v", marker, seen)
+		}
 	}
 }

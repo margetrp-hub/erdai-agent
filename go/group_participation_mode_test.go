@@ -51,9 +51,12 @@ func TestDirectlyAddressesKeywordHonorsChineseWordBoundary(t *testing.T) {
 		{"豆包", true},
 		{"豆包，过来", true},
 		{"豆包帮我看看", true},
+		{"豆包麻烦查一下", true},
+		{"豆包帮忙看一下", true},
 		{"@豆包 说句话", true},
 		{"豆包奶茶", false},
 		{"豆包头像", false},
+		{"豆包麻辣烫", false},
 	}
 	for _, test := range tests {
 		t.Run(test.message, func(t *testing.T) {

@@ -774,7 +774,7 @@ func directlyAddressesKeyword(message string, keywords []string) bool {
 		}
 		if strings.HasPrefix(normalized, keyword) {
 			rest := []rune(strings.TrimPrefix(normalized, keyword))
-			if len(rest) == 0 || directAddressBoundary(rest[0]) {
+			if directAddressBoundary(rest) {
 				return true
 			}
 			continue
@@ -791,9 +791,18 @@ func directlyAddressesKeyword(message string, keywords []string) bool {
 	return false
 }
 
-func directAddressBoundary(value rune) bool {
-	return strings.ContainsRune("@＠,，。.!！?？:：;；~～、 \t\r\n", value) ||
-		strings.ContainsRune("帮给来看看听说问你在能会要想别请告诉解释查找发拍弄做接聊", value)
+func directAddressBoundary(value []rune) bool {
+	if len(value) == 0 {
+		return true
+	}
+	first := value[0]
+	if strings.ContainsRune("@＠,，。.!！?？:：;；~～、 \t\r\n", first) ||
+		strings.ContainsRune("帮给来看看听说问你在能会要想别请告诉解释查找发拍弄做接聊", first) {
+		return true
+	}
+	// Multi-character request openers need the full phrase so product names
+	// such as “豆包麻辣烫” remain ordinary conversation.
+	return len(value) >= 2 && (string(value[:2]) == "麻烦" || string(value[:2]) == "帮忙")
 }
 
 func startsWithCommand(message string, prefixes []string) bool {

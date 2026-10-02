@@ -1307,3 +1307,165 @@ func TestCoreConfigSchemaV82MigratesCodexRadarWithoutOverwritingCustomFamilies(t
 		})
 	}
 }
+
+func TestCoreConfigSchemaV86RestoresDoubaoParticipationForExplicitSocialInstance(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacyProfile := `{"participationMode":"addressed_only","proactiveEnabled":true,"participationStyle":"service","unaddressedMode":"off","initialReplyProbability":0.18,"afterReplyProbability":0.36,"maxReplyChars":30,"maxReplySentences":2}`
+	if _, err := db.Exec(`INSERT INTO persona_runtime_profiles (persona_id, profile_json, updated_at)
+		VALUES ('doubao', ?, 'before-v86')
+		ON CONFLICT(persona_id) DO UPDATE SET profile_json=excluded.profile_json, updated_at=excluded.updated_at`, legacyProfile); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agent_instances SET overrides_json = ? WHERE id = 'doubao-qq'`,
+		`{"participationMode":"social","initialReplyProbability":0.18,"afterReplyProbability":0.36}`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agent_policy_templates SET config_json = ?
+		WHERE id = 'doubao-default'`, `{"participationMode":"addressed_only","proactiveEnabled":false,"participationStyle":"service","unaddressedMode":"off","maxReplyChars":77}`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 85"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var profileRaw, templateRaw string
+	if err := store.db.QueryRow(`SELECT profile_json FROM persona_runtime_profiles WHERE persona_id='doubao'`).Scan(&profileRaw); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT config_json FROM agent_policy_templates WHERE id='doubao-default'`).Scan(&templateRaw); err != nil {
+		t.Fatal(err)
+	}
+	var profile, template map[string]any
+	if err := json.Unmarshal([]byte(profileRaw), &profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(templateRaw), &template); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]any{
+		"participationMode": "social", "participationStyle": "social", "unaddressedMode": "adaptive", "proactiveEnabled": true,
+	} {
+		if profile[name] != value {
+			t.Errorf("profile %s = %#v, want %#v", name, profile[name], value)
+		}
+		if template[name] != value {
+			t.Errorf("template %s = %#v, want %#v", name, template[name], value)
+		}
+	}
+	if profile["maxReplyChars"] != float64(30) || template["maxReplyChars"] != float64(77) {
+		t.Fatalf("v86 changed non-participation fields: profile=%#v template=%#v", profile, template)
+	}
+	effective, err := store.effectivePersonaRuntimeProfile("doubao", "doubao-qq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effectiveParticipationMode(groupParticipationPolicy{}, effective) != "social" {
+		t.Fatalf("effective Doubao mode = %q, profile=%+v", effectiveParticipationMode(groupParticipationPolicy{}, effective), effective)
+	}
+}
+
+func TestCoreConfigSchemaV86LeavesExplicitAddressedOnlyDoubaoAlone(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacyProfile := `{"participationMode":"addressed_only","proactiveEnabled":false,"participationStyle":"service","unaddressedMode":"off","maxReplyChars":30}`
+	if _, err := db.Exec(`INSERT INTO persona_runtime_profiles (persona_id, profile_json, updated_at)
+		VALUES ('doubao', ?, 'before-v86')
+		ON CONFLICT(persona_id) DO UPDATE SET profile_json=excluded.profile_json, updated_at=excluded.updated_at`, legacyProfile); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agent_instances SET overrides_json = ? WHERE id = 'doubao-qq'`,
+		`{"participationMode":"addressed_only","proactiveEnabled":false,"unaddressedMode":"off"}`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 85"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var profileRaw string
+	if err := store.db.QueryRow(`SELECT profile_json FROM persona_runtime_profiles WHERE persona_id='doubao'`).Scan(&profileRaw); err != nil {
+		t.Fatal(err)
+	}
+	if profileRaw != legacyProfile {
+		t.Fatalf("explicit addressed-only profile changed: %s", profileRaw)
+	}
+}
+
+func TestCoreConfigSchemaV87HumanizesSocialDoubaoReplyProfile(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacyProfile := `{"participationMode":"social","proactiveEnabled":true,"participationStyle":"social","unaddressedMode":"adaptive","maxReplyChars":30,"maxReplySentences":2,"expressionPrompt":"热情、自然、带一点甜妹式撒娇。先回应具体细节，再决定是否追问。"}`
+	legacyTemplate := `{"participationMode":"social","proactiveEnabled":true,"participationStyle":"social","unaddressedMode":"adaptive","maxReplyChars":30,"maxReplySentences":2,"expressionPrompt":"热情、自然、带一点甜妹式撒娇。先回应具体细节，再决定是否追问。"}`
+	legacyInstance := `{"participationMode":"social","initialReplyProbability":0.18,"afterReplyProbability":0.36,"expressionPrompt":"群里没被明确叫到时尽量安静。只在确有帮助时短接一句，不抢答群友的普通问题。"}`
+	if _, err := db.Exec(`INSERT INTO persona_runtime_profiles (persona_id, profile_json, updated_at)
+		VALUES ('doubao', ?, 'before-v87')
+		ON CONFLICT(persona_id) DO UPDATE SET profile_json=excluded.profile_json, updated_at=excluded.updated_at`, legacyProfile); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO agent_policy_templates (id, name, description, config_json, version, enabled, created_at, updated_at)
+		VALUES ('doubao-default', '豆包默认策略', '由旧角色运行档案迁移', ?, 1, 1, 'before-v87', 'before-v87')
+		ON CONFLICT(id) DO UPDATE SET config_json=excluded.config_json`, legacyTemplate); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO agent_instances (id, display_name, persona_id, policy_template_id, memory_namespace, overrides_json, enabled, created_at, updated_at)
+		VALUES ('doubao-qq', '豆包 QQ', 'doubao', 'doubao-default', 'legacy-default', ?, 1, 'before-v87', 'before-v87')
+		ON CONFLICT(id) DO UPDATE SET overrides_json=excluded.overrides_json`, legacyInstance); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 85"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, query := range []string{
+		`SELECT profile_json FROM persona_runtime_profiles WHERE persona_id = 'doubao'`,
+		`SELECT config_json FROM agent_policy_templates WHERE id = 'doubao-default'`,
+		`SELECT overrides_json FROM agent_instances WHERE id = 'doubao-qq'`,
+	} {
+		var raw string
+		if err := store.db.QueryRow(query).Scan(&raw); err != nil {
+			t.Fatalf("query %s: %v", query, err)
+		}
+		var value map[string]any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			t.Fatal(err)
+		}
+		if value["maxReplyChars"] != float64(64) || value["maxReplySentences"] != float64(3) {
+			t.Fatalf("reply limits = %#v, want 64 chars/3 sentences", value)
+		}
+		expression, _ := value["expressionPrompt"].(string)
+		for _, marker := range []string{"不像客服或答题机", "具体的一点", "偏好、犹豫", "换语气"} {
+			if !strings.Contains(expression, marker) {
+				t.Fatalf("expression prompt missing %q: %s", marker, expression)
+			}
+		}
+	}
+}

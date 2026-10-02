@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// The v86/v87 changes below are JSON-only compatibility repairs. Keep the
+// SQLite schema version stable so the existing rollback image can still open
+// the database if a deployment health gate fails.
 const nativeCoreSchemaVersion = 85
 
 const nativeCoreTables = `
@@ -2054,6 +2057,15 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 			return fmt.Errorf("migrate appearance outfit length for v83: %w", err)
 		}
 	}
+	// These repairs are deliberately idempotent and run even when the DB is
+	// already at schema 85. They change only recognizable legacy JSON values;
+	// explicit operator choices remain untouched.
+	if err := migrateDoubaoParticipationV86(tx, now); err != nil {
+		return err
+	}
+	if err := migrateDoubaoHumanizationV87(tx, now); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`
 		INSERT OR IGNORE INTO tools (
 			id, name, description, capabilities_json, risk_level, enabled,
@@ -2436,6 +2448,101 @@ func migrateCodexRadarSourceV82(tx coreSchemaTx, now string) error {
 	}
 	if _, err := tx.Exec(`UPDATE integration_settings SET config_json = ?, updated_at = ? WHERE id = 'ops_policy'`, string(updated), now); err != nil {
 		return fmt.Errorf("update CodexRadar source for v82: %w", err)
+	}
+	return nil
+}
+
+func migrateDoubaoParticipationV86(tx coreSchemaTx, now string) error {
+	// v65/v67 converted the legacy Doubao profile and its seeded template to
+	// addressed_only. When an operator has since explicitly enabled the
+	// doubao-qq instance as social, restore the old fallback layers to the same
+	// intent so unmatched legacy traffic does not become silently quiet.
+	const socialInstance = `EXISTS (
+		SELECT 1 FROM agent_instances
+		WHERE id = 'doubao-qq' AND persona_id = 'doubao'
+		  AND json_extract(overrides_json, '$.participationMode') = 'social'
+	)`
+	const legacyProfile = `persona_id = 'doubao'
+		AND json_extract(profile_json, '$.participationMode') = 'addressed_only'
+		AND json_extract(profile_json, '$.unaddressedMode') = 'off'
+		AND COALESCE(json_extract(profile_json, '$.proactiveEnabled'), 0) = 1`
+	if _, err := tx.Exec(`UPDATE persona_runtime_profiles
+		SET profile_json = json_set(COALESCE(profile_json, '{}'),
+			'$.participationMode', 'social',
+			'$.participationStyle', 'social',
+			'$.unaddressedMode', 'adaptive',
+			'$.proactiveEnabled', json('true')),
+			updated_at = ?
+		WHERE `+legacyProfile+` AND `+socialInstance, now); err != nil {
+		return fmt.Errorf("restore Doubao participation profile for v86: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE agent_policy_templates
+		SET config_json = json_set(COALESCE(config_json, '{}'),
+			'$.participationMode', 'social',
+			'$.participationStyle', 'social',
+			'$.unaddressedMode', 'adaptive',
+			'$.proactiveEnabled', json('true')),
+			updated_at = ?
+		WHERE id = 'doubao-default'
+		  AND name = '豆包默认策略'
+		  AND description = '由旧角色运行档案迁移'
+		  AND json_extract(config_json, '$.participationMode') = 'addressed_only'
+		  AND `+socialInstance, now); err != nil {
+		return fmt.Errorf("restore Doubao participation template for v86: %w", err)
+	}
+	return nil
+}
+
+func migrateDoubaoHumanizationV87(tx coreSchemaTx, now string) error {
+	// The QQ instance was deliberately moved back to social participation in
+	// v86, but the legacy profile still constrained replies to 30 characters
+	// and carried a confirmation-heavy expression hint. Upgrade only that
+	// recognizable social profile, its seeded template, and the matching QQ
+	// instance override; operator-edited addressed-only records or records
+	// without the legacy expression hint remain untouched.
+	const expression = "像熟人说话，不像客服或答题机：先接住这句里最具体的一点，再按当下情绪自然回应。可以有偏好、犹豫、轻微吐槽或一句没说完的话，不必每次解释完整、追问或总结；不要固定“收到/好的/明白了/可以为你…”开场，也别把用户的话换词复述。轻松聊天通常一两句，需要时再展开；根据关系和话题换语气，不要把这些规则说出来。"
+	legacyWhere := `persona_id = 'doubao'
+		AND json_extract(profile_json, '$.participationMode') = 'social'
+		AND json_extract(profile_json, '$.maxReplyChars') = 30
+		AND (instr(profile_json, '年轻、清透、灵动') > 0
+			OR instr(profile_json, '甜妹式撒娇') > 0
+			OR instr(profile_json, '群里没被明确叫到') > 0)`
+	if _, err := tx.Exec(`UPDATE persona_runtime_profiles
+		SET profile_json = json_set(COALESCE(profile_json, '{}'),
+			'$.maxReplyChars', 64,
+			'$.maxReplySentences', 3,
+			'$.expressionPrompt', ?),
+			updated_at = ?
+		WHERE `+legacyWhere, expression, now); err != nil {
+		return fmt.Errorf("upgrade Doubao expression profile for v87: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE agent_policy_templates
+		SET config_json = json_set(COALESCE(config_json, '{}'),
+			'$.maxReplyChars', 64,
+			'$.maxReplySentences', 3,
+			'$.expressionPrompt', ?),
+			updated_at = ?
+		WHERE id = 'doubao-default'
+		  AND json_extract(config_json, '$.participationMode') = 'social'
+		  AND json_extract(config_json, '$.maxReplyChars') = 30
+		  AND (instr(config_json, '年轻、清透、灵动') > 0
+			OR instr(config_json, '甜妹式撒娇') > 0
+			OR instr(config_json, '群里没被明确叫到') > 0)`, expression, now); err != nil {
+		return fmt.Errorf("upgrade Doubao expression template for v87: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE agent_instances
+		SET overrides_json = json_set(COALESCE(overrides_json, '{}'),
+			'$.maxReplyChars', 64,
+			'$.maxReplySentences', 3,
+			'$.expressionPrompt', ?),
+			updated_at = ?
+		WHERE id = 'doubao-qq'
+		  AND persona_id = 'doubao'
+		  AND json_extract(overrides_json, '$.participationMode') = 'social'
+		  AND (instr(overrides_json, '年轻、清透、灵动') > 0
+			OR instr(overrides_json, '甜妹式撒娇') > 0
+			OR instr(overrides_json, '群里没被明确叫到') > 0)`, expression, now); err != nil {
+		return fmt.Errorf("upgrade Doubao expression instance for v87: %w", err)
 	}
 	return nil
 }

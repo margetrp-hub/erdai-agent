@@ -773,7 +773,11 @@ func directlyAddressesKeyword(message string, keywords []string) bool {
 			continue
 		}
 		if strings.HasPrefix(normalized, keyword) {
-			return true
+			rest := []rune(strings.TrimPrefix(normalized, keyword))
+			if len(rest) == 0 || directAddressBoundary(rest[0]) {
+				return true
+			}
+			continue
 		}
 		if !strings.HasSuffix(normalized, keyword) {
 			continue
@@ -785,6 +789,11 @@ func directlyAddressesKeyword(message string, keywords []string) bool {
 		}
 	}
 	return false
+}
+
+func directAddressBoundary(value rune) bool {
+	return strings.ContainsRune("@＠,，。.!！?？:：;；~～、 \t\r\n", value) ||
+		strings.ContainsRune("帮给来看看听说问你在能会要想别请告诉解释查找发拍弄做接聊", value)
 }
 
 func startsWithCommand(message string, prefixes []string) bool {

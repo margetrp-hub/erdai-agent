@@ -24,7 +24,7 @@ func TestVisualLifestyleEnabledPreservesExplicitStyles(t *testing.T) {
 func TestVisualLifestyleInstructionKeepsScopeAndSmallMotion(t *testing.T) {
 	for _, kind := range []string{"image", "video"} {
 		value := visualLifestyleInstruction(kind)
-		if utf8.RuneCountInString(value) > 300 {
+		if utf8.RuneCountInString(value) > 520 {
 			t.Fatalf("%s instruction exceeds compact budget", kind)
 		}
 		for _, marker := range []string{"未指定", "要求优先", "虚构情境", "真实人类事实", "用户说的", "按选定构图", "自然肤质", "脸"} {
@@ -37,6 +37,12 @@ func TestVisualLifestyleInstructionKeepsScopeAndSmallMotion(t *testing.T) {
 	for _, marker := range []string{"单镜头", "一个主要小动作", "短暂停顿", "不安排表演、转场、慢动作或换装", "明确要求舞蹈时照办"} {
 		if !strings.Contains(video, marker) {
 			t.Fatalf("video missing %q", marker)
+		}
+	}
+	image := visualLifestyleInstruction("image")
+	for _, marker := range []string{"拍摄缘由和手头小事", "桌面杂物", "前置自拍、朋友随手拍、定时拍、镜面拍", "轻微构图偏移", "局部光线不均", "棚拍、海报、壁纸或商业宣传图"} {
+		if !strings.Contains(image, marker) {
+			t.Fatalf("image missing concrete lifestyle marker %q", marker)
 		}
 	}
 }

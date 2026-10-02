@@ -41,3 +41,25 @@ func TestAgentInstanceCanonicalParticipationModeWinsLegacyOverrides(t *testing.T
 		t.Fatalf("canonical participation mode was overridden by legacy fields: %+v", got)
 	}
 }
+
+func TestDirectlyAddressesKeywordHonorsChineseWordBoundary(t *testing.T) {
+	keywords := []string{"豆包"}
+	tests := []struct {
+		message string
+		want    bool
+	}{
+		{"豆包", true},
+		{"豆包，过来", true},
+		{"豆包帮我看看", true},
+		{"@豆包 说句话", true},
+		{"豆包奶茶", false},
+		{"豆包头像", false},
+	}
+	for _, test := range tests {
+		t.Run(test.message, func(t *testing.T) {
+			if got := directlyAddressesKeyword(test.message, keywords); got != test.want {
+				t.Fatalf("directlyAddressesKeyword(%q) = %v, want %v", test.message, got, test.want)
+			}
+		})
+	}
+}

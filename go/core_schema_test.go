@@ -1469,3 +1469,48 @@ func TestCoreConfigSchemaV87HumanizesSocialDoubaoReplyProfile(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreConfigSchemaV88SoftensGlobalReplyLayers(t *testing.T) {
+	path, db := newTestCoreConfig(t)
+	legacyStyle := "像熟悉的群聊伙伴一样直接接话。普通聊天默认一句，必要时最多两句；先压缩表达，再按完整句组织，不硬截断、不留残句、不复读。"
+	legacyGroupPrompt := "这是自然群聊，不是客服答复。默认一句，必要时最多两句；说完整，不复述、不总结、不列点。"
+	if _, err := db.Exec(`UPDATE runtime_config SET reply_style = ?, updated_at = 'before-v88' WHERE id = 1`, legacyStyle); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE integration_settings SET config_json = json_set(config_json, '$.replyExtraPrompt', ?), updated_at = 'before-v88' WHERE id = 'group_chat_policy'`, legacyGroupPrompt); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 85"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openCoreConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var style string
+	if err := store.db.QueryRow(`SELECT reply_style FROM runtime_config WHERE id = 1`).Scan(&style); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(style, "普通聊天默认一句") || !strings.Contains(style, "自然伸缩") {
+		t.Fatalf("global reply style was not softened: %s", style)
+	}
+	var raw string
+	if err := store.db.QueryRow(`SELECT config_json FROM integration_settings WHERE id = 'group_chat_policy'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var policy map[string]any
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := policy["replyExtraPrompt"].(string)
+	if strings.Contains(prompt, "默认一句") || !strings.Contains(prompt, "自然展开") {
+		t.Fatalf("group reply prompt was not softened: %s", prompt)
+	}
+}

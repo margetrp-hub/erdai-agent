@@ -2066,6 +2066,9 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	if err := migrateDoubaoHumanizationV87(tx, now); err != nil {
 		return err
 	}
+	if err := migrateDoubaoPromptSofteningV88(tx, now); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`
 		INSERT OR IGNORE INTO tools (
 			id, name, description, capabilities_json, risk_level, enabled,
@@ -2543,6 +2546,29 @@ func migrateDoubaoHumanizationV87(tx coreSchemaTx, now string) error {
 			OR instr(overrides_json, '甜妹式撒娇') > 0
 			OR instr(overrides_json, '群里没被明确叫到') > 0)`, expression, now); err != nil {
 		return fmt.Errorf("upgrade Doubao expression instance for v87: %w", err)
+	}
+	return nil
+}
+
+func migrateDoubaoPromptSofteningV88(tx coreSchemaTx, now string) error {
+	// The role profile is only one prompt layer. Older installs also retain
+	// rigid one/two-sentence wording in the global reply style and group policy,
+	// which can override the softer persona expression prompt. Replace only the
+	// recognizable seeded phrases; operator-written policy remains untouched.
+	const legacyStyle = "普通聊天默认一句，必要时最多两句；先压缩表达，再按完整句组织，不硬截断、不留残句、不复读。"
+	const softenedStyle = "普通闲聊可以简短，但根据情绪、话题和用户要求自然伸缩；不要把一句话、两句话或固定长度当成硬规则。先说清楚，再决定是否展开。"
+	if _, err := tx.Exec(`UPDATE runtime_config
+		SET reply_style = replace(reply_style, ?, ?), updated_at = ?
+		WHERE id = 1 AND instr(reply_style, ?) > 0`, legacyStyle, softenedStyle, now, legacyStyle); err != nil {
+		return fmt.Errorf("soften global Doubao reply style for v88: %w", err)
+	}
+	const legacyGroupPrompt = "这是自然群聊，不是客服答复。默认一句，必要时最多两句；说完整，不复述、不总结、不列点。"
+	const softenedGroupPrompt = "这是自然群聊，不是客服答复。先回应当前具体内容；一句能说清就短说，需要承接情绪、解释或多项细节时自然展开。不要复述、总结或列点，也不要把固定句数当硬规则。"
+	if _, err := tx.Exec(`UPDATE integration_settings
+		SET config_json = json_set(COALESCE(config_json, '{}'), '$.replyExtraPrompt', ?), updated_at = ?
+		WHERE id = 'group_chat_policy'
+		  AND json_extract(config_json, '$.replyExtraPrompt') = ?`, softenedGroupPrompt, now, legacyGroupPrompt); err != nil {
+		return fmt.Errorf("soften Doubao group reply prompt for v88: %w", err)
 	}
 	return nil
 }

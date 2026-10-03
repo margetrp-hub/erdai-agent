@@ -173,10 +173,14 @@ func TestCompileDynamicMoodLine(t *testing.T) {
 	if !strings.Contains(line, "深夜") || !strings.Contains(line, "不服气") {
 		t.Fatalf("mood line = %q", line)
 	}
-	if !strings.Contains(compileNativeSystemPrompt(
+	compiled := compileNativeSystemPrompt(
 		nativeRuntimeConfig{MaxReplySentences: 2, MaxReplyChars: 40}, contentBoundaryPolicy{}, nil, nil, nil, nil, nil, nil,
 		"", "", "", line,
-	), "深夜") {
+	)
+	if !strings.Contains(compiled, "深夜") {
 		t.Fatal("mood line did not reach the compiled prompt")
+	}
+	if !strings.Contains(compiled, "真人式群聊表达") {
+		t.Fatal("natural group expression guidance did not reach the compiled prompt")
 	}
 }

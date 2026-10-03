@@ -117,6 +117,8 @@ type RelationshipPulse struct {
 	FeedbackReady         bool    `json:"feedbackReady"`
 	QuestionsObserved     int     `json:"questionsObserved"`
 	QuestionsAnswered     int     `json:"questionsAnswered"`
+	Corrections           int     `json:"corrections"`
+	Accepted              int     `json:"accepted"`
 	MemoryResonance       float64 `json:"memoryResonance"`
 	RoutineExpectation    float64 `json:"routineExpectation"`
 	Longing               float64 `json:"longing"`

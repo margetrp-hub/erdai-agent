@@ -66,10 +66,16 @@ func (s *MemoryGroupStore) relationshipPulse(
 
 	if policy.OutputFeedbackEnabled && len(conversationRefs) > 0 && conversationRefs[0] != "" {
 		if events, err := s.RecentPersonaGroupEvents(ctx, conversationRefs[0], personaID, policy.RhythmWindowEvents); err == nil {
-			pulse.QuestionsObserved, pulse.QuestionsAnswered = dialogueQuestionFeedback(events, senderRef, s.now())
-			pulse.FeedbackReady = pulse.QuestionsObserved >= 3
-			if pulse.QuestionsObserved > 0 {
-				pulse.OutputReflow = roundPulse(100 * float64(pulse.QuestionsAnswered) / float64(pulse.QuestionsObserved))
+			feedback := dialogueOutputFeedbackSummary(events, senderRef, s.now())
+			pulse.QuestionsObserved, pulse.QuestionsAnswered = feedback.QuestionsObserved, feedback.QuestionsAnswered
+			pulse.Corrections, pulse.Accepted = feedback.Corrections, feedback.Accepted
+			pulse.FeedbackReady = pulse.QuestionsObserved+feedback.Corrections >= 3
+			feedbackDenominator := pulse.QuestionsObserved + feedback.Corrections
+			if feedbackDenominator > 0 {
+				rate := float64(pulse.QuestionsAnswered+feedback.Accepted) / float64(feedbackDenominator)
+				pulse.OutputReflow = roundPulse(100 * math.Min(1, rate))
+			} else if feedback.Accepted > 0 {
+				pulse.OutputReflow = 100
 			}
 		}
 	}
@@ -214,6 +220,12 @@ func relationshipPulsePrompt(pulse RelationshipPulse) string {
 	}
 	if pulse.FeedbackReady && pulse.OutputReflow < 30 {
 		parts = append(parts, "降低追问密度，给对方留出回应空间")
+	}
+	if pulse.FeedbackReady && pulse.Corrections >= 2 && pulse.Corrections > pulse.Accepted {
+		parts = append(parts, "最近纠正较多，先准确承接对方最新要求，不要自信补充旧假设")
+	}
+	if pulse.FeedbackReady && pulse.Accepted >= 2 && pulse.Accepted >= pulse.Corrections {
+		parts = append(parts, "最近有明确认可，可以延续当前回应节奏，但不要机械套用")
 	}
 	if len(parts) == 0 {
 		return "维持当前关系距离，顺着本轮内容自然回应。"

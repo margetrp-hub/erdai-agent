@@ -2787,7 +2787,10 @@ func imageProviderRejectedWithoutExecution(err error) bool {
 		// request but returned no usable result. It is safe to move to the next
 		// configured image candidate; other 400 responses may be content or
 		// parameter refusals and must not be replayed.
-		return strings.Contains(response.Message, "GPT_IMAGE_UPSTREAM_EMPTY_RESPONSE")
+		// Gateways may normalize JSON error codes to lower case while proxying
+		// the response. Match this one explicit, no-result code
+		// case-insensitively; do not broaden the status/body allow-list.
+		return strings.Contains(strings.ToUpper(response.Message), "GPT_IMAGE_UPSTREAM_EMPTY_RESPONSE")
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusTooManyRequests:
 		return true
 	default:

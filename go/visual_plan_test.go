@@ -201,7 +201,16 @@ func TestVisualPlanCompilerKeepsConstraintsAndIdentityBeforeDecoration(t *testin
 }
 
 func TestVisualPlanImageFallbackOnlyOnDefiniteRejection(t *testing.T) {
-	for _, err := range []error{context.DeadlineExceeded, errors.New("unexpected EOF"), &providerHTTPError{StatusCode: 502}, &providerHTTPError{StatusCode: 400}} {
+	for _, err := range []error{context.DeadlineExceeded, errors.New("unexpected EOF"),
+		&providerHTTPError{StatusCode: http.StatusRequestTimeout},
+		&providerHTTPError{StatusCode: http.StatusConflict},
+		&providerHTTPError{StatusCode: http.StatusTooEarly},
+		&providerHTTPError{StatusCode: http.StatusInternalServerError},
+		&providerHTTPError{StatusCode: http.StatusBadGateway},
+		&providerHTTPError{StatusCode: http.StatusServiceUnavailable},
+		&providerHTTPError{StatusCode: http.StatusGatewayTimeout},
+		&providerHTTPError{StatusCode: 524},
+		&providerHTTPError{StatusCode: http.StatusBadRequest}} {
 		if imageProviderRejectedWithoutExecution(err) {
 			t.Fatalf("ambiguous/policy error permits regeneration: %v", err)
 		}
@@ -211,6 +220,12 @@ func TestVisualPlanImageFallbackOnlyOnDefiniteRejection(t *testing.T) {
 		Message:    `{"code":"GPT_IMAGE_UPSTREAM_EMPTY_RESPONSE"}`,
 	}) {
 		t.Fatal("whitelisted empty image response should try the next provider")
+	}
+	if !imageProviderRejectedWithoutExecution(&providerHTTPError{
+		StatusCode: http.StatusBadRequest,
+		Message:    `{"error":{"code":"gpt_image_upstream_empty_response"}}`,
+	}) {
+		t.Fatal("case-normalized empty image response should try the next provider")
 	}
 	for _, status := range []int{401, 403, 404, 405, 429} {
 		if !imageProviderRejectedWithoutExecution(&providerHTTPError{StatusCode: status}) {

@@ -19,6 +19,35 @@ func TestNativeMediaNaturalPhotoRequestsPreserveIdentityAndLane(t *testing.T) {
 		{"给我一张你本人的照片", "image", true},
 		{"拍张和闺蜜一起在泳池戏水的照片", "image", false},
 		{"来一张跟朋友一起的照片", "image", false},
+		{"拍一张我和闺蜜的照片", "image", false},
+		{"我和朋友拍张合照", "image", false},
+		{"来张与姐妹的合影", "image", false},
+		{"发张我和好友的生活照", "image", false},
+		{"和朋友拍个合照", "image", false},
+		{"跟闺蜜拍张照片", "image", false},
+		{"和家人来张合影", "image", false},
+		{"我和孩子拍张照片", "image", false},
+		{"我俩拍张合照", "image", false},
+		{"朋友帮我拍张照片", "image", false},
+		{"给我和朋友拍照", "image", false},
+		{"跟朋友一起拍张照", "image", false},
+		{"和朋友一起拍照", "image", false},
+		{"给我一张图片", "image", false},
+		{"来张图", "image", false},
+		{"发一张插图", "image", false},
+		{"给我一张你的图片", "image", true},
+		{"给我一张你和朋友的图片", "image", false},
+		{"我要一张和朋友的照片", "image", false},
+		{"想要一张和闺蜜的合影", "image", false},
+		{"我和朋友一起去游泳", "chat", false},
+		{"生成一张和谐的风景照片，给我看看", "image", false},
+		{"我和朋友的照片很好看", "chat", false},
+		{"请评价我和朋友的照片", "chat", false},
+		{"我有一张和朋友的照片", "chat", false},
+		{"想看我和朋友的合影", "chat", false},
+		{"我和朋友的照片在相册里", "chat", false},
+		{"和朋友一起合影很好看", "chat", false},
+		{"不要一张和朋友的照片", "chat", false},
 		{"给个自拍", "image", true},
 		{"给张照片", "image", false},
 		{"给一张你的生活照", "image", true},
@@ -39,6 +68,7 @@ func TestNativeMediaNaturalPhotoRequestsPreserveIdentityAndLane(t *testing.T) {
 		{"给我讲讲自拍知识", "chat", true},
 		{"给个自拍教程", "chat", true},
 		{"怎么拍一张生活照？", "chat", false},
+		{"怎么拍我和朋友的照片？", "chat", false},
 		{"不要给个自拍", "chat", true},
 		{"别给张照片", "chat", false},
 		{"不用给一张你的生活照", "chat", true},
@@ -58,14 +88,53 @@ func TestNativeMediaNaturalPhotoRequestsPreserveIdentityAndLane(t *testing.T) {
 }
 
 func TestPersonaVisualImageRequestUsesMentionForGroupPhoto(t *testing.T) {
-	const prompt = "拍张和闺蜜一起在泳池戏水的照片"
-	if personaVisualImageRequest(runRecord{IsMentionBot: false}, prompt) {
-		t.Fatal("unaddressed group photo should not bind the persona appearance")
+	for _, test := range []struct {
+		prompt string
+		bound  bool
+	}{
+		{"拍张和闺蜜一起在泳池戏水的照片", true},
+		{"拍一张我和闺蜜的照片", true},
+		{"我和朋友拍张合照", true},
+		{"来张与姐妹的合影", true},
+		{"发张我和好友的生活照", true},
+		{"和朋友拍个合照", true},
+		{"跟闺蜜拍张照片", true},
+		{"和家人来张合影", true},
+		{"我和孩子拍张照片", true},
+		{"我俩拍张合照", true},
+		{"朋友帮我拍张照片", true},
+		{"给我和朋友拍照", true},
+		{"跟朋友一起拍张照", true},
+		{"和朋友一起拍照", true},
+		{"给我一张图片", false},
+		{"来张图", false},
+		{"发一张插图", false},
+		{"给我一张你和朋友的图片", true},
+		{"我要一张和朋友的照片", true},
+		{"想要一张和闺蜜的合影", true},
+		{"生成一张猫和狗的合照", false},
+		{"生成一张海边风景照片", false},
+		{"生成一张和谐的风景照片，给我看看", false},
+		{"我和朋友的照片很好看", false},
+		{"请评价我和朋友的照片", false},
+		{"我有一张和朋友的照片", false},
+		{"想看我和朋友的合影", false},
+		{"和朋友一起合影很好看", false},
+		{"不要一张和朋友的照片", false},
+	} {
+		t.Run(test.prompt, func(t *testing.T) {
+			if got := personaVisualImageRequest(runRecord{IsMentionBot: true}, test.prompt); got != test.bound {
+				t.Fatalf("appearance binding=%v want=%v", got, test.bound)
+			}
+			if test.bound && personaVisualImageRequest(runRecord{}, test.prompt) {
+				t.Fatal("unaddressed group image should not bind the persona appearance")
+			}
+			if !test.bound && personaVisualImageRequest(runRecord{IsMentionBot: false}, test.prompt) {
+				t.Fatal("unaddressed/generic image should not bind the persona appearance")
+			}
+		})
 	}
-	if !personaVisualImageRequest(runRecord{IsMentionBot: true}, prompt) {
-		t.Fatal("an addressed group photo should bind the selected persona appearance")
-	}
-	if personaVisualImageRequest(runRecord{IsMentionBot: true}, "生成一张海边风景照片") {
-		t.Fatal("an addressed scenic image should remain a generic image")
+	if !personaVisualImageRequest(runRecord{ConversationKind: "private"}, "拍张和闺蜜一起的生活照") {
+		t.Fatal("private companion photo should bind the selected persona appearance")
 	}
 }

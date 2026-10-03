@@ -148,11 +148,18 @@ var coreRuntimePrepareFields = coreFieldSet(
 var (
 	nativeVideoLanePattern              = regexp.MustCompile(`(?i)(生|生成|制作|做|来|弄).{0,48}(视频|短片)|(视频|短片).{0,24}(生成|制作|做|弄|来|拍)|generate.{0,48}video`)
 	nativeVideoRequestPattern           = regexp.MustCompile(`(?i)(给我|发我|发个|想看|要看|来个|来一段|来条).{0,40}(视频|短片)|(视频|短片).{0,24}(发我|给我|发个|来个|来一段|来条)`)
-	nativeImageLanePattern              = regexp.MustCompile(`(?i)画一|画张|生成.*图|生图|做.*图|image|\b(draw|sketch)\b|\b(generate|create|make).{0,12}(image|picture|photo)\b|(^|[，,。！？!?；;：:\n])\s*(请|麻烦|帮我|给我|请帮我|请给我|麻烦帮我)?(生成|制作|画|做).{0,32}(照片|相片|全身照|穿搭照|生活照)|(给我|来|拍|发).{0,12}(自拍|照片|相片|全身照|穿搭照|生活照)|(自拍|照片|相片|全身照|穿搭照|生活照).{0,6}(来一张|拍一张|发一张)`)
-	nativePhotoRequestPattern           = regexp.MustCompile(`(?i)(给我|来|拍|发).{0,6}(自拍|照片)|(自拍|照片).{0,6}(来一张|拍一张|发一张)`)
+	nativeImageLanePattern              = regexp.MustCompile(`(?i)画一|画张|生成.*图|生图|做.*图|image|\b(draw|sketch)\b|\b(generate|create|make).{0,12}(image|picture|photo)\b|(^|[，,。！？!?；;：:\n])\s*(请|麻烦|帮我|给我|请帮我|请给我|麻烦帮我)?(生成|制作|画|做).{0,32}(照片|相片|图片|图|插图|全身照|穿搭照|生活照)|(给我|来|拍|发).{0,12}(自拍|照片|相片|图片|图|插图|全身照|穿搭照|生活照)|(自拍|照片|相片|图片|图|插图|全身照|穿搭照|生活照).{0,6}(来一张|拍一张|发一张)`)
+	nativePhotoRequestPattern           = regexp.MustCompile(`(?i)(给我|来|拍|发).{0,6}(自拍|照片|相片|图片|图|插图)|(自拍|照片|相片|图片|图|插图).{0,6}(来一张|拍一张|发一张)`)
 	nativeColloquialPhotoRequestPattern = regexp.MustCompile(`(?i)给(我)?(个|张|一张|一个).{0,8}(自拍|照片|相片|全身照|穿搭照|生活照)`)
-	nativeGroupPhotoRequestPattern      = regexp.MustCompile(`(?i)(拍|来|给我|发我|生成|制作|做).{0,20}(和|跟).{0,20}(一起|合影|合照)`)
-	nativeSelfImageRequestPattern       = regexp.MustCompile(`(?i)自拍|你(本人|自己)?的.{0,6}(照片|相片|样子|画像|头像|全身照|穿搭照|生活照)|你.{0,4}长什么样|拍.{0,4}你|selfie|photo.{0,8}of you|picture.{0,8}of you|your.{0,4}(photo|portrait|picture)`)
+	// Keep the request cue and the companion cue independent. Users phrase
+	// group photos in both directions ("拍张和闺蜜的照片" and "我和闺蜜拍张
+	// 合照"), and the old one-way expression missed the latter as well as 与/
+	// 发张/相片 variants. The image noun is part of this expression so a plain
+	// social sentence such as "和朋友一起去游泳" cannot enter the image lane.
+	nativeGroupPhotoRequestPattern      = regexp.MustCompile(`(?i)(拍|来|给我|帮我|发我|发|生成|制作|做).{0,32}(和|跟|与).{0,24}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,24}(合影|合照|照片|相片|图片|图|拍照|全身照|穿搭照|生活照)|(和|跟|与).{0,24}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,20}(一起)?(拍|来|给我|帮我|发我|发|生成|制作|做).{0,20}(合影|合照|照片|相片|图片|图|拍照|全身照|穿搭照|生活照)|(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,24}(和|跟|与).{0,24}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,20}(一起)?(拍|来|给我|帮我|发我|发|生成|制作|做).{0,20}(合影|合照|照片|相片|图片|图|拍照|全身照|穿搭照|生活照)|(我俩|咱俩|你俩|我们俩|我们几个|大家).{0,20}(拍|来|发|生成|制作|做).{0,20}(合影|合照|照片|相片|图片|图|拍照|全身照|穿搭照|生活照)|(你|我|我们|我俩|咱俩|你俩|我们俩|我们几个|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,20}(给我|帮我|替我|让).{0,12}(拍|来|发|生成|制作|做).{0,20}(合影|合照|照片|相片|图片|图|拍照|全身照|穿搭照|生活照)`)
+	nativeGroupPhotoShortRequestPattern = regexp.MustCompile(`(?i)(?:(和|跟|与).{0,24}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,20}(一起)?(拍|来|给我|帮我|发我|发|生成|制作|做).{0,8}(个|张|一张|下|一下)?照|(拍|来|给我|帮我|发我|发|生成|制作|做).{0,24}(和|跟|与).{0,24}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,8}(个|张|一张|下|一下)?照|(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,20}(和|跟|与).{0,20}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,16}(拍个|拍张|拍一张|来个|来张|来一张|发个|发张|发一张).{0,8}照|(你|我|我们|我俩|咱俩|你俩|我们俩|我们几个|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,20}(给我|帮我|替我|让).{0,12}(拍|来|发|生成|制作|做).{0,8}(个|张|一张|下|一下)?照)`)
+	nativeGroupPhotoDesirePattern       = regexp.MustCompile(`(?i)(^|[，,。！？!?；;：:\n])\s*(我)?(想要|要).{0,12}(一张|一组|一个|个|张).{0,12}(和|跟|与).{0,24}(你|我|我们|豆包|小满|闺蜜|朋友|好友|姐妹|兄弟|同学|同事|室友|家人|父母|爸爸|妈妈|哥哥|姐姐|弟弟|妹妹|孩子|宝宝|男友|女友|对象|恋人|情侣|老公|老婆|伴侣|搭档|同伴|大家).{0,16}(合影|合照|照片|相片|图片|图|全身照|穿搭照|生活照)`)
+	nativeSelfImageRequestPattern       = regexp.MustCompile(`(?i)自拍|你(本人|自己)?的.{0,6}(照片|相片|图片|图|插图|样子|画像|头像|全身照|穿搭照|生活照)|你.{0,4}长什么样|拍.{0,4}你|selfie|photo.{0,8}of you|picture.{0,8}of you|your.{0,4}(photo|portrait|picture)`)
 	nativeSearchLanePattern             = regexp.MustCompile(`(?i)最新|搜索|搜一下|查一下|查找|资料|新闻|联网|\b(search|latest|news)\b|\blook.{0,3}up\b`)
 	nativeCodeLanePattern               = regexp.MustCompile(`(?i)代码|报错|bug|函数|接口|数据库|部署|服务器|github|git\b|api\b`)
 	nativeReasonLanePattern             = regexp.MustCompile(`(?i)分析|比较|规划|为什么|推理|方案`)
@@ -168,10 +175,17 @@ func personaVisualImageRequest(run runRecord, prompt string) bool {
 	if nativeSelfImageRequestPattern.MatchString(prompt) {
 		return true
 	}
-	if !run.IsMentionBot {
+	// Private conversations are already addressed by definition; group
+	// conversations still require an explicit @-mention before a companion
+	// scene can bind the bot's appearance.
+	if !run.IsMentionBot && run.ConversationKind != "private" {
 		return false
 	}
-	return nativeGroupPhotoRequestPattern.MatchString(prompt)
+	return groupPhotoRequestMatch(prompt)
+}
+
+func groupPhotoRequestMatch(prompt string) bool {
+	return nativeGroupPhotoRequestPattern.MatchString(prompt) || nativeGroupPhotoShortRequestPattern.MatchString(prompt) || nativeGroupPhotoDesirePattern.MatchString(prompt)
 }
 
 var videoExplanationMarkers = []string{
@@ -216,7 +230,20 @@ func imageLaneMessage(message string) string {
 
 func explicitImageGenerationIntent(message string) bool {
 	for _, clause := range visualConstraintClauses(imageLaneMessage(message)) {
+		// A long group-photo request can put more than twelve runes between
+		// "拍张" and "照片", so it is intentionally handled separately from
+		// the compact selfie/photo expression below.
 		match := nativeImageLanePattern.FindStringIndex(clause)
+		group := nativeGroupPhotoRequestPattern.FindStringIndex(clause)
+		if short := nativeGroupPhotoShortRequestPattern.FindStringIndex(clause); short != nil && (group == nil || short[0] < group[0]) {
+			group = short
+		}
+		if desire := nativeGroupPhotoDesirePattern.FindStringIndex(clause); desire != nil && (group == nil || desire[0] < group[0]) {
+			group = desire
+		}
+		if group != nil && (match == nil || group[0] < match[0]) {
+			match = group
+		}
 		if colloquial := nativeColloquialPhotoRequestPattern.FindStringIndex(clause); colloquial != nil && (match == nil || colloquial[0] < match[0]) {
 			match = colloquial
 		}

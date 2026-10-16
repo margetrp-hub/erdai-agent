@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // The v86/v87 changes below are JSON-only compatibility repairs. Keep the
@@ -949,7 +950,10 @@ func ensureCoreSchemaColumn(tx coreSchemaTx, table, column, definition string) e
 }
 
 func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
+	// Existing seed statements interpolate this SQL expression. Migrations that
+	// bind timestamps as query arguments need an evaluated RFC3339 value instead.
 	now := "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+	nowValue := time.Now().UTC().Format(time.RFC3339Nano)
 	statements := []string{
 		`INSERT OR IGNORE INTO routing_control (id, mode, updated_at) VALUES (1, 'auto', ` + now + `)`,
 		`INSERT OR IGNORE INTO runtime_config (
@@ -1009,7 +1013,7 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 			return err
 		}
 	}
-	if err := seedNativeAgentDefaults(tx, now, previousVersion); err != nil {
+	if err := seedNativeAgentDefaults(tx, now, nowValue, previousVersion); err != nil {
 		return err
 	}
 	if previousVersion < 70 {
@@ -1119,12 +1123,12 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 		}
 	}
 	if previousVersion < 72 {
-		if err := migratePluginContractsV72(tx, now); err != nil {
+		if err := migratePluginContractsV72(tx, nowValue); err != nil {
 			return err
 		}
 	}
 	if previousVersion < 73 {
-		if err := migrateTrustedAdaptersV73(tx, now); err != nil {
+		if err := migrateTrustedAdaptersV73(tx, nowValue); err != nil {
 			return err
 		}
 	}
@@ -1139,12 +1143,12 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 		}
 	}
 	if previousVersion < 78 {
-		if err := migrateRewardsV78(tx, now); err != nil {
+		if err := migrateRewardsV78(tx, nowValue); err != nil {
 			return err
 		}
 	}
 	if previousVersion < 79 {
-		if err := migrateDoubaoVisualIdentityV79(tx, now); err != nil {
+		if err := migrateDoubaoVisualIdentityV79(tx, nowValue); err != nil {
 			return err
 		}
 	}
@@ -2037,17 +2041,17 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 		}
 	}
 	if previousVersion < 80 {
-		if err := migrateXiaomanShorterOutfitV80(tx, now); err != nil {
+		if err := migrateXiaomanShorterOutfitV80(tx, nowValue); err != nil {
 			return err
 		}
 	}
 	if previousVersion < 81 {
-		if err := migrateGrokPaidChatTimeoutV81(tx, now); err != nil {
+		if err := migrateGrokPaidChatTimeoutV81(tx, nowValue); err != nil {
 			return err
 		}
 	}
 	if previousVersion < 82 {
-		if err := migrateCodexRadarSourceV82(tx, now); err != nil {
+		if err := migrateCodexRadarSourceV82(tx, nowValue); err != nil {
 			return err
 		}
 	}
@@ -2060,16 +2064,16 @@ func seedCoreConfig(tx coreSchemaTx, previousVersion int) error {
 	// These repairs are deliberately idempotent and run even when the DB is
 	// already at schema 85. They change only recognizable legacy JSON values;
 	// explicit operator choices remain untouched.
-	if err := migrateDoubaoParticipationV86(tx, now); err != nil {
+	if err := migrateDoubaoParticipationV86(tx, nowValue); err != nil {
 		return err
 	}
-	if err := migrateDoubaoHumanizationV87(tx, now); err != nil {
+	if err := migrateDoubaoHumanizationV87(tx, nowValue); err != nil {
 		return err
 	}
-	if err := migrateDoubaoPromptSofteningV88(tx, now); err != nil {
+	if err := migrateDoubaoPromptSofteningV88(tx, nowValue); err != nil {
 		return err
 	}
-	if err := migrateDoubaoPromptSofteningV89(tx, now); err != nil {
+	if err := migrateDoubaoPromptSofteningV89(tx, nowValue); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`

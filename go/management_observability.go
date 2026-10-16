@@ -73,12 +73,17 @@ func (a *AgentRuntime) handleManagementObservability(w http.ResponseWriter, r *h
 	if err != nil {
 		return err
 	}
+	groupParticipation, err := a.groupParticipationObservability(r.Context())
+	if err != nil {
+		return err
+	}
 	mgmtWriteData(w, http.StatusOK, map[string]any{
-		"media":     map[string]any{"image": image, "video": video},
-		"retrieval": retrieval,
-		"memory":    memory,
-		"quality":   quality,
-		"checkedAt": time.Now().UTC().Format(time.RFC3339Nano),
+		"media":              map[string]any{"image": image, "video": video},
+		"retrieval":          retrieval,
+		"memory":             memory,
+		"quality":            quality,
+		"groupParticipation": groupParticipation,
+		"checkedAt":          time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	return nil
 }

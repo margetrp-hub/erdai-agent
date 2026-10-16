@@ -45,7 +45,8 @@ import { VisualHistory } from '../components/VisualHistory';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { OptimizationControls } from '../components/OptimizationControls';
 import { SettingsEditor } from '../components/SettingsEditor';
-import { fieldSpec, humanValue } from '../lib/settings-schema';
+import { InstanceModelsDialog } from '../components/InstanceModelsDialog';
+import { fieldSpec, humanValue, integrationTitle } from '../lib/settings-schema';
 import { changedSettings, projectSettings, replacesSettings, sameSettings, settingsPayload, settingPath, submittedSettingsMatch } from '../lib/settings-contracts';
 import {
   apiRequest,
@@ -829,9 +830,11 @@ function RuntimeModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
   const platforms = collectionItems<JsonMap>(data.platforms);
   const people = collectionItems<JsonMap>(data.personas);
   const templates = collectionItems<JsonMap>(data.agentPolicyTemplates);
+  const [modelInstance, setModelInstance] = useState<{ id: string; name: string } | null>(null);
+  const configLayers = collectionItems<JsonMap>(asRecord(data.configLayers).layers);
   return (
     <ModuleShell accent="green">
-      <MetricRail items={[{ label: '运行实例', value: number(instances.length), note: 'registered', accent: 'green' }, { label: '连接器', value: number(platforms.length), note: 'platforms', accent: 'cyan' }, { label: '启用实例', value: number(instances.filter((item) => enabled(item.enabled)).length), note: 'enabled', accent: 'rose' }, { label: '策略模板', value: number(templates.length), note: 'policy layers', accent: 'violet' }]} />
+      <MetricRail items={[{ label: '运行实例', value: number(instances.length), note: '已登记的机器人', accent: 'green' }, { label: '连接器', value: number(platforms.length), note: '已配置的平台通道', accent: 'cyan' }, { label: '启用实例', value: number(instances.filter((item) => enabled(item.enabled)).length), note: '允许接收任务', accent: 'rose' }, { label: '策略模板', value: number(templates.length), note: '可复用的行为设置', accent: 'violet' }]} />
       <Panel accent="green">
         <PanelHeading eyebrow="RUNTIME GRAPH" title="运行链路" description="Core → 实例 → 角色 → 平台连接器。" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增运行实例', { id: crypto.randomUUID(), displayName: '', personaId: text(people[0]?.id, ''), policyTemplateId: '', enabled: false }, '/api/v1/agent-instances', 'POST')}>新增实例</Button>} />
         <div className="architecture-strip">
@@ -840,16 +843,16 @@ function RuntimeModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
         <div className="module-record-list">
           {instances.map((instance) => {
             const persona = people.find((item) => text(item.id) === text(instance.personaId));
-            const connector = platforms.find((item) => text(item.id) === text(instance.connectorId));
-            return <RecordRow key={itemId(instance)} item={instance} current={itemId(instance) === ctx.activeInstanceId} title={`${text(instance.displayName, itemId(instance))}${itemId(instance) === ctx.activeInstanceId ? ' · 当前' : ''}`} icon="activity" detail={`${text(persona?.name, text(instance.personaId, '未绑定角色'))} · ${text(instance.memoryNamespace, '默认记忆命名空间')}`} meta={[`策略 ${text(instance.policyTemplateId, '未绑定')}`, `连接器 ${text(connector?.displayName, '未绑定')}`, text(instance.updatedAt, '未更新')]} actions={<><Button variant="ghost" icon={<Pencil size={14} />} onClick={() => ctx.openEditor(`实例配置 · ${text(instance.displayName)}`, instance, endpoint('/api/v1/agent-instances', itemId(instance)))}>编辑</Button><Button variant="ghost" icon={enabled(instance.enabled) ? <X size={14} /> : <Check size={14} />} onClick={() => ctx.toggle(endpoint('/api/v1/agent-instances', itemId(instance)), enabled(instance.enabled))}>{enabled(instance.enabled) ? '停用' : '启用'}</Button></>} />;
+            return <RecordRow key={itemId(instance)} item={instance} current={itemId(instance) === ctx.activeInstanceId} title={`${text(instance.displayName, itemId(instance))}${itemId(instance) === ctx.activeInstanceId ? ' · 当前' : ''}`} icon="activity" detail={`${text(persona?.name, text(instance.personaId, '未绑定角色'))} · ${text(instance.memoryNamespace, '默认记忆命名空间')}`} meta={[`策略 ${text(instance.policyTemplateId, '未绑定')}`, '平台通道按会话路由选择', text(instance.updatedAt, '未更新')]} actions={<><Button variant="ghost" icon={<Route size={14} />} onClick={() => setModelInstance({ id: itemId(instance), name: text(instance.displayName, itemId(instance)) })}>模型来源</Button><Button variant="ghost" icon={<Pencil size={14} />} onClick={() => ctx.openEditor(`实例配置 · ${text(instance.displayName)}`, instance, endpoint('/api/v1/agent-instances', itemId(instance)))}>编辑</Button><Button variant="ghost" icon={enabled(instance.enabled) ? <X size={14} /> : <Check size={14} />} onClick={() => ctx.toggle(endpoint('/api/v1/agent-instances', itemId(instance)), enabled(instance.enabled))}>{enabled(instance.enabled) ? '停用' : '启用'}</Button></>} />;
           })}
           {!instances.length ? <EmptyState text="暂无运行实例。" /> : null}
         </div>
       </Panel>
       <Panel accent="cyan">
         <PanelHeading eyebrow="CONFIG LAYERS" title="配置分层" description="公共、角色和实例层按 Core 规则合并；这里显示只读来源。" />
-        <RecordTable items={collectionItems<JsonMap>(data.configLayers)} columns={[{ key: 'layer', label: '层级' }, { key: 'source', label: '来源' }, { key: 'keys', label: '字段' }, { key: 'active', label: '状态' }]} empty="暂无配置分层数据。" />
+        <RecordTable items={configLayers} columns={[{ key: 'label', label: '层级' }, { key: 'consumes', label: '管理内容' }, { key: 'description', label: '作用' }]} empty="暂无配置分层数据。" />
       </Panel>
+      <InstanceModelsDialog instance={modelInstance} onClose={() => setModelInstance(null)} />
     </ModuleShell>
   );
 }
@@ -1186,10 +1189,10 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
   return (
     <ModuleShell accent="violet">
       <MetricRail items={[
-        { label: '平台连接器', value: number(platforms.length), note: 'transport adapters', accent: 'violet' },
-        { label: '运行正常', value: number(platforms.filter((item) => enabled(item.enabled) && enabled(runtimeMap.get(text(item.id))?.healthy)).length), note: 'native runtime', accent: 'green' },
-        { label: '模型端点', value: number(models.length), note: 'available endpoints', accent: 'cyan' },
-        { label: '策略模块', value: number(policies.length), note: 'Core policies', accent: 'amber' },
+        { label: '平台连接器', value: number(platforms.length), note: '已登记的平台连接', accent: 'violet' },
+        { label: '已连接通道', value: number(runtime.filter((item) => item.status === 'connected').length), note: `${runtime.filter((item) => item.status === 'listening').length} 个通道监听中`, accent: 'green' },
+        { label: '模型接口', value: number(models.length), note: '已配置的模型', accent: 'cyan' },
+        { label: '功能设置', value: number(policies.length), note: '当前展示的设置组', accent: 'amber' },
       ]} />
       <SectionTabs active={active} onChange={ctx.setTab} tabs={[
         { id: 'channels', label: '渠道与接管', count: platforms.length },
@@ -1236,7 +1239,7 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
       ) : active === 'policies' ? (
         <><OptimizationControls policies={integrations} onReload={ctx.reload} />
         <div className="module-policy-grid">
-          {policies.map((policy) => <PolicyPanel key={itemId(policy)} title={text(policy.displayName, text(policy.id))} description={text(policy.description, 'Core 策略模块')} value={policy.config} endpointPath={endpoint('/api/v1/integrations', itemId(policy))} accent="violet" onEdit={ctx.openEditor} />)}
+          {policies.map((policy) => <PolicyPanel key={itemId(policy)} title={text(policy.displayName, integrationTitle(itemId(policy)))} description={text(policy.description, '修改这组设置会影响使用该功能的机器人。')} value={policy.config} endpointPath={endpoint('/api/v1/integrations', itemId(policy))} accent="violet" onEdit={ctx.openEditor} />)}
           {!policies.length ? <EmptyState text="暂无可展示的接入策略。" /> : null}
         </div></>
       ) : (

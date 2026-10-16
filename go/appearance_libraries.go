@@ -271,11 +271,11 @@ func (s *coreConfigStore) appearanceLibrary(namespace, id string) (appearanceLib
 func (s *coreConfigStore) appearanceLibraryPreviewURL(libraryID, sourcePersonaID string) string {
 	var referenceID string
 	err := s.db.QueryRow(`SELECT id FROM appearance_library_references
-		WHERE library_id = ? AND enabled = 1 AND media_type = 'image'
+		WHERE library_id = ? AND enabled = 1 AND media_type = 'image' AND category = 'identity'
 		ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, libraryID).Scan(&referenceID)
 	if errors.Is(err, sql.ErrNoRows) && sourcePersonaID != "" {
 		err = s.db.QueryRow(`SELECT id FROM persona_visual_references
-			WHERE persona_id = ? AND enabled = 1 AND media_type = 'image'
+			WHERE persona_id = ? AND enabled = 1 AND media_type = 'image' AND category = 'identity'
 			ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, sourcePersonaID).Scan(&referenceID)
 	}
 	if err != nil || strings.TrimSpace(referenceID) == "" {
@@ -555,8 +555,8 @@ func (s *coreConfigStore) updateAppearanceLibraryReference(namespace, libraryID,
 	if err != nil {
 		return item, false, err
 	}
-	if current.IsPrimary && current.MediaType != "image" {
-		return item, false, coreInvalid("video reference cannot be the primary image")
+	if current.IsPrimary && (current.MediaType != "image" || current.Category != "identity") {
+		return item, false, coreInvalid("primary reference must be an identity image")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.Begin()
@@ -669,10 +669,13 @@ func (s *coreConfigStore) uploadAppearanceLibraryReference(w http.ResponseWriter
 	if notes, err = normalizeCoreText(notes, "promptNotes", 2000, false); err != nil {
 		return appearanceLibraryReference{}, err
 	}
-	if mediaType == "image" && category != "style" && !primary {
+	if primary && category != "identity" {
+		return appearanceLibraryReference{}, coreInvalid("primary reference must be an identity image")
+	}
+	if mediaType == "image" && category == "identity" && !primary {
 		var imageCount int
 		if err = s.db.QueryRow(`SELECT count(*) FROM appearance_library_references
-			WHERE library_id = ? AND media_type = 'image'`, libraryID).Scan(&imageCount); err != nil {
+			WHERE library_id = ? AND media_type = 'image' AND category = 'identity'`, libraryID).Scan(&imageCount); err != nil {
 			return appearanceLibraryReference{}, err
 		}
 		primary = imageCount == 0
@@ -904,7 +907,7 @@ func (s *coreConfigStore) appearanceLibraryPrimaryDataURI(personaID string) (str
 func (s *coreConfigStore) primaryAppearanceLibraryDataURI(libraryID string) (string, error) {
 	var storageName, mimeType string
 	err := s.db.QueryRow(`SELECT storage_name, mime_type FROM appearance_library_references
-		WHERE library_id = ? AND enabled = 1 AND media_type = 'image'
+		WHERE library_id = ? AND enabled = 1 AND media_type = 'image' AND category = 'identity'
 		ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, libraryID).Scan(&storageName, &mimeType)
 	if err == sql.ErrNoRows {
 		var sourcePersonaID string
@@ -913,15 +916,7 @@ func (s *coreConfigStore) primaryAppearanceLibraryDataURI(libraryID string) (str
 		} else if sourcePersonaID == "" {
 			return "", nil
 		}
-		data, sourceErr := s.primaryPersonaVisualReferenceDataURILegacy(sourcePersonaID)
-		if sourceErr != nil || data != "" {
-			return data, sourceErr
-		}
-		var avatar string
-		if sourceErr = s.db.QueryRow("SELECT avatar_data_uri FROM personas WHERE id = ?", sourcePersonaID).Scan(&avatar); sourceErr != nil {
-			return "", sourceErr
-		}
-		return strings.TrimSpace(avatar), nil
+		return s.primaryPersonaVisualReferenceDataURILegacy(sourcePersonaID)
 	}
 	if err != nil {
 		return "", err
@@ -932,7 +927,7 @@ func (s *coreConfigStore) primaryAppearanceLibraryDataURI(libraryID string) (str
 func (s *coreConfigStore) primaryPersonaVisualReferenceDataURILegacy(personaID string) (string, error) {
 	var storageName, mimeType string
 	err := s.db.QueryRow(`SELECT storage_name, mime_type FROM persona_visual_references
-		WHERE persona_id = ? AND enabled = 1 AND media_type = 'image'
+		WHERE persona_id = ? AND enabled = 1 AND media_type = 'image' AND category = 'identity'
 		ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, personaID).Scan(&storageName, &mimeType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil

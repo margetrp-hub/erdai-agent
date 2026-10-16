@@ -97,6 +97,8 @@ type personaRuntimeProfile struct {
 	VisualStyle             *visualStyleDefaults `json:"visualStyle,omitempty"`
 	ExpressionPrompt        string               `json:"expressionPrompt,omitempty"`
 	UpdatedAt               string               `json:"updatedAt"`
+	// An empty intersection is a restriction, unlike an unset stored allowlist.
+	toolAllowlistRestricted bool
 }
 
 func personaRuntimeEndpoint(profile personaRuntimeProfile, lane string) string {
@@ -128,7 +130,8 @@ func applyPersonaRuntimeTools(policy runtimeToolPolicy, profile personaRuntimePr
 	for _, id := range profile.DeniedToolIDs {
 		denied[strings.TrimSpace(id)] = true
 	}
-	if len(allowed) == 0 && len(denied) == 0 {
+	restricted := profile.toolAllowlistRestricted || len(allowed) > 0
+	if !restricted && len(denied) == 0 {
 		return policy
 	}
 	filtered := make([]runtimeTool, 0, len(policy.Tools))
@@ -136,7 +139,7 @@ func applyPersonaRuntimeTools(policy runtimeToolPolicy, profile personaRuntimePr
 		if denied[tool.ID] || denied[tool.Name] {
 			continue
 		}
-		if len(allowed) > 0 && !allowed[tool.ID] && !allowed[tool.Name] {
+		if restricted && !allowed[tool.ID] && !allowed[tool.Name] {
 			continue
 		}
 		filtered = append(filtered, tool)
@@ -229,7 +232,7 @@ func personaRuntimeAllowsAnyTool(profile personaRuntimeProfile, toolIDs ...strin
 			return false
 		}
 	}
-	if len(allowed) == 0 {
+	if !profile.toolAllowlistRestricted && len(allowed) == 0 {
 		return true
 	}
 	for _, id := range toolIDs {

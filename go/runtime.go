@@ -2175,6 +2175,34 @@ func failureReplyOptions(code, fallback string) []string {
 	}
 }
 
+// Direct routes skip the model's tool loop, but must retain its authority,
+// enabled-tool and approval checks before any provider, quota or progress work.
+func directRouteToolAllowed(policy runtimeToolPolicy, run runRecord, message, adapter string, imageEdit bool) bool {
+	expected := "member"
+	if run.IsAdmin {
+		expected = "admin"
+	}
+	if policy.Authority != expected {
+		return false
+	}
+	for _, tool := range policy.Tools {
+		if normalizeAdapterRef(tool.AdapterRef) != normalizeAdapterRef(adapter) {
+			continue
+		}
+		if toolPermitted(tool, run.IsAdmin, message) {
+			return true
+		}
+		// An explicit edit request plus its attached source is also consent for
+		// the normal confirm-level image tool, even without generation keywords.
+		if isImageGenerationAdapter(tool.AdapterRef) && tool.ApprovalMode == "confirm" && tool.RiskLevel <= 1 {
+			if imageEdit && explicitMediaEditRequest(message) || !imageEdit && explicitImageGenerationIntent(message) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message string) (agentReply, error) {
 	generateStarted := time.Now()
 	boundaryPolicy, err := a.configStore.contentBoundaryPolicy()
@@ -2305,7 +2333,10 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	_, _ = a.db.Exec(`UPDATE agent_runs SET selected_endpoint_id = ?, selected_model = ?, route_reason = ? WHERE id = ?`,
 		selectedEndpoint, selectedModel, prepared.Data.RouteDecision.Explanation, run.ID)
 	messagePolicy := prepared.Data.decodedMessagePolicy()
-	if hasImage && explicitImageEditIntent(message) {
+	if hasImage && explicitMediaEditRequest(message) {
+		if !directRouteToolAllowed(prepared.Data.ToolPolicy, run, message, "grok_generate_image", true) {
+			return agentReply{Text: "当前机器人未开启或未获准使用改图功能。"}, nil
+		}
 		imageTimeout := a.imageTaskTimeout(ctx, prepared.Data.ToolPolicy.ToolTimeoutSeconds)
 		imageContext, cancelImage := context.WithTimeout(ctx, imageTimeout)
 		defer cancelImage()
@@ -2350,6 +2381,9 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	if selected := prepared.Data.RouteDecision.Selected; selected != nil &&
 		selected.Endpoint.ExecutionKind == "media" &&
 		normalizeAdapterRef(selected.Endpoint.AdapterRef) == "grok_generate_video" {
+		if !directRouteToolAllowed(prepared.Data.ToolPolicy, run, message, selected.Endpoint.AdapterRef, false) {
+			return agentReply{Text: "当前机器人未开启或未获准使用视频生成功能。"}, nil
+		}
 		call := chatToolCall{}
 		call.Function.Name = "grok_generate_video"
 		result, err := a.executePersistentOperation(run, "grok_generate_video", map[string]string{"prompt": message}, func() (toolResult, error) {
@@ -2379,6 +2413,9 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	if selected := prepared.Data.RouteDecision.Selected; selected != nil &&
 		selected.Endpoint.ExecutionKind == "media" &&
 		isImageGenerationAdapter(selected.Endpoint.AdapterRef) {
+		if !directRouteToolAllowed(prepared.Data.ToolPolicy, run, message, selected.Endpoint.AdapterRef, false) {
+			return agentReply{Text: "当前机器人未开启或未获准使用图片生成功能。"}, nil
+		}
 		imageTimeout := a.imageTaskTimeout(ctx, prepared.Data.ToolPolicy.ToolTimeoutSeconds)
 		imageContext, cancelImage := context.WithTimeout(ctx, imageTimeout)
 		defer cancelImage()
@@ -2410,6 +2447,9 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 	}
 	if selected := prepared.Data.RouteDecision.Selected; selected != nil &&
 		selected.Endpoint.ExecutionKind == "tool" && selected.Endpoint.AdapterRef == "grok_web_search" {
+		if !directRouteToolAllowed(prepared.Data.ToolPolicy, run, message, selected.Endpoint.AdapterRef, false) {
+			return agentReply{Text: "当前机器人未开启或未获准使用联网搜索功能。"}, nil
+		}
 		searchContext, cancelSearch := context.WithTimeout(ctx, searchTaskLimit)
 		defer cancelSearch()
 		call := chatToolCall{}

@@ -93,6 +93,12 @@ function recentTime(value: unknown) {
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' }).format(new Date(value));
 }
 
+const participationFailures: Record<string, string> = {
+  route: '模型配置不可用', connection: '服务连接异常', credential: '缺少连接凭据',
+  timeout: '判断超时', cancelled: '判断被取消', provider_http: '上游接口报错',
+  invalid_response: '回复格式不正确', context: '上下文准备失败',
+};
+
 export function OverviewPage({
   data,
   activeInstanceId,
@@ -120,6 +126,7 @@ export function OverviewPage({
   const counts = data.overview.counts || {};
   const models = data.overview.models || {};
   const observability = data.observability || {};
+  const participation = observability.groupParticipation;
   const activeInstance = (data.agentInstances.items || []).find((instance) => instance.id === activeInstanceId) || data.agentInstances.items?.[0];
   const activePersona = (data.personas.items || []).find((persona) => persona.id === (activeInstance?.personaId || data.config.activePersonaId));
   const missingChecks = data.installation.checks.filter((check) => check.required && !check.configured);
@@ -305,6 +312,23 @@ export function OverviewPage({
       <Panel accent="cyan" className="recent-tasks-panel">
         <PanelHeading title="最近任务" description="全部机器人的最新 5 条记录 · 时间为北京时间" action={<Button onClick={() => onNavigate('operations', 'runs')}>查看全部记录</Button>} />
         {runsError ? <div className="overview-empty" role="alert"><p>{runsError}</p><Button onClick={() => setDetailsNonce((value) => value + 1)}>重新读取</Button></div> : recentRuns === null ? <p className="overview-empty" role="status">正在读取任务…</p> : !recentRuns.length ? <p className="overview-empty">还没有任务记录，开始聊天后会出现在这里。</p> : <div className="recent-task-list">{recentRuns.map((run) => <button className="recent-task" type="button" key={String(run.id)} onClick={() => setTaskRunId(String(run.id))}><span className="recent-task-state" data-state={String(run.state)}>{runStateLabel(String(run.state))}</span><span className="recent-task-copy"><strong>{String(run.selectedModel || '对话任务')}</strong><small>{String(run.transport || '平台未记录')}{run.errorCode ? ' · 存在错误，点击查看详情' : ' · 点击查看任务详情'}</small></span><time>{recentTime(run.createdAt)}</time><ArrowUpRight size={16} /></button>)}</div>}
+      </Panel>
+
+      <Panel accent="amber" className="recent-tasks-panel participation-panel">
+        <PanelHeading title="群内接话判断" description="最近 24 小时 · 所有机器人。这里只统计进入模型判断的消息，未抽中、无需判断的消息不计入。" action={<Button onClick={() => onNavigate('runtime')}>查看模型来源</Button>} />
+        {!participation || !participation.attempts ? <p className="overview-empty">暂时没有新的模型判断记录。旧版本只记录“判断不可用”，无法还原具体原因。</p> : <>
+          <div className="quality-summary" aria-label="群内接话统计">
+            <div><span>模型判断</span><strong>{numberValue(participation.attempts)}</strong></div>
+            <div><span>建议接话</span><strong>{numberValue(participation.replies)}</strong></div>
+            <div><span>选择不回复</span><strong>{numberValue(participation.ignored)}</strong></div>
+            <div><span>判断失败</span><strong>{numberValue(participation.errors)}</strong></div>
+          </div>
+          <div className="fact-list">
+            <div className="fact-row"><span>平均判断耗时（含失败）</span><strong>{(participation.avgDurationMs / 1000).toFixed(1)} 秒</strong></div>
+            {Object.entries(participation.failuresByCode || {}).filter(([, count]) => count > 0).map(([code, count]) => <div className="fact-row" key={code}><span>{participationFailures[code] || '其他判断失败'}</span><strong>{numberValue(count)} 次</strong></div>)}
+            <div className="fact-row"><span>最近一次判断</span><strong>{recentTime(participation.lastAttemptAt)}</strong></div>
+          </div>
+        </>}
       </Panel>
 
       <div className="overview-tabs">

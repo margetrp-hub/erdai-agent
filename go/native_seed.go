@@ -216,7 +216,7 @@ var nativeDoubaoKnowledge = []nativeSeedKnowledge{
 	},
 }
 
-func seedNativeAgentDefaults(tx coreSchemaTx, now string, previousVersion int) error {
+func seedNativeAgentDefaults(tx coreSchemaTx, now, nowValue string, previousVersion int) error {
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO personas (
 		id, namespace, name, description, personality, scenario, first_message,
 		system_prompt, post_history_instructions, message_example,
@@ -241,7 +241,7 @@ func seedNativeAgentDefaults(tx coreSchemaTx, now string, previousVersion int) e
 	if err := seedNativeXiaomanPersona(tx, now); err != nil {
 		return err
 	}
-	if err := seedNativeRuntimePersonaReplies(tx, now); err != nil {
+	if err := seedNativeRuntimePersonaReplies(tx, nowValue); err != nil {
 		return err
 	}
 

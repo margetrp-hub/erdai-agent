@@ -282,6 +282,7 @@ const policies: Record<string, FieldSpec> = {
   provocationReplies: list('面对挑衅的回复'),
   modelInstruction: longText('边界处理补充要求'),
   enabledGroups: list('适用群聊', '空列表按当前策略的默认群范围处理，不代表关闭功能。'),
+  minimumScore: { ...number('广告判定门槛', '类特征', 2, 3), description: '2 表示至少命中两类，3 表示三类同时命中：联系方式或链接、交易招揽、推广用语。旧值大于 3 时规则不会触发，请调整后再启用。' },
   initialProbability: ratio('平时接话概率', '仍需通过场景判断、冷却与忙碌限制；不是每条消息都直接抽签回复。'),
   probabilityDurationSeconds: number('接话后保持参与的时间', '秒', 0),
   decisionProviderId: reference('接话判断模型', 'models'),
@@ -684,6 +685,20 @@ export function settingsDefaults(path: string, parentPath = ''): unknown {
   if (route === '/api/v1/routing/control') return { mode: 'auto', locks: {} };
   if (route === '/api/v1/routing/lanes') return { lane: '', requiredCapabilities: [], preferredCapabilities: [] };
   return {};
+}
+
+export function integrationTitle(id: string): string {
+  const titles: Record<string, string> = {
+    channel_runtime: '消息接管方式', channel_platforms: '平台连接', qq_official: 'QQ 官方连接',
+    provider_policy: '默认模型与调用方式', message_policy: '回复与发送体验',
+    content_boundary_policy: '内容与互动边界', group_chat_policy: '群聊参与方式',
+    companion_policy: '上下文与任务理解', grok_policy: '搜索与语音',
+    memory_policy: '记忆与关系', retrieval_policy: '知识检索',
+    image_policy: '照片与图片生成',
+    document_policy: '文件与附件读取', ops_policy: '渠道与雷达',
+    affiliate_policy: '邀请与积分',
+  };
+  return titles[id] || id;
 }
 
 export function humanValue(path: string, key: string, value: unknown): string {

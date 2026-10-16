@@ -118,3 +118,68 @@ func TestOfficeSkillMatchesNaturalDocumentCreationPhrases(t *testing.T) {
 		t.Fatal("Office creation skill matched a document reading request")
 	}
 }
+
+func TestMediaSkillMatchesExplicitRequestsWithoutBroadeningScope(t *testing.T) {
+	skill := mgmtSkill{
+		Enabled: true, ActivationMode: "any", AllowedAuthorities: []string{"member"},
+		PersonaIDs: []string{"doubao"}, Triggers: []string{"custom-media-trigger"},
+		RequiredTools: []string{"grok_generate_image", "grok_generate_video"},
+	}
+	for _, test := range []struct {
+		message string
+		image   bool
+		want    bool
+	}{
+		{"把我的头像优化一下", true, true},
+		{"让这张照片更清晰", true, true},
+		{"帮我修一下图，不要加水印", true, true},
+		{"这张照片清晰一点", true, true},
+		{"头像优化一下", true, true},
+		{"你帮我把照片变清晰", true, true},
+		{"给张照片", false, true},
+		{"我和朋友拍张合照", false, true},
+		{"生成一段海边日落视频", false, true},
+		{"把我的头像优化一下", false, false},
+		{"修图是什么意思", true, false},
+		{"怎么优化这张照片", true, false},
+		{"我觉得这张照片更清晰", true, false},
+		{"不要修图", true, false},
+		{"不是让你优化照片", true, false},
+		{"生成视频的意思是什么", false, false},
+		{"怎么给张照片", false, false},
+		{"我和朋友的照片很好看", true, false},
+	} {
+		t.Run(test.message, func(t *testing.T) {
+			var attachments []string
+			if test.image {
+				attachments = []string{"image"}
+			}
+			if got := skillMatches(skill, "member", "doubao", test.message, attachments); got != test.want {
+				t.Fatalf("media skill matched=%v, want %v", got, test.want)
+			}
+		})
+	}
+	for _, change := range []struct {
+		name   string
+		change func(*mgmtSkill)
+	}{
+		{"disabled", func(value *mgmtSkill) { value.Enabled = false }},
+		{"other-authority", func(value *mgmtSkill) { value.AllowedAuthorities = []string{"admin"} }},
+		{"other-persona", func(value *mgmtSkill) { value.PersonaIDs = []string{"other"} }},
+		{"all-requires-triggers", func(value *mgmtSkill) { value.ActivationMode = "all" }},
+		{"unrelated-tool", func(value *mgmtSkill) { value.RequiredTools = []string{"read_document"} }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			copy := skill
+			change.change(&copy)
+			if skillMatches(copy, "member", "doubao", "把我的头像优化一下", []string{"image"}) {
+				t.Fatal("semantic media intent bypassed a skill restriction")
+			}
+		})
+	}
+	all := skill
+	all.ActivationMode, all.Triggers, all.AttachmentKinds = "all", []string{"修图"}, []string{"image"}
+	if skillMatches(all, "member", "doubao", "帮我修图", nil) || !skillMatches(all, "member", "doubao", "帮我修图", []string{"image"}) {
+		t.Fatal("all-mode attachment requirements changed")
+	}
+}

@@ -486,6 +486,24 @@ func skillMatches(value mgmtSkill, authority, personaID, message string, attachm
 	if skillListContains(value.RequiredTools, "create_office_document") && officeDocumentRequestIntent(message) {
 		return true
 	}
+	// Natural media requests can be more specific than the configured trigger
+	// words. Only "any" skills gain this alternative; "all" retains every
+	// configured trigger and attachment requirement.
+	if value.ActivationMode == "any" {
+		for _, tool := range value.RequiredTools {
+			switch tool {
+			case "generate_image", "grok_generate_image", "image-generate", "grok-generate-image":
+				if explicitImageGenerationIntent(message) ||
+					(skillListContains(attachments, "image") && explicitMediaEditRequest(message)) {
+					return true
+				}
+			case "grok_generate_video", "grok-generate-video":
+				if explicitVideoGenerationIntent(message) {
+					return true
+				}
+			}
+		}
+	}
 	normalized := strings.ToLower(message)
 	triggerHits := 0
 	for _, trigger := range value.Triggers {
@@ -504,6 +522,28 @@ func skillMatches(value mgmtSkill, authority, personaID, message string, attachm
 			(len(value.AttachmentKinds) == 0 || attachmentHits == len(value.AttachmentKinds))
 	}
 	return triggerHits > 0 || attachmentHits > 0
+}
+
+func explicitMediaEditRequest(message string) bool {
+	for _, clause := range visualConstraintClauses(message) {
+		if !explicitImageEditIntent(clause) || visualClauseNegated(clause) ||
+			containsAnyText(clause, []string{"怎么", "如何", "什么", "意思", "简称", "教程", "知识", "讨论", "讲解", "解释"}) {
+			continue
+		}
+		for _, prefix := range []string{"请", "麻烦", "帮我", "帮忙", "你帮我", "能帮我", "你能", "给我", "把", "让", "能不能", "可以", "修图", "修一下", "优化", "美化", "提高清晰度", "增强清晰度", "变清晰", "更清晰", "去噪", "锐化", "换背景", "去背景", "抠图"} {
+			if strings.HasPrefix(strings.TrimSpace(clause), prefix) {
+				return true
+			}
+		}
+		if containsAnyText(clause, []string{"一点", "一下"}) {
+			for _, subject := range []string{"这张", "头像", "图片", "照片", "图像", "画面"} {
+				if strings.HasPrefix(strings.TrimSpace(clause), subject) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (s *coreConfigStore) matchedRuntimeSkills(

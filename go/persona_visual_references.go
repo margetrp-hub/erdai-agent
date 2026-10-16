@@ -381,8 +381,8 @@ func (s *coreConfigStore) importPersonaVisualReferences(w http.ResponseWriter, r
 		if meta.SortOrder < 0 || meta.SortOrder > 100000 {
 			return nil, coreInvalid("visual reference sort order is invalid")
 		}
-		if meta.IsPrimary && (meta.MediaType != "image" || primaryAssigned) {
-			return nil, coreInvalid("visual reference package must contain at most one primary image")
+		if meta.IsPrimary && (meta.MediaType != "image" || meta.Category != "identity" || primaryAssigned) {
+			return nil, coreInvalid("visual reference package must contain at most one primary identity image")
 		}
 		if meta.IsPrimary {
 			primaryAssigned = true
@@ -574,7 +574,7 @@ func (s *coreConfigStore) clonePersonaVisualReferences(namespace, sourcePersonaI
 			return nil, closeErr
 		}
 		createdFiles = append(createdFiles, outputPath)
-		isPrimary := row.mediaType == "image" && !primaryAssigned
+		isPrimary := row.mediaType == "image" && row.category == "identity" && !primaryAssigned
 		if isPrimary {
 			primaryAssigned = true
 		}
@@ -706,8 +706,8 @@ func (s *coreConfigStore) updatePersonaVisualReference(namespace, personaID, ref
 		return current, false, err
 	}
 	defer tx.Rollback()
-	if current.IsPrimary && current.MediaType != "image" {
-		return current, false, coreInvalid("video reference cannot be the primary image")
+	if current.IsPrimary && (current.MediaType != "image" || current.Category != "identity") {
+		return current, false, coreInvalid("primary reference must be an identity image")
 	}
 	if current.IsPrimary {
 		if _, err = tx.Exec("UPDATE persona_visual_references SET is_primary = 0, updated_at = ? WHERE persona_id = ?", now, personaID); err != nil {
@@ -816,6 +816,9 @@ func (s *coreConfigStore) uploadPersonaVisualReference(w http.ResponseWriter, r 
 	}
 	if mediaType == "video" {
 		primary = false
+	}
+	if primary && category != "identity" {
+		return personaVisualReference{}, coreInvalid("primary reference must be an identity image")
 	}
 	if _, err = file.Seek(0, io.SeekStart); err != nil {
 		return personaVisualReference{}, err

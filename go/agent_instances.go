@@ -139,7 +139,7 @@ func mergeAgentRuntimeProfile(base, override personaRuntimeProfile) personaRunti
 		base.DecisionEndpointID = value
 	}
 	if len(override.AllowedToolIDs) > 0 {
-		if len(base.AllowedToolIDs) == 0 {
+		if !base.toolAllowlistRestricted && len(base.AllowedToolIDs) == 0 {
 			base.AllowedToolIDs = append([]string(nil), override.AllowedToolIDs...)
 		} else {
 			allowed := map[string]bool{}
@@ -154,6 +154,7 @@ func mergeAgentRuntimeProfile(base, override personaRuntimeProfile) personaRunti
 			}
 			base.AllowedToolIDs = filtered
 		}
+		base.toolAllowlistRestricted = true
 	}
 	base.DeniedToolIDs = appendUniqueStrings(base.DeniedToolIDs, override.DeniedToolIDs...)
 	if !canonicalModeSet && override.ProactiveEnabled != nil {
@@ -511,6 +512,9 @@ func (s *coreConfigStore) handleAgentInstances(w http.ResponseWriter, r *http.Re
 	parts := strings.Split(rest, "/")
 	if len(parts) >= 2 && parts[1] == "connectors" {
 		return s.handleAgentInstanceConnectors(w, r, parts)
+	}
+	if len(parts) == 2 && parts[1] == "effective-models" {
+		return s.handleAgentInstanceEffectiveModels(w, r, parts[0])
 	}
 	if len(parts) != 1 {
 		return mgmtNotFound("agent instance")

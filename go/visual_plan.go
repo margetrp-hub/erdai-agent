@@ -139,13 +139,13 @@ func (a *AgentRuntime) resolveVisualAppearance(ctx context.Context, run runRecor
 	}
 	var storageName, mimeType, category, notes string
 	err = tx.QueryRowContext(ctx, `SELECT storage_name, mime_type, category, prompt_notes FROM appearance_library_references
-		WHERE library_id = ? AND enabled = 1 AND media_type = 'image'
+		WHERE library_id = ? AND enabled = 1 AND media_type = 'image' AND category = 'identity'
 		ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, snapshot.AppearanceID).Scan(&storageName, &mimeType, &category, &notes)
 	// Existing migrated libraries explicitly own their source-persona references.
 	// An unavailable reference never falls back to that persona's avatar.
 	if errors.Is(err, sql.ErrNoRows) && sourcePersonaID != "" {
 		err = tx.QueryRowContext(ctx, `SELECT storage_name, mime_type, category, prompt_notes FROM persona_visual_references
-			WHERE persona_id = ? AND enabled = 1 AND media_type = 'image'
+			WHERE persona_id = ? AND enabled = 1 AND media_type = 'image' AND category = 'identity'
 			ORDER BY is_primary DESC, sort_order, created_at LIMIT 1`, sourcePersonaID).Scan(&storageName, &mimeType, &category, &notes)
 	}
 	if errors.Is(err, sql.ErrNoRows) {

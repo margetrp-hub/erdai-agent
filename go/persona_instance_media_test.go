@@ -98,7 +98,7 @@ func TestPersonaMediaPromptAvoidsStockPhotoLanguage(t *testing.T) {
 	}
 }
 
-func TestPersonaAvatarReferenceUsesExplicitPersona(t *testing.T) {
+func TestPersonaAvatarReferenceUsesExplicitUnboundPersona(t *testing.T) {
 	runtime := newIdleRuntime(t)
 	defer runtime.Close()
 
@@ -110,6 +110,15 @@ func TestPersonaAvatarReferenceUsesExplicitPersona(t *testing.T) {
 	}
 	active := runtime.personaAvatarDataURI(context.Background(), "", "自拍", false)
 	xiaoman := runtime.personaAvatarDataURI(context.Background(), "xiaoman", "自拍", false)
+	if active != "" || xiaoman != "" {
+		t.Fatal("bound appearance library without identity must not fall back to persona avatars")
+	}
+	// Avatar compatibility applies only to personas with no selected library.
+	if _, err := runtime.configStore.db.Exec("DELETE FROM persona_appearance_libraries WHERE persona_id IN ('doubao', 'xiaoman')"); err != nil {
+		t.Fatal(err)
+	}
+	active = runtime.personaAvatarDataURI(context.Background(), "", "自拍", false)
+	xiaoman = runtime.personaAvatarDataURI(context.Background(), "xiaoman", "自拍", false)
 	if active != "data:image/png;base64,ZG91YmFv" {
 		t.Fatalf("global persona avatar = %q", active)
 	}

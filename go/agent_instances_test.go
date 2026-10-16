@@ -191,6 +191,122 @@ func TestAgentInstanceParticipationPolicyOverridesRole(t *testing.T) {
 	}
 }
 
+func TestAgentInstanceToolAllowlistsStayRestrictedThroughRuntimePreparation(t *testing.T) {
+	_, db := newTestCoreConfig(t)
+	defer db.Close()
+	store := &coreConfigStore{db: db}
+	// Isolate profile restrictions from skill activation: the global tool catalog
+	// is otherwise available to every scenario below.
+	if _, err := db.Exec("DELETE FROM skills"); err != nil {
+		t.Fatal(err)
+	}
+	create := func(path, body string) {
+		t.Helper()
+		response := agentInstanceRequest(t, store, http.MethodPost, path, body)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("fixture %s: %d %s", path, response.Code, response.Body.String())
+		}
+	}
+	create("/api/v1/agent-policy-templates", `{"id":"tool-restrictions","name":"Tool restrictions","config":{}}`)
+	create("/api/v1/agent-instances", `{"id":"restricted-instance","displayName":"Restricted","personaId":"doubao","policyTemplateId":"tool-restrictions"}`)
+	create("/api/v1/agent-instances/restricted-instance/connectors", `{"connectorId":"restricted-connector"}`)
+	create("/api/v1/agent-instance-routes", `{"id":"restricted-route","instanceId":"restricted-instance","connectorId":"restricted-connector","transport":"qq_official"}`)
+	if _, err := db.Exec(`INSERT INTO persona_bindings
+		(id,persona_id,transport,transport_instance,conversation_ref,created_at,updated_at)
+		VALUES ('restricted-persona','doubao','qq_official','restricted-connector','*','now','now')`); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &AgentRuntime{configStore: store}
+	for _, scenario := range []struct {
+		name, persona, template, instance string
+		allowed                           bool
+	}{
+		{"inherited-unrestricted", `{}`, `{}`, `{}`, true},
+		{"empty-lists-keep-inheritance", `{"allowedToolIds":[]}`, `{"allowedToolIds":[]}`, `{"allowedToolIds":[]}`, true},
+		{"matching-lists", `{"allowedToolIds":["ops-status"]}`, `{"allowedToolIds":["ops-status"]}`, `{"allowedToolIds":["ops-status"]}`, true},
+		{"role-template-disjoint", `{"allowedToolIds":["ops-status"]}`, `{"allowedToolIds":["other-tool"]}`, `{}`, false},
+		{"template-instance-disjoint", `{}`, `{"allowedToolIds":["ops-status"]}`, `{"allowedToolIds":["other-tool"]}`, false},
+		{"instance-cannot-reopen-empty-intersection", `{"allowedToolIds":["ops-status"]}`, `{"allowedToolIds":["other-tool"]}`, `{"allowedToolIds":["ops-status"]}`, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			if _, err := db.Exec(`INSERT INTO persona_runtime_profiles(persona_id, profile_json, updated_at)
+				VALUES ('doubao', ?, 'now') ON CONFLICT(persona_id) DO UPDATE SET profile_json=excluded.profile_json`, scenario.persona); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE agent_policy_templates SET config_json=? WHERE id='tool-restrictions'`, scenario.template); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE agent_instances SET overrides_json=? WHERE id='restricted-instance'`, scenario.instance); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := store.prepareRuntime(corePreparePayload{
+				Transport: "qq_official", TransportInstance: "restricted-connector", ConversationRef: "restriction-group", Message: "你好",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.ActivePersona == nil || prepared.ActivePersona.ID != "doubao" {
+				t.Fatalf("test route did not resolve the intended persona: %+v", prepared.ActivePersona)
+			}
+			found := false
+			for _, tool := range prepared.ToolPolicy.Tools {
+				found = found || tool.ID == "ops-status"
+			}
+			if found != scenario.allowed || !scenario.allowed && len(prepared.ToolPolicy.Tools) != 0 {
+				t.Fatalf("prepared tools escaped profile restriction: count=%d OPS allowed=%v, want %v", len(prepared.ToolPolicy.Tools), found, scenario.allowed)
+			}
+			allowed, err := runtime.coreDirectCommandAllowed("doubao", "restricted-instance", coreDirectCommand{Kind: directCommandOPSAll})
+			if err != nil || allowed != scenario.allowed {
+				t.Fatalf("direct command allowed=%v err=%v, want %v", allowed, err, scenario.allowed)
+			}
+			if !scenario.allowed {
+				call := chatToolCall{}
+				call.Function.Name, call.Function.Arguments = "query_ops_status", "{}"
+				result := runtime.executeToolCall(context.Background(), runRecord{}, "/渠道", prepared.ToolPolicy, nil, call)
+				if !strings.Contains(result.Content, "tool_not_allowed") {
+					t.Fatalf("excluded tool reached execution: %+v", result)
+				}
+			}
+		})
+	}
+}
+
+func TestGroupModerationThresholdValidationPreservesDisabledLegacyConfig(t *testing.T) {
+	store := newAgentInstanceStore(t)
+	created := agentInstanceRequest(t, store, http.MethodPost, "/api/v1/agent-instances", `{"id":"moderator","displayName":"Moderator","personaId":"persona-test"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create moderator: %d %s", created.Code, created.Body.String())
+	}
+	for _, score := range []int{2, 3, 4, 6} {
+		config := groupModerationConfig{Mode: "enforce", ExecutorConnectorID: "executor", MinimumScore: score}
+		raw, _ := json.Marshal(config)
+		rawConfig := json.RawMessage(raw)
+		enabled := true
+		_, err := store.putAgentInstanceCapability("moderator", groupModerationCapabilityID, agentInstanceCapabilityPayload{Enabled: &enabled, Config: &rawConfig})
+		if (err == nil) != (score <= 3) {
+			t.Fatalf("minimumScore=%d: err=%v, only 2 and 3 are reachable", score, err)
+		}
+		if score <= 3 {
+			continue
+		}
+		// Old unreachable thresholds may be retained while disabled; enabling
+		// must require an explicit valid edit, never silently clamp and enforce.
+		enabled = false
+		if _, err = store.putAgentInstanceCapability("moderator", groupModerationCapabilityID, agentInstanceCapabilityPayload{Enabled: &enabled, Config: &rawConfig}); err != nil {
+			t.Fatalf("disabled legacy configuration must remain manageable: %v", err)
+		}
+		enabled = true
+		if _, err = store.putAgentInstanceCapability("moderator", groupModerationCapabilityID, agentInstanceCapabilityPayload{Enabled: &enabled}); err == nil {
+			t.Fatal("legacy unreachable threshold was enabled without correction")
+		}
+		stored, found, err := store.agentInstanceCapability("moderator", groupModerationCapabilityID)
+		var preserved groupModerationConfig
+		if err != nil || !found || stored.Enabled || json.Unmarshal(stored.Config, &preserved) != nil || preserved.MinimumScore != score {
+			t.Fatalf("legacy threshold was changed or enabled: %+v err=%v", stored, err)
+		}
+	}
+}
+
 func TestGroupModerationCapabilityCRUDAndHighConfidenceDetection(t *testing.T) {
 	store := newAgentInstanceStore(t)
 	instance := agentInstanceRequest(t, store, http.MethodPost, "/api/v1/agent-instances", `{"id":"doubao-instance","displayName":"Doubao","personaId":"persona-test"}`)

@@ -232,8 +232,8 @@ func validateGroupModerationConfig(config groupModerationConfig) error {
 	if strings.TrimSpace(config.ExecutorConnectorID) == "" {
 		return coreInvalid("executorConnectorId is required")
 	}
-	if config.MinimumScore < 2 || config.MinimumScore > 6 {
-		return coreInvalid("minimumScore must be between 2 and 6")
+	if config.MinimumScore < 2 || config.MinimumScore > 3 {
+		return coreInvalid("minimumScore must be between 2 and 3")
 	}
 	return nil
 }

@@ -599,11 +599,20 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 	event transportEvent,
 	message string,
 	policy groupParticipationPolicy,
-) (bool, error) {
+) (allowed bool, decisionErr error) {
+	started := time.Now()
+	endpointID := strings.TrimSpace(policy.DecisionProviderID)
+	failureCode := "route"
+	defer func() {
+		a.recordGroupParticipationDecision(ctx, endpointID, started, allowed,
+			groupParticipationErrorCode(decisionErr, failureCode))
+	}()
 	endpoint, found, err := a.configStore.mgmtModel(strings.TrimSpace(policy.DecisionProviderID))
 	if err != nil || !found || !endpoint.Enabled || endpoint.ExecutionKind != "llm" || strings.TrimSpace(endpoint.Model) == "" {
 		return false, errors.New("group decision model is unavailable")
 	}
+	endpointID = endpoint.ID
+	failureCode = "connection"
 	connection, found, err := a.providerConnectionForEndpoint(endpoint.ID, endpoint.Provider)
 	if err != nil || !found {
 		return false, errors.New("group decision provider connection is unavailable")
@@ -632,12 +641,19 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 	if contextLimit > 100 {
 		contextLimit = 100
 	}
-	personaID, _ := a.activePersonaIDForInstance(event.TransportInstance, event.Transport, event.Conversation.Key)
+	failureCode = "context"
+	personaID, err := a.activePersonaIDForInstance(event.TransportInstance, event.Transport, event.Conversation.Key)
+	if err != nil {
+		return false, err
+	}
 	scope, err := a.resolvedRuntimeScope(event)
 	if err != nil {
 		return false, err
 	}
 	memoryConversation := scope.memoryConversationRef()
+	if a.memory == nil {
+		return false, errors.New("group decision context is unavailable")
+	}
 	recent, err := a.memory.RecentPersonaGroupEvents(decisionContext, memoryConversation, personaID, contextLimit)
 	if err != nil {
 		return false, err
@@ -717,11 +733,14 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 	var completion chatCompletion
 	apiKey := a.providerCredential(connection.CredentialRef)
 	if apiKey == "" {
+		failureCode = "credential"
 		return false, errors.New("group decision provider credential is not configured")
 	}
+	failureCode = "connection"
 	if err = a.postProviderJSON(decisionContext, apiBase+"/chat/completions", apiKey, payload, &completion); err != nil {
 		return false, err
 	}
+	failureCode = "invalid_response"
 	if len(completion.Choices) == 0 {
 		return false, errors.New("group decision model returned no choices")
 	}
@@ -737,7 +756,14 @@ func (a *AgentRuntime) modelAllowsGroupParticipation(
 	if json.Unmarshal([]byte(strings.TrimSpace(decision)), &structured) != nil {
 		return false, errors.New("group decision model returned invalid JSON")
 	}
-	return strings.EqualFold(strings.TrimSpace(structured.Action), "reply"), nil
+	switch strings.ToLower(strings.TrimSpace(structured.Action)) {
+	case "reply":
+		return true, nil
+	case "ignore":
+		return false, nil
+	default:
+		return false, errors.New("group decision model returned unknown action")
+	}
 }
 
 // groupParticipationDecisionSystemPrompt keeps the speak/stay-quiet gate

@@ -32,6 +32,15 @@ export type MediaCapabilityStatus = {
 
 export type Observability = {
   quality?: TaskQualityStats;
+  groupParticipation?: {
+    attempts: number;
+    replies: number;
+    ignored: number;
+    errors: number;
+    avgDurationMs: number;
+    failuresByCode: Record<string, number>;
+    lastAttemptAt?: string;
+  };
   media?: {
     image?: MediaCapabilityStatus;
     video?: MediaCapabilityStatus;

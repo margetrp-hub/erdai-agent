@@ -98,7 +98,7 @@ export function CapabilitiesPage({ onNavigate, refreshKey = 0 }: { onNavigate: (
   const configure = (item: Capability) => item.integrationId ? onNavigate('integrations', `policy:${item.integrationId}`) : onNavigate(item.configView);
   return <div className="view-stage capability-center">
     <Panel accent="cyan">
-      <PanelHeading title="能力中心" description="看看豆包会做什么，在这里开启能力、补齐配置和查看检查结果。" action={<Button icon={<Blocks size={15} />} onClick={() => onNavigate('plugins')}>管理插件</Button>} />
+      <PanelHeading title="能力中心" description="查看智能体的已有能力，在这里开启功能、补齐配置和查看检查结果。" action={<Button icon={<Blocks size={15} />} onClick={() => onNavigate('plugins')}>管理插件</Button>} />
       <div className="capability-summary">
         <div><strong>{loading ? '…' : items.length}</strong><span>已有能力与资源</span></div>
         <div><strong>{loading ? '…' : items.filter((item) => item.enabled).length}</strong><span>已开启</span></div>

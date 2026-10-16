@@ -201,3 +201,14 @@
   .friendly-shell .brand-copy strong { font-size: 14px; }
   .friendly-overview .tabs-trigger { padding: 0 8px; font-size: 13px; }
 }
+
+.model-source-section { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+.model-source-dialog { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); }
+.model-source-dialog .dialog-header { flex-shrink: 0; }
+.model-source-dialog .dialog-body { overflow: auto; min-height: 0; }
+.participation-panel .quality-summary { padding: 16px 20px; }
+.model-source-section h3 { margin: 0 0 8px; }
+.model-source-section p { overflow-wrap: anywhere; }
+.model-source-section .fact-row { gap: 14px; align-items: flex-start; }
+.model-source-section .fact-row > span { flex-shrink: 0; }
+.model-source-section .fact-row strong { min-width: 0; overflow-wrap: anywhere; text-align: right; }

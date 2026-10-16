@@ -315,8 +315,16 @@ func (s *coreConfigStore) mgmtUpsertModel(r *http.Request, id string) (mgmtModel
 			quality_score = excluded.quality_score, priority = excluded.priority,
 			max_context_tokens = excluded.max_context_tokens,
 			execution_kind = excluded.execution_kind, adapter_ref = excluded.adapter_ref,
-			pricing_source = CASE WHEN excluded.pricing_source != '' THEN excluded.pricing_source ELSE model_endpoints.pricing_source END,
-			pricing_checked_at = CASE WHEN excluded.pricing_checked_at != '' THEN excluded.pricing_checked_at ELSE model_endpoints.pricing_checked_at END,
+			pricing_source = CASE WHEN excluded.pricing_source != '' AND (
+				model_endpoints.input_cost_per_million != excluded.input_cost_per_million OR
+				model_endpoints.output_cost_per_million != excluded.output_cost_per_million OR
+				model_endpoints.provider != excluded.provider OR model_endpoints.model != excluded.model OR
+				model_endpoints.pricing_source = '') THEN excluded.pricing_source ELSE model_endpoints.pricing_source END,
+			pricing_checked_at = CASE WHEN excluded.pricing_checked_at != '' AND (
+				model_endpoints.input_cost_per_million != excluded.input_cost_per_million OR
+				model_endpoints.output_cost_per_million != excluded.output_cost_per_million OR
+				model_endpoints.provider != excluded.provider OR model_endpoints.model != excluded.model OR
+				model_endpoints.pricing_source = '') THEN excluded.pricing_checked_at ELSE model_endpoints.pricing_checked_at END,
 			updated_at = excluded.updated_at
 	`, id, provider, model, boolInt(enabled), mgmtJSON(capabilities), inputCost, outputCost,
 		quality, priority, context, executionKind, adapterRef, pricingSource, pricingCheckedAt, now, now)

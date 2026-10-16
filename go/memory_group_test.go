@@ -101,6 +101,7 @@ func TestRelationshipObservationIsIdempotentAndStagesInteraction(t *testing.T) {
 	mustInitMemoryGroupSchema(t, store)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now.Add(12 * time.Minute) }
 	state, inserted, err := store.ObserveRelationship(ctx, "event-1", "group-one", "sender-one", true, now)
 	if err != nil || !inserted || state.InteractionCount != 1 || state.Stage != "普通群友" {
 		t.Fatalf("first relationship = %+v inserted=%v err=%v", state, inserted, err)

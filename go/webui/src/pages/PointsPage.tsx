@@ -37,8 +37,8 @@ function PointsTable({ columns, children, empty }: { columns: string[]; children
 }
 
 export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [tab, setTab] = useState<Tab>('ownership');
-  const [status, setStatus] = useState('pending');
+  const [tab, setTab] = useState<Tab>('accounts');
+  const [status, setStatus] = useState('');
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
@@ -102,18 +102,20 @@ export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }
 
   return <div className="points-page">
-    <header className="points-heading"><div><h1><Coins size={23} />积分与活动</h1><span className="points-muted">兑换奖品未上架</span></div>
-      <Button icon={<RefreshCw size={16} />} title="刷新积分数据" aria-label="刷新积分数据" disabled={loading} onClick={() => setRevision((n) => n + 1)} />
+    <header className="points-heading"><div><h1><Coins size={23} />积分与活动</h1><span className="points-muted">查看用户积分、确认邀请关系和处理兑换记录。奖品暂未上架。</span></div>
+      <Button icon={<RefreshCw size={16} />} title="刷新积分数据" aria-label="刷新积分数据" disabled={loading} onClick={() => setRevision((n) => n + 1)}>刷新</Button>
     </header>
     <div className="module-tabs" role="tablist" aria-label="积分管理">
-      {([['ownership', '归属核验'], ['accounts', '积分账户'], ['orders', '交易订单']] as const).map(([id, label]) => <button type="button" role="tab" aria-selected={tab === id} className="module-tab" data-state={tab === id ? 'active' : 'inactive'} onClick={() => changeTab(id)} key={id}>{label}</button>)}
+      {([['accounts', '用户积分'], ['ownership', '邀请确认'], ['orders', '兑换与抽奖记录']] as const).map(([id, label]) => <button type="button" role="tab" aria-selected={tab === id} className="module-tab" data-state={tab === id ? 'active' : 'inactive'} onClick={() => changeTab(id)} key={id}>{label}</button>)}
     </div>
+    <p className="points-tab-help">{tab === 'accounts' ? '搜索用户，查看余额和每一笔积分变动。打开明细后可以关联同一用户的站点账号。' : tab === 'ownership' ? '用户绑定邀请码后，在这里确认账号是否属于本人。默认显示等待确认的记录。' : '“待确认”表示积分已预留。核实实际发放结果后，再完成订单或退回积分。'}</p>
     <form className="points-filters" onSubmit={(event) => { event.preventDefault(); setSearch(query.trim()); setOffset(0); }}>
       {tab !== 'accounts' ? <label><span>状态</span><select aria-label="状态筛选" value={status} onChange={(event) => { setStatus(event.target.value); setOffset(0); }}>
         <option value="">全部</option>{(tab === 'ownership' ? ['pending', 'verified', 'conflict'] : ['reserved', 'committed', 'refunded']).map((value) => <option value={value} key={value}>{labels[value]}</option>)}
       </select></label> : null}
-      <label className="points-search"><span>{tab === 'ownership' ? '用户号码' : tab === 'orders' ? '积分账户 ID' : '用户 / 实例 / 账户'}</span><input aria-label="查询条件" maxLength={160} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+      <label className="points-search"><span>{tab === 'ownership' ? 'QQ 号或用户标识' : tab === 'orders' ? '积分账户编号' : '查找用户'}</span><input aria-label="查询条件" placeholder={tab === 'ownership' ? '输入完整的用户号码或标识' : tab === 'orders' ? '从用户积分明细中复制完整账户编号' : '输入 QQ 号、用户标识或账户编号'} maxLength={160} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
       <Button type="submit" icon={<Search size={16} />}>查询</Button>
+      {query || search || status !== (tab === 'ownership' ? 'pending' : '') ? <Button type="button" variant="ghost" onClick={() => { setQuery(''); setSearch(''); setStatus(tab === 'ownership' ? 'pending' : ''); setOffset(0); }}>重置筛选</Button> : null}
     </form>
     {notice ? <p className="points-notice" role="status">{notice}</p> : null}
     {error ? <div className="points-error" role="alert">{error}<Button icon={<RefreshCw size={15} />} onClick={() => setRevision((n) => n + 1)}>重试</Button></div> : null}
@@ -123,8 +125,8 @@ export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           {owners.map((item) => <tr key={`${item.transport}/${item.transportInstance}/${item.senderRef}`}>
             <td><strong>{item.senderRef}</strong><small>{item.transport} / {item.transportInstance}</small></td><td><code>{item.affiliateCode}</code></td>
             <td><Status value={item.status} />{item.evidence ? <small>{item.evidence}</small> : null}</td><td>{formatDate(item.verifiedAt || item.boundAt)}</td>
-            <td><div className="points-actions">{item.status === 'pending' ? <Button icon={<ShieldCheck size={15} />} onClick={() => setAction({ kind: 'verify', item })}>核验</Button> : null}
-              {item.accountId ? <Button icon={<History size={15} />} title="查看积分明细" aria-label={`查看 ${item.senderRef} 的积分明细`} onClick={() => showAccount(item.accountId)} /> : null}</div></td>
+            <td><div className="points-actions">{item.status === 'pending' ? <Button icon={<ShieldCheck size={15} />} onClick={() => setAction({ kind: 'verify', item })}>确认身份</Button> : null}
+              {item.accountId ? <Button icon={<History size={15} />} title="查看积分明细" aria-label={`查看 ${item.senderRef} 的积分明细`} onClick={() => showAccount(item.accountId)}>积分明细</Button> : null}</div></td>
           </tr>)}
         </PointsTable> : tab === 'accounts' ? <PointsTable columns={['用户', '账户', '可用积分', '关联身份', '操作']} empty={!accounts.length}>
           {accounts.map((item) => <tr key={item.id}><td>{item.users || '-'}</td><td><code title={item.id}>{accountLabel(item.id)}</code></td><td className="points-number">{formatPoints(item.balance)}</td><td>{item.identityCount}</td>
@@ -132,8 +134,8 @@ export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         </PointsTable> : <PointsTable columns={['业务订单', '账户', '积分', '状态', '创建时间', '操作']} empty={!orders.length}>
           {orders.map((item) => <tr key={item.id}><td><strong>{item.source} / {item.externalRef}</strong><small>{labels[item.kind]} · {item.note}</small></td><td><button className="points-text-button" onClick={() => showAccount(item.accountId)}>{accountLabel(item.accountId)}</button></td>
             <td className="points-number">{formatPoints(item.points)}</td><td><Status value={item.status} />{item.resolutionNote ? <small>{item.resolutionNote}</small> : null}</td><td>{formatDate(item.createdAt)}</td>
-            <td>{item.status === 'reserved' ? <div className="points-actions"><Button icon={<Check size={15} />} title="确认已发放" aria-label="确认已发放" onClick={() => setAction({ kind: 'resolve', item, status: 'committed' })} />
-              <Button icon={<Undo2 size={15} />} title="未发放退分" aria-label="未发放退分" onClick={() => setAction({ kind: 'resolve', item, status: 'refunded' })} /></div> : '-'}</td></tr>)}
+            <td>{item.status === 'reserved' ? <div className="points-actions"><Button icon={<Check size={15} />} title="确认已发放" aria-label="确认已发放" onClick={() => setAction({ kind: 'resolve', item, status: 'committed' })}>确认发放</Button>
+              <Button icon={<Undo2 size={15} />} title="未发放退分" aria-label="未发放退分" onClick={() => setAction({ kind: 'resolve', item, status: 'refunded' })}>退回积分</Button></div> : '-'}</td></tr>)}
         </PointsTable>}
       </> : null}
       <Pager offset={offset} more={more} disabled={loading || !!error} onChange={setOffset} />
@@ -208,10 +210,11 @@ function PointsAction({ action, onClose, onSaved }: { action: Action; onClose: (
 
   return <InfoDialog open onOpenChange={(open) => { if (!open && !saving) onClose(); }} title={title}>
     <form className="points-action-form" onSubmit={submit}>
+      <p className="points-tab-help">{action.kind === 'merge' ? '将当前账户的余额和身份合并到另一个账户，积分流水会保留。请先确认两个账户属于同一人。' : action.kind === 'link' ? '把已有站点账号与这个积分账户关联。请填写站点实际地址和站点中的用户编号。' : action.kind === 'verify' ? '确认这位用户确实拥有对应邀请码后，再完成身份确认。' : action.status === 'committed' ? '已在实际业务中发放成功，再将这笔记录标记为完成。' : '确认没有发放且不会继续发放后，将预留积分退回用户账户。'}</p>
       {action.kind === 'verify' ? <dl><dt>QQ 身份</dt><dd>{action.item.senderRef} / {action.item.transportInstance}</dd><dt>邀请码</dt><dd>{action.item.affiliateCode}</dd></dl>
         : action.kind === 'merge' ? <>
           <dl><dt>原账户</dt><dd><code>{action.item.id}</code></dd><dt>原可用积分</dt><dd>{formatPoints(action.item.balance)}</dd></dl>
-          <label><span>目标账户查询</span><input value={targetQuery} onChange={(event) => setTargetQuery(event.target.value)} maxLength={160} /></label>
+          <label><span>查找要合并到的用户</span><input placeholder="输入 QQ 号、用户标识或账户编号" value={targetQuery} onChange={(event) => setTargetQuery(event.target.value)} maxLength={160} /></label>
           <label><span>合并到</span><select required aria-label="合并到目标账户" value={target} disabled={targetsLoading || saving} onChange={(event) => setTarget(event.target.value)}>
             <option value="">{targetsLoading ? '正在读取账户' : '选择目标账户'}</option>{targets.map((item) => <option value={item.id} key={item.id}>{item.users} · {formatPoints(item.balance)} 积分 · {item.id.slice(-10)}</option>)}
           </select></label>
@@ -220,14 +223,14 @@ function PointsAction({ action, onClose, onSaved }: { action: Action; onClose: (
         </> : action.kind === 'link' ? <>
           <dl><dt>积分账户</dt><dd><code>{action.item.id}</code></dd></dl>
           <label><span>站点类型</span><select value={site} onChange={(event) => setSite(event.target.value)}><option value="sub2api">Sub2API</option><option value="newapi">NewAPI</option></select></label>
-          <label><span>站点实例（来源地址）</span><input required maxLength={200} value={instance} onChange={(event) => setInstance(event.target.value)} /></label>
-          <label><span>站点用户 ID</span><input required maxLength={128} value={userID} onChange={(event) => setUserID(event.target.value)} /></label>
+          <label><span>站点地址</span><input required placeholder="例如：https://api.example.com" maxLength={200} value={instance} onChange={(event) => setInstance(event.target.value)} /></label>
+          <label><span>站点用户编号</span><input required placeholder="在对应站点的用户管理中查看" maxLength={128} value={userID} onChange={(event) => setUserID(event.target.value)} /></label>
         </> : <dl><dt>业务订单</dt><dd>{action.item.source} / {action.item.externalRef}</dd><dt>积分</dt><dd>{formatPoints(action.item.points)}</dd><dt>当前状态</dt><dd>待确认</dd></dl>}
-      <label><span>{action.kind === 'resolve' ? '处理凭据' : '身份核验说明'}</span><textarea required maxLength={1000} rows={4} value={evidence} onChange={(event) => setEvidence(event.target.value)} /></label>
+      <label><span>{action.kind === 'resolve' ? '处理说明（必填）' : '身份确认说明（必填）'}</span><textarea required placeholder={action.kind === 'resolve' ? '记录发放结果或退款原因，并注明核查依据。' : '说明通过什么方式确认是同一位用户，方便以后核对。'} maxLength={1000} rows={3} value={evidence} onChange={(event) => setEvidence(event.target.value)} /></label>
       <label className="points-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
         <span>{action.kind === 'verify' || action.kind === 'link' ? '已核实站点账号与 QQ 身份属于同一用户' : action.kind === 'merge' ? '已核实两个账户属于同一用户，确认合并余额及签到资格' : action.status === 'committed' ? '已有实际发放成功凭据' : '已确认未发放且不会继续发放，退回本笔积分'}</span></label>
       {error ? <p className="points-error" role="alert">{error}</p> : null}
-      <div className="module-editor-actions"><Button type="button" onClick={onClose} disabled={saving}>取消</Button><Button variant="primary" type="submit" icon={<Check size={16} />} disabled={saving || !confirmed || !evidence.trim() || (action.kind === 'merge' && (!target || targetsLoading))}>{saving ? '正在提交' : '确认'}</Button></div>
+      <div className="module-editor-actions"><Button type="button" onClick={onClose} disabled={saving}>取消</Button><Button variant="primary" type="submit" icon={<Check size={16} />} disabled={saving || !confirmed || !evidence.trim() || (action.kind === 'merge' && (!target || targetsLoading))}>{saving ? '正在提交' : action.kind === 'merge' ? '确认合并账户' : action.kind === 'link' ? '关联账号' : action.kind === 'verify' ? '完成身份确认' : action.status === 'committed' ? '标记为已发放' : '确认退回积分'}</Button></div>
     </form>
   </InfoDialog>;
 }

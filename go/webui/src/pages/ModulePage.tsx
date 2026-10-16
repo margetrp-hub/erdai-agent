@@ -37,17 +37,21 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ViewId } from '../components/AppShell';
 import { Button, InfoDialog, Panel, PanelHeading, StatusDot } from '../components/ui';
 import { VisualReferenceLibrary } from '../components/VisualReferenceLibrary';
 import { VisualHistory } from '../components/VisualHistory';
 import { TaskDetailDialog } from '../components/TaskDetailDialog';
 import { OptimizationControls } from '../components/OptimizationControls';
+import { SettingsEditor } from '../components/SettingsEditor';
+import { fieldSpec, humanValue } from '../lib/settings-schema';
+import { changedSettings, projectSettings, replacesSettings, sameSettings, settingsPayload, settingPath, submittedSettingsMatch } from '../lib/settings-contracts';
 import {
   apiRequest,
   collectionItems,
   loadModuleData,
+  readSettingsRecord,
   type JsonMap,
   type ModuleData,
   type AppearanceLibrary,
@@ -278,40 +282,6 @@ function TablePager({ page, pages, total, pageSize, onPage }: { page: number; pa
   );
 }
 
-function JsonEditorDialog({
-  editor,
-  onClose,
-  onSave,
-  saving,
-}: {
-  editor: { title: string; description: string; value: string } | null;
-  onClose: () => void;
-  onSave: (value: string) => void;
-  saving: boolean;
-}) {
-  const [value, setValue] = useState(editor?.value || '');
-  useEffect(() => setValue(editor?.value || ''), [editor]);
-  return (
-    <InfoDialog open={Boolean(editor)} onOpenChange={(open) => !open && onClose()} title={editor?.title || ''} description={editor?.description}>
-      <form
-        className="module-editor-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSave(value);
-        }}
-      >
-        <textarea className="json-editor" value={value} onChange={(event) => setValue(event.target.value)} spellCheck={false} />
-        <div className="module-editor-actions">
-          <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
-          <Button type="submit" variant="primary" icon={saving ? <RefreshCw className="spin" size={15} /> : <Check size={15} />} disabled={saving}>
-            {saving ? '保存中' : '保存到 Core'}
-          </Button>
-        </div>
-      </form>
-    </InfoDialog>
-  );
-}
-
 function PolicyPanel({
   title,
   description,
@@ -336,8 +306,8 @@ function PolicyPanel({
         action={<Button variant="ghost" icon={<Pencil size={14} />} onClick={() => onEdit(title, value, endpointPath, 'PUT')}>编辑</Button>}
       />
       <div className="policy-preview">
-        {Object.entries(asRecord(value)).slice(0, 8).map(([key, entry]) => (
-          <div key={key}><span>{key}</span><strong>{text(entry, '未配置')}</strong></div>
+        {Object.entries(asRecord(value)).filter(([key]) => !fieldSpec(endpointPath, key).readOnly).sort(([a], [b]) => Number(Boolean(fieldSpec(endpointPath, a).advanced)) - Number(Boolean(fieldSpec(endpointPath, b).advanced))).slice(0, 6).map(([key, entry]) => (
+          <div key={key}><span>{fieldSpec(endpointPath, key).label}</span><strong>{humanValue(endpointPath, key, entry)}</strong></div>
         ))}
         {!Object.keys(asRecord(value)).length ? <span className="muted">尚未配置策略字段</span> : null}
       </div>
@@ -350,12 +320,16 @@ export function ModulePage({
   activeInstanceId,
   activePersonaId,
   refreshKey = 0,
+  initialTab = '',
+  onTabChange,
   onNavigate,
 }: {
   view: Exclude<ViewId, 'overview'>;
   activeInstanceId?: string;
   activePersonaId?: string;
   refreshKey?: number;
+  initialTab?: string;
+  onTabChange?: (tab: string) => void;
   onNavigate: (view: ViewId) => void;
 }) {
   const [data, setData] = useState<ModuleData | null>(null);
@@ -363,13 +337,20 @@ export function ModulePage({
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [personaId, setPersonaId] = useState(activePersonaId || '');
-  const [tab, setTab] = useState('');
-  const [editor, setEditor] = useState<{ title: string; description: string; value: string; path: string; method: 'PUT' | 'POST' } | null>(null);
+  const [tab, setTab] = useState(initialTab);
+  const [editor, setEditor] = useState<{ title: string; description: string; value: string; path: string; method: 'PUT' | 'POST'; context?: JsonMap } | null>(null);
+  const [editorError, setEditorError] = useState('');
+  const [editorLoading, setEditorLoading] = useState(false);
+  const editorSnapshot = useRef<{ original: JsonMap; source: JsonMap; existing: boolean }>({ original: {}, source: {}, existing: false });
+  const editorRequest = useRef(0);
+  const savingRequest = useRef(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [inspection, setInspection] = useState<{ title: string; description: string; value: unknown } | null>(null);
 
   useEffect(() => setPersonaId(activePersonaId || ''), [activePersonaId, view]);
+  useEffect(() => setTab(initialTab), [initialTab]);
+  useEffect(() => () => { editorRequest.current += 1; }, []);
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -378,7 +359,7 @@ export function ModulePage({
       .then((next) => {
         if (!alive) return;
         setData(next);
-        if (view === 'memories' || view === 'worldbook' || view === 'samples') {
+        if (view === 'roles' || view === 'memories' || view === 'worldbook' || view === 'samples') {
           setPersonaId(text(next.selectedPersonaId, personaId));
         }
       })
@@ -390,29 +371,79 @@ export function ModulePage({
     return () => { alive = false; };
   }, [activePersonaId, personaId, refreshKey, reloadKey, view]);
 
-  const items = (key: string) => collectionItems<JsonMap>(data?.[key]);
   const reload = () => setReloadKey((value) => value + 1);
-  const openEditor = (title: string, value: unknown, path: string, method: 'PUT' | 'POST' = 'PUT', description = '编辑后由 Core 校验并持久化。') => {
-    setEditor({ title, description, path, method, value: JSON.stringify(value ?? {}, null, 2) });
-  };
-  const saveEditor = async (value: string) => {
-    let payload: unknown;
-    try {
-      payload = JSON.parse(value);
-    } catch {
-      setNotice('JSON 格式无效，未提交。');
+  const openEditor = async (title: string, value: unknown, path: string, method: 'PUT' | 'POST' = 'PUT', description = '修改后点击保存；未修改的设置会保留。') => {
+    if (savingRequest.current) return;
+    if (settingPath(path) === '/api/v1/integrations/channel_platforms') {
+      setTab('channels');
+      setNotice('请在平台连接器中逐个编辑，新增、停用和删除都会直接保存到对应连接。');
       return;
     }
-    setSaving(true);
-    setNotice('');
+    const request = ++editorRequest.current;
+    setEditorError('');
+    setEditorLoading(true);
     try {
-      await apiRequest(editor?.path || '', { method: editor?.method || 'PUT', body: JSON.stringify(payload) });
+      let source = asRecord(value);
+      const existing = method === 'PUT' && (Boolean(source.createdAt || source.updatedAt || source.state) || /\/runtime\/(config|media-quotas)$|\/integrations\/|\/routing\//.test(settingPath(path)));
+      if (method === 'POST' && settingPath(path) === '/api/v1/persona-bindings') {
+        path = `${path}/${encodeURIComponent(String(source.id || crypto.randomUUID()))}`;
+        method = 'PUT';
+      }
+      if (method === 'PUT' && settingPath(path).startsWith('/api/v1/knowledge/documents/')) source = await readSettingsRecord(path, source);
+      if (request !== editorRequest.current) return;
+      const original = projectSettings(path, method, source);
+      editorSnapshot.current = { original, source, existing };
+      setEditor({ title, description, path, method, value: JSON.stringify(original, null, 2), context: { type: source.type } });
+    } catch (cause) {
+      if (request === editorRequest.current) setNotice(cause instanceof Error ? cause.message : '无法读取完整设置，请重试。');
+    } finally {
+      if (request === editorRequest.current) setEditorLoading(false);
+    }
+  };
+  const saveEditor = async (value: string) => {
+    if (!editor || savingRequest.current) return;
+    let draft: JsonMap;
+    try {
+      draft = settingsPayload(editor.path, editor.method, JSON.parse(value));
+    } catch (cause) {
+      setEditorError(cause instanceof SyntaxError ? '配置格式不完整，请检查后再保存。' : cause instanceof Error ? cause.message : '配置无效，未提交。');
+      return;
+    }
+    savingRequest.current = true;
+    setSaving(true);
+    setEditorError('');
+    try {
+      const { original, source, existing } = editorSnapshot.current;
+      const full = replacesSettings(editor.path);
+      if (existing && full) {
+        const latest = projectSettings(editor.path, editor.method, await readSettingsRecord(editor.path, source));
+        if (!sameSettings(original, latest)) throw new Error('这项设置已在别处修改。你的草稿仍保留，请复制需要的内容后重新打开设置，避免覆盖最新配置。');
+      }
+      let payload = existing && !full ? changedSettings(original, draft) : { ...original, ...draft };
+      if (settingPath(editor.path) === '/api/v1/runtime/media-quotas') payload = { ...payload, imageDailyLimit: draft.imageDailyLimit, videoDailyLimit: draft.videoDailyLimit };
+      if (settingPath(editor.path).startsWith('/api/v1/relationships/')) payload = { ...payload, locked: draft.locked, ...(draft.locked ? { intimacy: draft.intimacy } : {}) };
+      if (!Object.keys(payload).length) { setEditor(null); setNotice('没有需要保存的修改。'); return; }
+      const result = await apiRequest<JsonMap>(editor.path, { method: editor.method, body: JSON.stringify(payload) });
       setEditor(null);
-      setNotice('已保存到 Core。');
+      try {
+        const readPath = editor.method === 'POST' && (result?.id || payload.id)
+          ? `${settingPath(editor.path)}/${encodeURIComponent(String(result?.id || payload.id))}${editor.path.includes('?') ? `?${editor.path.split('?')[1]}` : ''}` : editor.path;
+        const readback = projectSettings(editor.path, editor.method, await readSettingsRecord(readPath, { ...source, ...payload }));
+        const changed = existing ? changedSettings(original, draft) : payload;
+        const differs = Object.entries(changed).some(([key, submitted]) => {
+          const actual = readback[key];
+          if (key === 'intimacy' && draft.locked === false) return false;
+          return !submittedSettingsMatch(submitted, actual, original[key]);
+        });
+        setNotice(differs ? '设置已提交，但回读内容与输入不同。请重新打开核对服务端保存的值，不要重复提交。' : '已保存，并重新读取确认。');
+      } catch {
+        setNotice('设置已提交，但暂时无法重新读取确认。请刷新查看，不要重复提交。');
+      }
       reload();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : '保存失败');
+      setEditorError(cause instanceof Error ? cause.message : '保存失败，输入已保留，请重试。');
     } finally {
+      savingRequest.current = false;
       setSaving(false);
     }
   };
@@ -428,7 +459,8 @@ export function ModulePage({
   };
   const toggle = async (path: string, value: boolean) => {
     try {
-      await apiRequest(path, { method: 'PUT', body: JSON.stringify({ enabled: !value }) });
+      const current = settingPath(path).startsWith('/api/v1/persona-bindings/') ? projectSettings(path, 'PUT', await readSettingsRecord(path)) : {};
+      await apiRequest(path, { method: 'PUT', body: JSON.stringify({ ...current, enabled: !value }) });
       setNotice('状态已更新。');
       reload();
     } catch (cause) {
@@ -440,7 +472,7 @@ export function ModulePage({
     activePersonaId: personaId,
     setPersonaId,
     tab,
-    setTab,
+    setTab: (next) => { setTab(next); onTabChange?.(next); },
     onNavigate,
     openEditor,
     remove,
@@ -452,8 +484,9 @@ export function ModulePage({
   return (
     <div className="view-stage module-stage">
       {notice ? <div className="module-notice"><CheckCircle2 size={15} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="关闭提示"><X size={14} /></button></div> : null}
+      {editorLoading ? <p role="status" className="module-notice">正在读取完整设置…</p> : null}
       {content}
-      <JsonEditorDialog editor={editor} onClose={() => setEditor(null)} onSave={saveEditor} saving={saving} />
+      <SettingsEditor editor={editor} onClose={() => { if (!savingRequest.current) setEditor(null); }} onSave={saveEditor} saving={saving} error={editorError} />
       <InfoDialog open={Boolean(inspection)} onOpenChange={(open) => !open && setInspection(null)} title={inspection?.title || ''} description={inspection?.description}>
         <div className="inspection-panel">
           {collectionItems<JsonMap>(asRecord(inspection?.value).tools).length ? <MetricRail items={[{ label: '发现工具', value: number(collectionItems(asRecord(inspection?.value).tools).length), accent: 'cyan' }, { label: '协议版本', value: text(asRecord(inspection?.value).protocolVersion, '-'), accent: 'green' }]} /> : null}
@@ -654,7 +687,7 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
           action={<div className="plugin-heading-actions">
             <Button variant="secondary" icon={checking === '*' ? <RefreshCw className="spin" size={15} /> : <ListChecks size={15} />} disabled={checking === '*'} onClick={runAllChecks}>检查全部</Button>
             <Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('登记外部能力包', {
-              id: 'my-capability', name: '我的能力包', description: '', version: '0.1.0', author: '', enabled: true,
+              id: crypto.randomUUID(), name: '', description: '', version: '0.1.0', author: '', enabled: true,
               manifest: { category: 'extension', capabilities: [], commands: [] },
             }, '/api/v1/plugins', 'POST', '只登记 manifest，不执行远程代码；需要运行适配器时再由 Core 增加受控实现。')}>登记能力包</Button>
           </div>}
@@ -710,7 +743,7 @@ function PluginsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
           title="受信任适配器注册表"
           description="只有管理员在 Core 登记的适配器，才能把外部能力包绑定到现有集成；权限采用固定白名单。"
           action={<Button variant="primary" icon={<ShieldCheck size={15} />} onClick={() => ctx.openEditor('新增受信任适配器', {
-            id: 'my-core-adapter', name: 'Core 适配器', pluginId: 'external-plugin-id', integrationId: 'memory_policy',
+            id: crypto.randomUUID(), name: '', pluginId: '', integrationId: 'memory_policy',
             version: '1.0.0', permissions: ['health.read', 'config.read'], enabled: true,
           }, '/api/v1/trusted-adapters', 'POST', '适配器只可绑定已登记的外部插件和 Core 已知集成；health.read 为必选权限。')}>新增适配器</Button>}
         />
@@ -800,7 +833,7 @@ function RuntimeModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
     <ModuleShell accent="green">
       <MetricRail items={[{ label: '运行实例', value: number(instances.length), note: 'registered', accent: 'green' }, { label: '连接器', value: number(platforms.length), note: 'platforms', accent: 'cyan' }, { label: '启用实例', value: number(instances.filter((item) => enabled(item.enabled)).length), note: 'enabled', accent: 'rose' }, { label: '策略模板', value: number(templates.length), note: 'policy layers', accent: 'violet' }]} />
       <Panel accent="green">
-        <PanelHeading eyebrow="RUNTIME GRAPH" title="运行链路" description="Core → 实例 → 角色 → 平台连接器。" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增运行实例', { id: '', displayName: '', personaId: text(people[0]?.id, ''), policyTemplateId: '', enabled: false }, '/api/v1/agent-instances', 'POST')}>新增实例</Button>} />
+        <PanelHeading eyebrow="RUNTIME GRAPH" title="运行链路" description="Core → 实例 → 角色 → 平台连接器。" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增运行实例', { id: crypto.randomUUID(), displayName: '', personaId: text(people[0]?.id, ''), policyTemplateId: '', enabled: false }, '/api/v1/agent-instances', 'POST')}>新增实例</Button>} />
         <div className="architecture-strip">
           {['Core 主程序', '公共策略', '角色配置', '实例与路由'].map((label, index) => <span key={label}><strong>0{index + 1}</strong>{label}{index < 3 ? <ChevronRight size={15} /> : null}</span>)}
         </div>
@@ -852,28 +885,35 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
       setSavingOutfitLength(false);
     }
   };
-  const uploadReferences = async (files: FileList) => {
+  const uploadReferences = async (files: FileList, category = 'identity') => {
     if (!ctx.activePersonaId || !selectedAppearanceLibraryId) return;
     setUploadingReferences(true);
+    let hasPrimary = visualReferences.some((reference) => reference.isPrimary);
+    let uploaded = 0;
     try {
       for (const file of Array.from(files)) {
         const isVideo = file.type.startsWith('video/');
         const form = new FormData();
         form.append('file', file);
-        form.append('category', isVideo ? 'style' : 'identity');
+        form.append('category', isVideo ? 'style' : category);
+        const makePrimary = !isVideo && category === 'identity' && !hasPrimary;
+        form.append('isPrimary', String(makePrimary));
         form.append('label', file.name.replace(/\.[^.]+$/, ''));
         form.append(
           'promptNotes',
           isVideo
             ? '仅参考动作、镜头、光线、服装和氛围，不复制人物脸部、身份、声音或具体场景。'
-            : `身份锚点：固定${activePersonaName}的脸型、五官、发型、发色和成年感；不复制真实人物身份。`,
+            : category === 'identity' ? `身份参考：保留${activePersonaName}的脸型、五官、发型、发色和成年感；不复制真实人物身份。`
+              : `仅参考${({ outfit: '穿搭', scene: '场景', expression: '表情', makeup: '妆容', motion: '动作', style: '画面风格' } as Record<string, string>)[category] || '所选用途'}，保持当前外观库的主身份参考。`,
         );
         await apiRequest(referencePath, { method: 'POST', body: form });
+        uploaded += 1;
+        if (makePrimary) hasPrimary = true;
       }
-      ctx.reload();
     } catch (cause) {
-      window.alert(cause instanceof Error ? cause.message : '参考素材导入失败');
+      window.alert(`${uploaded ? `已上传 ${uploaded} 项，其余未完成。` : ''}${cause instanceof Error ? cause.message : '参考素材导入失败'}`);
     } finally {
+      if (uploaded) ctx.reload();
       setUploadingReferences(false);
     }
   };
@@ -885,17 +925,9 @@ function RolesModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
     });
     ctx.reload();
   };
-  const createAppearanceLibrary = async () => {
-    const name = window.prompt('外观库名称');
-    if (!name?.trim()) return;
-    const visualDescription = window.prompt('外貌描述', text(activePersona?.visualDescription, ''));
-    if (visualDescription === null) return;
-    await apiRequest('/api/v1/appearance-libraries?namespace=default', {
-      method: 'POST',
-      body: JSON.stringify({ name: name.trim(), description: '供角色卡选择的共享外观库。', visualDescription: visualDescription.trim() }),
-    });
-    ctx.reload();
-  };
+  const createAppearanceLibrary = () => ctx.openEditor('新建外观库', {
+    name: '', description: '供角色卡选择的共享外观库。', visualDescription: text(activePersona?.visualDescription, ''), outfitLength: 'auto', enabled: true,
+  }, '/api/v1/appearance-libraries?namespace=default', 'POST');
   return (
     <ModuleShell accent="rose">
       <MetricRail items={[{ label: '角色卡', value: number(people.length), note: 'personas', accent: 'rose' }, { label: '外观库', value: number(appearanceLibraries.length), note: 'shared appearances', accent: 'cyan' }, { label: '启用绑定', value: number(bindings.filter((item) => item.enabled !== false).length), note: 'bindings', accent: 'green' }, { label: '运行档案', value: number(profiles.length), note: 'runtime profiles', accent: 'violet' }]} />
@@ -978,7 +1010,7 @@ function KnowledgeModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }
   const integrations = collectionItems<JsonMap>(data.integrations);
   const policyMap = Object.fromEntries(integrations.map((item) => [text(item.id), asRecord(item.config)]));
   const active = ctx.tab || 'retrieval';
-  return <ModuleShell accent="amber"><MetricRail items={[{ label: '正式文档', value: number(docs.length), note: 'curated', accent: 'cyan' }, { label: '待审候选', value: number(candidates.filter((item) => text(item.status) === 'pending').length), note: 'review queue', accent: 'amber' }, { label: '策略模块', value: number(integrations.length), note: 'Core policies', accent: 'violet' }]} /><SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'retrieval', label: '检索与向量' }, { id: 'reading', label: '文档读取' }, { id: 'documents', label: '正式知识', count: docs.length }, { id: 'candidates', label: '候选审核', count: candidates.length }]} />{active === 'retrieval' ? <><PolicyPanel title="检索与向量" description="Embedding、Rerank 和本地回退策略。" value={policyMap.retrieval_policy} endpointPath="/api/v1/integrations/retrieval_policy" accent="amber" onEdit={ctx.openEditor} /><PolicyPanel title="学习策略" description="自动采集产生候选，审核后才进入正式知识。" value={{ learningEnabled: policyMap.grok_policy?.learningWorkerEnabled, topics: policyMap.grok_policy?.learningTopics }} endpointPath="/api/v1/runtime/config" accent="cyan" onEdit={ctx.openEditor} /></> : null}{active === 'reading' ? <PolicyPanel title="文档与多模态" description="附件读取、提取上限和会话续接。" value={policyMap.document_policy} endpointPath="/api/v1/integrations/document_policy" accent="violet" onEdit={ctx.openEditor} /> : null}{active === 'documents' ? <Panel accent="cyan"><PanelHeading eyebrow="CURATED KNOWLEDGE" title="正式知识文档" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增知识文档', { id: crypto.randomUUID(), namespace: 'default', title: '', sourceUri: '', content: '', metadata: {} }, '/api/v1/knowledge/documents', 'POST')}>新增文档</Button>} /><div className="module-record-list">{docs.map((doc) => <RecordRow key={itemId(doc)} item={doc} title={text(doc.title, itemId(doc))} icon="file" detail={text(doc.sourceUri, '手工录入')} meta={[`命名空间 ${text(doc.namespace)}`, `Hash ${text(doc.contentHash, '未计算')}`, text(doc.updatedAt, '未更新')]} actions={<><Button variant="ghost" icon={<Pencil size={14} />} onClick={() => ctx.openEditor('编辑知识文档', doc, `/api/v1/knowledge/documents/${encodeURIComponent(itemId(doc))}?namespace=default`)}>编辑</Button><Button variant="ghost" icon={<Trash2 size={14} />} onClick={() => ctx.remove(`/api/v1/knowledge/documents/${encodeURIComponent(itemId(doc))}?namespace=default`, '确定删除这份知识文档？')} /></>} />)}</div>{!docs.length ? <EmptyState text="暂无正式知识文档。" /> : null}</Panel> : null}{active === 'candidates' ? <Panel accent="amber"><PanelHeading eyebrow="REVIEW QUEUE" title="候选知识审核" /><div className="module-record-list">{candidates.map((candidate) => <RecordRow key={itemId(candidate)} item={candidate} title={`${text(candidate.title, itemId(candidate))} · ${text(candidate.status)}`} icon="archive" detail={text(candidate.content, '无候选正文')} meta={[text(candidate.source, '未知来源'), text(candidate.createdAt, '未记录')]} actions={<>{text(candidate.status) === 'pending' ? <><Button variant="primary" icon={<Check size={14} />} onClick={() => apiRequest(`/api/v1/runtime/knowledge-candidates/${encodeURIComponent(itemId(candidate))}/review`, { method: 'POST', body: JSON.stringify({ decision: 'approved', authority: 'admin', knowledgeNamespace: 'default' }) }).then(ctx.reload)}>批准</Button><Button variant="ghost" onClick={() => apiRequest(`/api/v1/runtime/knowledge-candidates/${encodeURIComponent(itemId(candidate))}/review`, { method: 'POST', body: JSON.stringify({ decision: 'rejected', authority: 'admin', knowledgeNamespace: 'default' }) }).then(ctx.reload)}>拒绝</Button></> : null}<Button variant="ghost" icon={<Trash2 size={14} />} onClick={() => ctx.remove(`/api/v1/runtime/knowledge-candidates/${encodeURIComponent(itemId(candidate))}`, '确定删除这个候选知识？')} /></>} />)}</div>{!candidates.length ? <EmptyState text="暂无候选知识。" /> : null}</Panel> : null}</ModuleShell>;
+  return <ModuleShell accent="amber"><MetricRail items={[{ label: '正式文档', value: number(docs.length), note: 'curated', accent: 'cyan' }, { label: '待审候选', value: number(candidates.filter((item) => text(item.status) === 'pending').length), note: 'review queue', accent: 'amber' }, { label: '策略模块', value: number(integrations.length), note: 'Core policies', accent: 'violet' }]} /><SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'retrieval', label: '检索与向量' }, { id: 'reading', label: '文档读取' }, { id: 'documents', label: '正式知识', count: docs.length }, { id: 'candidates', label: '候选审核', count: candidates.length }]} />{active === 'retrieval' ? <><PolicyPanel title="检索与向量" description="Embedding、Rerank 和本地回退策略。" value={policyMap.retrieval_policy} endpointPath="/api/v1/integrations/retrieval_policy" accent="amber" onEdit={ctx.openEditor} /><PolicyPanel title="学习策略" description="自动采集产生候选，审核后才进入正式知识。" value={{ learningEnabled: asRecord(data.config).learningEnabled, learningTopics: asRecord(data.config).learningTopics, learningIntervalHours: asRecord(data.config).learningIntervalHours }} endpointPath="/api/v1/runtime/config" accent="cyan" onEdit={ctx.openEditor} /></> : null}{active === 'reading' ? <PolicyPanel title="文档与多模态" description="附件读取、提取上限和会话续接。" value={policyMap.document_policy} endpointPath="/api/v1/integrations/document_policy" accent="violet" onEdit={ctx.openEditor} /> : null}{active === 'documents' ? <Panel accent="cyan"><PanelHeading eyebrow="CURATED KNOWLEDGE" title="正式知识文档" action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增知识文档', { id: crypto.randomUUID(), namespace: 'default', title: '', sourceUri: '', content: '', metadata: {} }, '/api/v1/knowledge/documents', 'POST')}>新增文档</Button>} /><div className="module-record-list">{docs.map((doc) => <RecordRow key={itemId(doc)} item={doc} title={text(doc.title, itemId(doc))} icon="file" detail={text(doc.sourceUri, '手工录入')} meta={[`命名空间 ${text(doc.namespace)}`, `Hash ${text(doc.contentHash, '未计算')}`, text(doc.updatedAt, '未更新')]} actions={<><Button variant="ghost" icon={<Pencil size={14} />} onClick={() => ctx.openEditor('编辑知识文档', doc, `/api/v1/knowledge/documents/${encodeURIComponent(itemId(doc))}?namespace=default`)}>编辑</Button><Button variant="ghost" icon={<Trash2 size={14} />} onClick={() => ctx.remove(`/api/v1/knowledge/documents/${encodeURIComponent(itemId(doc))}?namespace=default`, '确定删除这份知识文档？')} /></>} />)}</div>{!docs.length ? <EmptyState text="暂无正式知识文档。" /> : null}</Panel> : null}{active === 'candidates' ? <Panel accent="amber"><PanelHeading eyebrow="REVIEW QUEUE" title="候选知识审核" /><div className="module-record-list">{candidates.map((candidate) => <RecordRow key={itemId(candidate)} item={candidate} title={`${text(candidate.title, itemId(candidate))} · ${text(candidate.status)}`} icon="archive" detail={text(candidate.content, '无候选正文')} meta={[text(candidate.source, '未知来源'), text(candidate.createdAt, '未记录')]} actions={<>{text(candidate.status) === 'pending' ? <><Button variant="primary" icon={<Check size={14} />} onClick={() => apiRequest(`/api/v1/runtime/knowledge-candidates/${encodeURIComponent(itemId(candidate))}/review`, { method: 'POST', body: JSON.stringify({ decision: 'approved', authority: 'admin', knowledgeNamespace: 'default' }) }).then(ctx.reload)}>批准</Button><Button variant="ghost" onClick={() => apiRequest(`/api/v1/runtime/knowledge-candidates/${encodeURIComponent(itemId(candidate))}/review`, { method: 'POST', body: JSON.stringify({ decision: 'rejected', authority: 'admin', knowledgeNamespace: 'default' }) }).then(ctx.reload)}>拒绝</Button></> : null}<Button variant="ghost" icon={<Trash2 size={14} />} onClick={() => ctx.remove(`/api/v1/runtime/knowledge-candidates/${encodeURIComponent(itemId(candidate))}`, '确定删除这个候选知识？')} /></>} />)}</div>{!candidates.length ? <EmptyState text="暂无候选知识。" /> : null}</Panel> : null}</ModuleShell>;
 }
 
 function SkillsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
@@ -1145,9 +1177,10 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
   const platforms = collectionItems<JsonMap>(data.platforms);
   const runtime = collectionItems<JsonMap>(data.platformRuntime);
   const models = collectionItems<JsonMap>(data.models);
-  const active = ctx.tab || 'channels';
+  const selectedPolicy = ctx.tab.startsWith('policy:') ? ctx.tab.slice('policy:'.length) : '';
+  const active = selectedPolicy ? 'policies' : ctx.tab || 'channels';
   const runtimeMap = new Map(runtime.map((item) => [text(item.id), item]));
-  const policies = integrations.filter((item) => asRecord(item.config) && Object.keys(asRecord(item.config)).length > 0);
+  const policies = integrations.filter((item) => Object.keys(asRecord(item.config)).length > 0 && (!selectedPolicy || item.id === selectedPolicy));
   const credentialConfig = asRecord(data.credentials);
   const credentials = collectionItems<JsonMap>(credentialConfig);
   return (
@@ -1172,7 +1205,7 @@ function IntegrationsModule({ data, ctx }: { data: ModuleData; ctx: RenderContex
             description="连接参数保存在 Core；凭据引用服务器环境变量，可在凭据配置中填写。"
             action={<Button variant="primary" icon={<Plus size={15} />} onClick={() => ctx.openEditor('新增平台连接器', {
               id: crypto.randomUUID(),
-              type: 'custom',
+              type: 'aiocqhttp',
               displayName: '',
               enabled: false,
               settings: {},
@@ -1285,25 +1318,12 @@ function ModelsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
   const newConnectionId = crypto.randomUUID();
   const newModelId = crypto.randomUUID();
   const toggleModel = async (model: JsonMap) => {
-    const usage = asRecord(model.usage);
     try {
-      await apiRequest(endpoint('/api/v1/model-endpoints', itemId(model)), {
+      const path = endpoint('/api/v1/model-endpoints', itemId(model));
+      const current = projectSettings(path, 'PUT', await readSettingsRecord(path));
+      await apiRequest(path, {
         method: 'PUT',
-        body: JSON.stringify({
-          provider: model.provider,
-          model: model.model,
-          connectionId: model.connectionId || '',
-          enabled: !enabled(model.enabled),
-          capabilities: model.capabilities || [],
-          inputCostPerMillion: model.inputCostPerMillion,
-          outputCostPerMillion: model.outputCostPerMillion,
-          qualityScore: model.qualityScore,
-          priority: model.priority,
-          maxContextTokens: model.maxContextTokens,
-          executionKind: model.executionKind,
-          adapterRef: model.adapterRef,
-          usage,
-        }),
+        body: JSON.stringify({ ...current, enabled: !enabled(current.enabled) }),
       });
       ctx.reload();
     } catch (cause) {
@@ -1371,7 +1391,7 @@ function ModelsModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
               model: '',
               connectionId: '',
               enabled: false,
-              capabilities: ['text'],
+              capabilities: ['chat'],
               qualityScore: 0.5,
               priority: 0,
               maxContextTokens: 0,
@@ -1420,7 +1440,7 @@ function RoutingModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) 
             <div><span>锁定场景</span><strong>{number(Object.keys(locks).length)}</strong></div>
             {Object.entries(locks).map(([lane, model]) => <div key={lane}><span>{lane}</span><strong>{text(model)}</strong></div>)}
           </div>
-          <p className="module-notice module-notice-inline"><Route size={15} />编辑器中的 `locks` 使用 lane → endpoint ID 映射。</p>
+          <p className="module-notice module-notice-inline"><Route size={15} />选择任务场景和要使用的模型；没有指定的场景仍按自动规则选择。</p>
         </Panel>
       ) : (
         <Panel accent="cyan">
@@ -1518,20 +1538,24 @@ function SystemModule({ data, ctx }: { data: ModuleData; ctx: RenderContext }) {
   const config = asRecord(data.config);
   const quotas = asRecord(data.mediaQuotas);
   const layers = collectionItems<JsonMap>(data.configLayers);
+  const policies = Object.fromEntries(collectionItems<JsonMap>(data.integrations).map((entry) => [text(entry.id), asRecord(entry.config)]));
   const active = ctx.tab || 'runtime';
   return (
     <ModuleShell accent="green">
-      <MetricRail items={[
-        { label: '当前角色', value: text(config.activePersonaId, '未选择'), note: 'runtime default', accent: 'green' },
-        { label: '知识命名空间', value: text(config.knowledgeNamespace, 'default'), note: 'knowledge scope', accent: 'cyan' },
-        { label: '每日图片', value: text(quotas.imageDailyLimit, '0'), note: `视频 ${text(quotas.videoDailyLimit, '0')}`, accent: 'violet' },
-        { label: '配置分层', value: number(layers.length), note: 'resolved layers', accent: 'amber' },
-      ]} />
-      <SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'runtime', label: '运行时配置' }, { id: 'quotas', label: '媒体额度' }, { id: 'layers', label: '配置分层', count: layers.length }]} />
+      <p className="module-notice module-notice-inline">这里设置全局默认规则。机器人、角色或群的单独设置可能覆盖默认值，可在“生效来源”查看配置层级。</p>
+      <SectionTabs active={active} onChange={ctx.setTab} tabs={[{ id: 'runtime', label: '聊天与回复' }, { id: 'quotas', label: '照片与视频' }, { id: 'layers', label: '生效来源', count: layers.length }]} />
       {active === 'runtime' ? (
-        <PolicyPanel title="运行时配置" description="自然对话、角色卡、世界书、知识和学习开关的统一默认值。" value={config} endpointPath="/api/v1/runtime/config" accent="green" onEdit={ctx.openEditor} />
+        <>
+          {policies.group_chat_policy ? <PolicyPanel title="群聊与主动接话" description="决定什么时候接话、参与频率，以及被点名以外的回复方式。" value={policies.group_chat_policy} endpointPath="/api/v1/integrations/group_chat_policy" accent="green" onEdit={ctx.openEditor} /> : null}
+          <PolicyPanel title="回复表达与默认设置" description="调整说话风格、回复长度，以及角色、背景和知识的使用方式。" value={config} endpointPath="/api/v1/runtime/config" accent="cyan" onEdit={ctx.openEditor} />
+          {policies.message_policy ? <PolicyPanel title="回复节奏" description="分段回复、间隔与处理过程的提示。" value={policies.message_policy} endpointPath="/api/v1/integrations/message_policy" accent="amber" onEdit={ctx.openEditor} /> : null}
+        </>
       ) : active === 'quotas' ? (
-        <PolicyPanel title="媒体额度" description="图片和视频额度由 Core 统一计算，可信管理员可按策略豁免。" value={quotas} endpointPath="/api/v1/runtime/media-quotas" accent="violet" onEdit={ctx.openEditor} />
+        <>
+          <PolicyPanel title="每天可生成多少图片和视频" description="设置普通成员的每日次数，以及不受额度限制的成员。" value={quotas} endpointPath="/api/v1/runtime/media-quotas" accent="violet" onEdit={ctx.openEditor} />
+          {policies.image_policy ? <PolicyPanel title="图片生成与生活随拍" description="生成数量、拍摄变化与画面检查。身份与参考素材在角色外观库中管理。" value={policies.image_policy} endpointPath="/api/v1/integrations/image_policy" accent="cyan" onEdit={ctx.openEditor} /> : null}
+          <Button onClick={() => ctx.onNavigate('roles')} icon={<UserRound size={15} />}>管理角色与外观库</Button>
+        </>
       ) : (
         <Panel accent="amber">
           <PanelHeading eyebrow="CONFIG LAYERS" title="配置分层" description="只读查看最终合并来源，编辑具体策略请进入对应模块。" />

@@ -2,6 +2,21 @@ package main
 
 import "testing"
 
+func TestRelationshipPlatformSenderRefKeepsLegacyAndRejectsMalformedScopes(t *testing.T) {
+	scope := runtimeScope{AgentInstanceID: "qa-one", Transport: "qq_official", TransportInstance: "qa-connector", ConversationRef: "group|:测试", ThreadKey: "topic", SenderRef: "member|:测试"}
+	if got := relationshipPlatformSenderRef(scope.memoryConversationRef(), scope.memorySenderRef()); got != scope.SenderRef {
+		t.Fatalf("platform sender = %q", got)
+	}
+	for _, value := range []string{"legacy-member", scope.memorySenderRef() + "extra", "6:memory|9999999999999999999999999:bad|", "-1:x|"} {
+		if got := relationshipPlatformSenderRef(scope.memoryConversationRef(), value); got != value {
+			t.Fatalf("legacy or malformed sender changed: %q -> %q", value, got)
+		}
+	}
+	if got := relationshipPlatformSenderRef("another-group", scope.memorySenderRef()); got != scope.memorySenderRef() {
+		t.Fatal("unrelated conversation accepted as scoped sender")
+	}
+}
+
 func TestRuntimeScopeSeparatesInstancesAndConnectors(t *testing.T) {
 	base := runtimeScope{
 		AgentInstanceID: "doubao-qq", Transport: "qq_official",

@@ -230,11 +230,13 @@ export type ModuleData = Record<string, unknown>;
 
 export class ApiError extends Error {
   readonly authRequired: boolean;
+  readonly status: number;
 
-  constructor(message: string, authRequired = false) {
+  constructor(message: string, authRequired = false, status = 0) {
     super(message);
     this.name = 'ApiError';
     this.authRequired = authRequired;
+    this.status = status;
   }
 }
 
@@ -247,10 +249,22 @@ export async function apiRequest<T>(path: string, options?: RequestInit): Promis
       ...(options?.body && !isFormData ? { 'content-type': 'application/json' } : {}),
       ...(options?.headers || {}),
     },
+  }).catch((cause: unknown) => {
+    if (cause instanceof Error && cause.name === 'AbortError') throw cause;
+    throw new ApiError('无法连接服务器，请检查网络后重试。');
   });
-  const payload = (await response.json().catch(() => ({}))) as ApiEnvelope<T>;
+  if (response.status === 204) return undefined as T;
+  const payload = (await response.json().catch(() => null)) as ApiEnvelope<T> | null;
   if (!response.ok) {
-    throw new ApiError(payload.error?.message || `请求失败（HTTP ${response.status}）`, response.status === 401);
+    const detail = payload?.error?.message || payload?.error?.code || '';
+    const message = response.status === 401 ? '登录已失效，请重新登录后再保存。'
+      : response.status === 403 ? '当前登录没有执行这项操作的权限。'
+        : response.status >= 500 ? `服务暂时无法处理请求，请稍后重试。${detail ? `（${detail}）` : ''}`
+          : detail || `请求失败（HTTP ${response.status}）`;
+    throw new ApiError(message, response.status === 401, response.status);
+  }
+  if (!payload || typeof payload !== 'object' || !Object.hasOwn(payload, 'data')) {
+    throw new ApiError('服务器返回的内容不完整，请刷新或重试。', false, response.status);
   }
   return payload.data as T;
 }
@@ -264,12 +278,57 @@ export function collectionItems<T = JsonMap>(value: unknown): T[] {
   return [];
 }
 
+export async function apiCollection<T = JsonMap>(path: string, signal?: AbortSignal): Promise<{ items: T[]; total: number }> {
+  const url = new URL(path, 'http://localhost');
+  url.searchParams.set('limit', '100');
+  let offset = 0;
+  const items: T[] = [];
+  for (;;) {
+    url.searchParams.set('offset', String(offset));
+    const page = await apiRequest<unknown>(url.pathname + url.search, { signal });
+    const batch = collectionItems<T>(page);
+    const total = page && !Array.isArray(page) && typeof page === 'object' ? Number((page as JsonMap).total) : NaN;
+    items.push(...batch);
+    const hasMore = page && !Array.isArray(page) && typeof page === 'object' && (page as JsonMap).hasMore === true;
+    if (Number.isFinite(total) ? items.length >= total : !hasMore) return { items, total: Number.isFinite(total) ? total : items.length };
+    if (!batch.length || items.length >= 10000) throw new ApiError('记录数量过多或分页数据发生变化，请缩小筛选范围后重试。');
+    offset += batch.length;
+  }
+}
+
+export async function readSettingsRecord(path: string, source: JsonMap = {}): Promise<JsonMap> {
+  const route = path.split('?')[0];
+  const id = decodeURIComponent(route.split('/').pop() || '');
+  let items: JsonMap[] | undefined;
+  if (route.startsWith('/api/v1/persona-bindings/')) items = collectionItems(await apiRequest('/api/v1/persona-bindings'));
+  if (route.startsWith('/api/v1/plugins/')) items = collectionItems(await apiRequest('/api/v1/plugins'));
+  if (route.startsWith('/api/v1/provider-connections/')) items = (await apiCollection('/api/v1/provider-connections')).items;
+  if (/^\/api\/v1\/(memories|relationships)\//.test(route)) {
+    const collection = route.slice(0, route.lastIndexOf('/'));
+    items = (await apiCollection(`${collection}?personaId=${encodeURIComponent(String(source.personaId || ''))}`)).items;
+  }
+  if (route === '/api/v1/routing/lanes') {
+    items = collectionItems(await apiRequest(route));
+    const record = items.find((item) => item.lane === source.lane);
+    if (!record) throw new ApiError('这个模型分工已不存在，请刷新列表。');
+    return record;
+  }
+  if (items) {
+    const record = items.find((item) => item.id === id);
+    if (!record) throw new ApiError('这条记录已不存在，请刷新列表。');
+    return record;
+  }
+  return apiRequest<JsonMap>(path);
+}
+
 export async function getSession() {
-  const response = await fetch('/auth/session', {
-    headers: { accept: 'application/json' },
-  });
-  const payload = (await response.json().catch(() => ({}))) as ApiEnvelope<{ authenticated?: boolean }>;
-  return response.ok && payload.data?.authenticated === true;
+  try {
+    const session = await apiRequest<{ authenticated?: boolean }>('/auth/session');
+    return session?.authenticated === true;
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return false;
+    throw error;
+  }
 }
 
 export function login(credentials: { token?: string; username?: string; password?: string }) {
@@ -289,14 +348,14 @@ export async function loadDashboard(): Promise<DashboardData> {
     apiRequest<Observability>('/api/v1/observability'),
     apiRequest<RuntimeConfig>('/api/v1/runtime/config'),
     apiRequest<InstallationStatus>('/api/v1/installation/status'),
-    apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100'),
+    apiCollection<Persona>('/api/v1/personas?namespace=default'),
     apiRequest<{ items?: AgentInstance[] }>('/api/v1/agent-instances'),
   ]);
   return { overview, observability, config, installation, personas, agentInstances };
 }
 
 async function loadEntries(entries: Array<[string, string]>): Promise<ModuleData> {
-  const values = await Promise.all(entries.map(([, path]) => apiRequest<unknown>(path)));
+  const values = await Promise.all(entries.map(([, path]) => path.includes('limit=100') ? apiCollection(path) : apiRequest<unknown>(path)));
   return Object.fromEntries(entries.map(([key], index) => [key, values[index]]));
 }
 
@@ -324,7 +383,7 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
         ['platformCatalog', '/api/v1/platforms/catalog'],
       ]);
     case 'roles': {
-      const personas = await apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100');
+      const personas = await apiCollection<Persona>('/api/v1/personas?namespace=default');
       const personaId = preferredPersonaId || personas.items?.[0]?.id || '';
       const [personaBindings, personaProfiles, appearanceLibraries, appearanceBindings] = await Promise.all([
         apiRequest<unknown>('/api/v1/persona-bindings'),
@@ -343,26 +402,26 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
       return { personas, personaBindings, personaProfiles, appearanceLibraries, appearanceAssignments, visualReferences, selectedAppearanceLibraryId, selectedPersonaId: personaId };
     }
     case 'memories': {
-      const personas = await apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100');
+      const personas = await apiCollection<Persona>('/api/v1/personas?namespace=default');
       const personaId = preferredPersonaId || personas.items?.[0]?.id || '';
       const [memories, relationships] = await Promise.all([
-        apiRequest<unknown>(`/api/v1/memories?personaId=${encodeURIComponent(personaId)}&limit=100`),
-        apiRequest<unknown>(`/api/v1/relationships?personaId=${encodeURIComponent(personaId)}&limit=100`),
+        personaId ? apiCollection(`/api/v1/memories?personaId=${encodeURIComponent(personaId)}`) : { items: [] },
+        personaId ? apiCollection(`/api/v1/relationships?personaId=${encodeURIComponent(personaId)}`) : { items: [] },
       ]);
       return { personas, memories, relationships, selectedPersonaId: personaId };
     }
     case 'worldbook': {
-      const personas = await apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100');
+      const personas = await apiCollection<Persona>('/api/v1/personas?namespace=default');
       const personaId = preferredPersonaId || personas.items?.[0]?.id || '';
-      const worldbook = await apiRequest<unknown>(`/api/v1/personas/${encodeURIComponent(personaId)}/worldbook?namespace=default&limit=100`);
+      const worldbook = personaId ? await apiCollection(`/api/v1/personas/${encodeURIComponent(personaId)}/worldbook?namespace=default`) : { items: [] };
       return { personas, worldbook, selectedPersonaId: personaId };
     }
     case 'samples': {
-      const personas = await apiRequest<{ items?: Persona[] }>('/api/v1/personas?namespace=default&limit=100');
+      const personas = await apiCollection<Persona>('/api/v1/personas?namespace=default');
       const personaId = preferredPersonaId || personas.items?.[0]?.id || '';
       const [samples, traits] = await Promise.all([
-        apiRequest<unknown>(`/api/v1/personas/${encodeURIComponent(personaId)}/samples?namespace=default&limit=100`),
-        apiRequest<unknown>(`/api/v1/personas/${encodeURIComponent(personaId)}/traits?namespace=default&limit=100`),
+        personaId ? apiCollection(`/api/v1/personas/${encodeURIComponent(personaId)}/samples?namespace=default`) : { items: [] },
+        personaId ? apiCollection(`/api/v1/personas/${encodeURIComponent(personaId)}/traits?namespace=default`) : { items: [] },
       ]);
       return { personas, samples, traits, selectedPersonaId: personaId };
     }
@@ -371,6 +430,7 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
         ['documents', '/api/v1/knowledge/documents?namespace=default&limit=100'],
         ['candidates', '/api/v1/runtime/knowledge-candidates?limit=100'],
         ['integrations', '/api/v1/integrations'],
+        ['config', '/api/v1/runtime/config'],
       ]);
     case 'skills':
       return loadEntries([['skills', '/api/v1/skills']]);
@@ -415,6 +475,7 @@ export async function loadModuleData(view: string, preferredPersonaId?: string):
     case 'security':
       return loadEntries([
         ['integrations', '/api/v1/integrations'],
+        ['config', '/api/v1/runtime/config'],
         ['directives', '/api/v1/runtime/directives?limit=100'],
       ]);
     case 'system':

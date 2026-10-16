@@ -131,7 +131,7 @@ func TestManagedRelationshipsAutoEvolveAndCanBeLockedOrReset(t *testing.T) {
 		} `json:"data"`
 	}
 	decodeRecorder(t, listed, &listBody)
-	if len(listBody.Data.Items) != 1 || listBody.Data.Items[0].SenderDisplayName != "小明" || listBody.Data.Items[0].State.Intimacy <= 0 {
+	if len(listBody.Data.Items) != 1 || listBody.Data.Items[0].SenderRef != "member-one" || listBody.Data.Items[0].SenderDisplayName != "小明" || listBody.Data.Items[0].State.Intimacy <= 0 {
 		t.Fatalf("managed relationships = %+v", listBody.Data.Items)
 	}
 	id := listBody.Data.Items[0].ID
@@ -157,6 +157,88 @@ func TestManagedRelationshipsAutoEvolveAndCanBeLockedOrReset(t *testing.T) {
 	deleted := managedMemoryRequest(t, admin, http.MethodDelete, "/api/v1/relationships/"+id, nil)
 	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete relationship = %d: %s", deleted.Code, deleted.Body.String())
+	}
+}
+
+func TestManagedRelationshipIdentitiesRequireAdministrator(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	ctx := context.Background()
+	_, _, err := runtime.memory.ObserveRelationship(ctx, "private-identity-event", personaConversationRef("doubao", "private-group"), "private-member", true, time.Now(), RelationshipIdentity{
+		PersonaID: "doubao", ConversationRef: "private-group", SenderRef: "private-member", SenderDisplayName: "私有成员",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"", runtime.runtimeToken} {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/relationships?personaId=doubao", nil)
+		request.Header.Set(adminTokenHeader, token)
+		response := httptest.NewRecorder()
+		if !runtime.handleNativeManagement(response, request, "/api/v1/relationships") || response.Code != http.StatusUnauthorized {
+			t.Fatalf("non-admin relationship read = %d: %s", response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "private-member") {
+			t.Fatal("member identity exposed without administrator authorization")
+		}
+	}
+	core := NewGateway("")
+	core.runtime = runtime
+	response := httptest.NewRecorder()
+	core.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/relationships?personaId=doubao", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("core relationship read = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestManagedRelationshipSelectionExemptsScopedInstanceMember(t *testing.T) {
+	runtime := newDormantRuntime(t)
+	defer runtime.Close()
+	admin := NewGateway(runtime.adminToken)
+	admin.runtime = runtime
+	ctx := context.Background()
+	const sender = "review-member:|测试"
+	for _, instanceID := range []string{"qa-one", "qa-two"} {
+		scope := runtimeScope{AgentInstanceID: instanceID, MemoryNamespace: instanceID, Transport: "qq_official", TransportInstance: "qa-connector", ConversationRef: "qa-group", ThreadKey: "qa-thread", SenderRef: sender}
+		_, _, err := runtime.memory.ObserveRelationship(ctx, "qa-event-"+instanceID,
+			personaConversationRef("doubao", scope.memoryConversationRef()), scope.memorySenderRef(), true, time.Now(), RelationshipIdentity{
+				PersonaID: "doubao", ConversationRef: scope.memoryConversationRef(), SenderRef: scope.memorySenderRef(), SenderDisplayName: "测试成员",
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed := managedMemoryRequest(t, admin, http.MethodGet, "/api/v1/relationships?personaId=doubao", nil)
+	var body struct {
+		Data struct {
+			Items []ManagedRelationship `json:"items"`
+		} `json:"data"`
+	}
+	decodeRecorder(t, listed, &body)
+	if listed.Code != http.StatusOK || len(body.Data.Items) != 2 {
+		t.Fatalf("scoped members = %d: %s", listed.Code, listed.Body.String())
+	}
+	for _, item := range body.Data.Items {
+		if item.SenderRef != sender {
+			t.Fatalf("selection exposes memory scope instead of platform member: %q", item.SenderRef)
+		}
+		updated, found, err := runtime.memory.UpdateRelationship(ctx, item.ID, 50, true)
+		if err != nil || !found || updated.SenderRef != sender {
+			t.Fatalf("updated scoped member = %+v found=%v err=%v", updated, found, err)
+		}
+	}
+	if _, err := runtime.mediaQuota.updatePolicy(ctx, 0, 0, false, []mediaQuotaWhitelistEntry{{Label: "测试成员", SenderRef: body.Data.Items[0].SenderRef}}); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	_, err := runtime.executeQuotaMedia(ctx, runRecord{AgentInstanceID: "qa-one", SenderRef: sender}, mediaKindImage, func() (toolResult, error) {
+		called = true
+		return toolResult{Content: "test-only"}, nil
+	})
+	if err != nil || !called {
+		t.Fatalf("selected scoped member was not exempted: called=%v err=%v", called, err)
+	}
+	if body.Data.Items[0].ConversationRef == body.Data.Items[1].ConversationRef {
+		t.Fatal("management selection must preserve separate instance relationship scopes")
 	}
 }
 

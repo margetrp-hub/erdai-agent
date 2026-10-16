@@ -3,6 +3,7 @@
 .points-heading h1 { display: flex; align-items: center; gap: 10px; font-size: 23px; margin: 0 0 8px; }
 .points-heading h1 svg { color: var(--cyan); }
 .points-muted { color: var(--muted); font-size: 12px; }
+.points-tab-help { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .points-filters { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
 .points-filters label, .points-action-form > label:not(.points-confirm) { display: grid; gap: 7px; min-width: 0; font-size: 12px; color: var(--muted); }
 .points-search { flex: 1; max-width: 430px; }
@@ -18,7 +19,7 @@
 .points-number { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .points-table .points-credit { color: var(--green); }
 .points-table .points-debit { color: var(--rose); }
-.points-actions { display: flex; gap: 7px; }
+.points-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .points-actions .ui-button { flex-shrink: 0; }
 .points-account-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
 .points-account-summary > div { display: grid; gap: 5px; }

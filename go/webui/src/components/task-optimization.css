@@ -39,7 +39,14 @@
 .visual-history .task-detail-fields { margin-top: 10px; }
 .visual-history time { color: var(--muted); }
 .optimization-controls { padding: 4px 0 16px; }
+.optimization-controls h2 { margin-bottom: 8px; font-size: 17px; letter-spacing: 0; }
+.optimization-description, .optimization-notice { margin: 0; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.optimization-notice { margin-top: 12px; color: var(--green); }
 .optimization-control { display: flex; gap: 12px; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+.optimization-copy { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.optimization-copy strong { font-size: 13px; font-weight: 500; }
+.optimization-copy small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.optimization-state { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .optimization-control input { width: 18px; height: 18px; flex: 0 0 18px; accent-color: var(--cyan); }
 .quality-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 16px 0; border-block: 1px solid var(--line-soft); margin-bottom: 18px; }
 .quality-summary div { min-width: 0; display: grid; gap: 6px; }

@@ -145,6 +145,7 @@ type ManagedRelationship struct {
 	ID                string            `json:"id"`
 	PersonaID         string            `json:"personaId"`
 	ConversationRef   string            `json:"conversationRef"`
+	SenderRef         string            `json:"senderRef,omitempty"`
 	SenderDisplayName string            `json:"senderDisplayName"`
 	State             RelationshipState `json:"state"`
 }
@@ -1664,6 +1665,7 @@ func (s *MemoryGroupStore) ListRelationships(ctx context.Context, personaID stri
 				return nil, 0, decryptErr
 			}
 			input.senderRef = string(value)
+			item.SenderRef = relationshipPlatformSenderRef(item.ConversationRef, input.senderRef)
 		}
 		items = append(items, item)
 		pulseInputs = append(pulseInputs, input)
@@ -1801,6 +1803,7 @@ func (s *MemoryGroupStore) relationshipByID(ctx context.Context, id string) (Man
 		if decryptErr != nil {
 			return ManagedRelationship{}, false, decryptErr
 		}
+		item.SenderRef = relationshipPlatformSenderRef(item.ConversationRef, string(value))
 		item.State.Pulse = s.relationshipPulse(ctx, item.PersonaID, string(value), conversationDigest, senderDigest, item.State, s.runtime.memoryPolicy(ctx), item.ConversationRef)
 	}
 	return item, true, nil

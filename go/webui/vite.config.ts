@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+// Preserve the browser host for the server's same-origin write checks in local development.
+const apiProxy = { target: 'http://127.0.0.1:6282', xfwd: true };
+
 export default defineConfig({
   plugins: [react()],
   base: '/',
@@ -13,10 +16,10 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:6282',
-      '/auth': 'http://127.0.0.1:6282',
-      '/healthz': 'http://127.0.0.1:6282',
-      '/icons': 'http://127.0.0.1:6282',
+      '/api': apiProxy,
+      '/auth': apiProxy,
+      '/healthz': apiProxy,
+      '/icons': apiProxy,
     },
   },
 });

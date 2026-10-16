@@ -144,3 +144,28 @@ func joinScopeParts(parts ...string) string {
 	}
 	return value.String()
 }
+
+// Management selections need the platform identity used by quotas. Relationship
+// storage keeps the scoped identity so its memory and pulse isolation is unchanged.
+func relationshipPlatformSenderRef(conversationRef, senderRef string) string {
+	remaining := senderRef
+	parts := make([]string, 0, 12)
+	for len(parts) < 12 {
+		lengthText, value, ok := strings.Cut(remaining, ":")
+		if !ok || lengthText == "" {
+			return senderRef
+		}
+		length, err := strconv.Atoi(lengthText)
+		if err != nil || length < 0 || length >= len(value) || value[length] != '|' {
+			return senderRef
+		}
+		parts = append(parts, value[:length])
+		remaining = value[length+1:]
+	}
+	if remaining != "" || parts[0] != "memory" || parts[2] != "transport" ||
+		parts[4] != "connector" || parts[6] != "conversation" || parts[8] != "thread" || parts[10] != "sender" ||
+		joinScopeParts(parts[:10]...) != conversationRef {
+		return senderRef
+	}
+	return parts[11]
+}

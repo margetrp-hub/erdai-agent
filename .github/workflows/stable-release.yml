@@ -20,6 +20,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Check WebUI settings contracts
+        run: |
+          docker run --rm --network none --read-only \
+            --mount "type=bind,source=$PWD,target=/src,readonly" \
+            --workdir /src/go/webui node:24-alpine \
+            node --test tests/settings-contracts.test.mjs
+
       - name: Resolve release metadata
         id: metadata
         shell: bash

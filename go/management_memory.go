@@ -113,6 +113,9 @@ func (a *AgentRuntime) handleManagementMemories(w http.ResponseWriter, r *http.R
 }
 
 func (a *AgentRuntime) handleManagementRelationships(w http.ResponseWriter, r *http.Request, path string) error {
+	if r.Method == http.MethodGet && !a.authorizedAdmin(r) {
+		return &coreAPIError{status: http.StatusUnauthorized, code: "unauthorized", message: "administrator session required"}
+	}
 	if a.memory == nil {
 		return &coreAPIError{status: http.StatusServiceUnavailable, code: "memory_unavailable", message: "memory is unavailable"}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,6 +97,41 @@ func TestAgentInstanceRouteRejectsUnknownConnector(t *testing.T) {
 	route := agentInstanceRequest(t, store, http.MethodPost, "/api/v1/agent-instance-routes", `{"id":"route-test","instanceId":"instance-test","connectorId":"missing"}`)
 	if route.Code != http.StatusBadRequest || !strings.Contains(route.Body.String(), "connector") {
 		t.Fatalf("unknown connector route = %d: %s", route.Code, route.Body.String())
+	}
+}
+
+func TestAgentInstanceWithoutOverridesRemainsReadable(t *testing.T) {
+	store := newAgentInstanceStore(t)
+	created := agentInstanceRequest(t, store, http.MethodPost, "/api/v1/agent-instances", `{"id":"simple-instance","displayName":"Simple instance","personaId":"persona-test"}`)
+	if created.Code != http.StatusCreated || !json.Valid(created.Body.Bytes()) {
+		t.Fatalf("create instance must return JSON: %d %s", created.Code, created.Body.String())
+	}
+	var stored string
+	if err := store.db.QueryRow("SELECT overrides_json FROM agent_instances WHERE id = ?", "simple-instance").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "{}" {
+		t.Fatalf("omitted overrides stored as %q, want {}", stored)
+	}
+	// Older versions stored an empty string when no overrides were supplied.
+	if _, err := store.db.Exec("UPDATE agent_instances SET overrides_json = '' WHERE id = ?", "simple-instance"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/agent-instances", "/api/v1/agent-instances/simple-instance"} {
+		response := agentInstanceRequest(t, store, http.MethodGet, path, "")
+		if response.Code != http.StatusOK || !json.Valid(response.Body.Bytes()) || !strings.Contains(response.Body.String(), `"overrides":{}`) {
+			t.Fatalf("legacy empty overrides broke %s: %d %s", path, response.Code, response.Body.String())
+		}
+	}
+	updated := agentInstanceRequest(t, store, http.MethodPut, "/api/v1/agent-instances/simple-instance", `{"displayName":"Renamed instance"}`)
+	if updated.Code != http.StatusOK || !json.Valid(updated.Body.Bytes()) {
+		t.Fatalf("edit instance must return JSON: %d %s", updated.Code, updated.Body.String())
+	}
+	if err := store.db.QueryRow("SELECT overrides_json FROM agent_instances WHERE id = ?", "simple-instance").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "{}" {
+		t.Fatalf("legacy empty overrides were not normalized on save: %q", stored)
 	}
 }
 

@@ -1,10 +1,10 @@
 import { Check, Image as ImageIcon, Pencil, Plus, ShieldCheck, Sparkles, Trash2, UploadCloud, Video, X } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import type { AppearanceLibrary, PersonaVisualReference } from '../lib/api';
 import { Button, Panel, PanelHeading, StatusDot } from './ui';
 
 const categoryLabels: Record<string, string> = {
-  identity: '身份锚点',
+  identity: '身份参考',
   style: '参考风格',
   expression: '表情',
   makeup: '妆容',
@@ -60,16 +60,20 @@ export function VisualReferenceLibrary({
   onDelete: (reference: PersonaVisualReference) => void;
   onToggle: (reference: PersonaVisualReference) => void;
   onSetPrimary: (reference: PersonaVisualReference) => void;
-  onUpload: (files: FileList) => Promise<void>;
+  onUpload: (files: FileList, category: string) => Promise<void>;
   uploading: boolean;
 }) {
   const [filter, setFilter] = useState('all');
+  const [uploadCategory, setUploadCategory] = useState('identity');
+  const uploadHelpId = useId();
+  const sharedHelpId = useId();
   const selectedLibrary = libraries.find((library) => library.id === libraryId);
+  const sharedCount = selectedLibrary?.personaCount || 0;
   const filtered = useMemo(
     () => references.filter((reference) => filter === 'all' || referenceCategory(reference) === filter),
     [filter, references],
   );
-  const identityCount = references.filter((reference) => reference.isPrimary).length;
+  const identityCount = references.filter((reference) => reference.isPrimary && reference.enabled !== false && reference.mediaType !== 'video').length;
   const styleCount = references.filter((reference) => referenceCategory(reference) === 'style').length;
 
   return (
@@ -77,35 +81,43 @@ export function VisualReferenceLibrary({
       <PanelHeading
         eyebrow="VISUAL REFERENCE LIBRARY"
         title={`${personaName || '当前角色'}的外观库`}
-        description="角色卡只选择外观库；同一个库可以被多个角色共用，视频只参与风格提取，不覆盖主脸。"
+        description="在这里管理外形、穿搭和参考素材。切换外观库不会改变角色性格。"
         action={(
           <div className="visual-library-actions">
             <label className="module-select visual-library-select">
               <span>角色使用</span>
-              <select aria-label="选择角色使用的外观库" value={libraryId} onChange={(event) => onLibraryChange(event.target.value)} disabled={!personaId}>
+              <select aria-label="选择角色使用的外观库" value={libraryId} onChange={(event) => onLibraryChange(event.target.value)} disabled={!personaId || uploading}>
                 {libraries.map((library) => <option value={library.id} key={library.id}>{library.name || library.id}{library.personaCount && library.personaCount > 1 ? ` · ${library.personaCount} 个角色` : ''}</option>)}
               </select>
             </label>
             <label className="module-select visual-library-select">
               <span>服装长度</span>
-              <select aria-label="外观库服装长度" value={selectedLibrary?.outfitLength || 'auto'} disabled={!selectedLibrary || savingOutfitLength} onChange={(event) => void onOutfitLengthChange(event.target.value as 'auto' | 'short' | 'long')}>
+              <select aria-label="外观库服装长度" aria-describedby={sharedCount > 1 ? sharedHelpId : undefined} value={selectedLibrary?.outfitLength || 'auto'} disabled={!selectedLibrary || savingOutfitLength || uploading} onChange={(event) => void onOutfitLengthChange(event.target.value as 'auto' | 'short' | 'long')}>
                 <option value="auto">随场景</option>
                 <option value="short">短款 / 膝上</option>
                 <option value="long">长款</option>
               </select>
             </label>
-            {selectedLibrary ? <Button variant="secondary" icon={<Pencil size={14} />} onClick={() => onEditLibrary(selectedLibrary)}>编辑外观库</Button> : null}
+            {selectedLibrary ? <Button variant="secondary" icon={<Pencil size={14} />} aria-describedby={sharedCount > 1 ? sharedHelpId : undefined} disabled={uploading} onClick={() => onEditLibrary(selectedLibrary)}>编辑外观库</Button> : null}
             <Button variant="secondary" icon={<Plus size={14} />} onClick={onCreateLibrary}>新建外观库</Button>
+            <label className="module-select visual-library-select">
+              <span>上传用途</span>
+              <select aria-label="参考素材上传用途" aria-describedby={uploadHelpId} value={uploadCategory} disabled={uploading || !personaId} onChange={(event) => setUploadCategory(event.target.value)}>
+                {Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
             <label className={`visual-upload-button ${uploading ? 'is-uploading' : ''}`}>
               <UploadCloud size={15} />
-              <span>{uploading ? '导入中' : '导入参考素材'}</span>
+              <span>{uploading ? '正在上传' : '选择图片或视频'}</span>
               <input
                 type="file"
+                aria-label="选择要上传的参考图片或视频"
+                aria-describedby={uploadHelpId}
                 accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
                 multiple
                 disabled={uploading || !personaId}
                 onChange={(event) => {
-                  if (event.target.files?.length) void onUpload(event.target.files);
+                  if (event.target.files?.length) void onUpload(event.target.files, uploadCategory);
                   event.target.value = '';
                 }}
               />
@@ -114,9 +126,17 @@ export function VisualReferenceLibrary({
         )}
       />
 
+      <p className="module-notice module-notice-inline" id={uploadHelpId}>
+        图片按所选用途保存，穿搭和场景图不会自动设为主身份参考。视频仅用作风格参考，不会替换主脸。图片支持 PNG、JPEG、WebP，每张不超过 12 MiB；视频支持 MP4、WebM，每段不超过 64 MiB。
+      </p>
+      {sharedCount > 1 ? <p className="module-notice module-notice-inline" id={sharedHelpId}>
+        <ShieldCheck size={15} />
+        这个外观库由 {sharedCount} 个角色共用。编辑外观、改变服装长度或增删素材，会同时影响使用它的角色。
+      </p> : null}
+
       <div className="visual-reference-summary">
         <div><ShieldCheck size={16} /><span>当前库</span><strong>{selectedLibrary?.name || '未选择'}</strong></div>
-        <div><ShieldCheck size={16} /><span>主脸基准</span><strong>{identityCount ? '已设置' : '待设置'}</strong></div>
+        <div><ShieldCheck size={16} /><span>主身份参考</span><strong>{identityCount ? '已设置' : '待设置'}</strong></div>
         <div><Sparkles size={16} /><span>风格参考</span><strong>{styleCount}</strong></div>
         <div><Video size={16} /><span>视频素材</span><strong>{references.filter((reference) => reference.mediaType === 'video').length}</strong></div>
       </div>
@@ -125,9 +145,11 @@ export function VisualReferenceLibrary({
         <div className="visual-reference-filters" role="group" aria-label="资源类型筛选">
           {[
             ['all', '全部'],
-            ['identity', '身份锚点'],
+            ['identity', '身份参考'],
             ['style', '参考风格'],
             ['outfit', '穿搭'],
+            ['scene', '场景'],
+            ['expression', '表情'],
             ['makeup', '妆容'],
             ['motion', '动作'],
           ].map(([value, label]) => (
@@ -163,7 +185,7 @@ export function VisualReferenceLibrary({
                   {reference.mediaType === 'video' ? <Video size={12} /> : <ImageIcon size={12} />}
                   {categoryLabels[category] || category}
                 </span>
-                {reference.isPrimary ? <span className="visual-reference-primary"><ShieldCheck size={12} />主脸</span> : null}
+                {reference.isPrimary ? <span className="visual-reference-primary"><ShieldCheck size={12} />主身份参考{reference.enabled === false ? ' · 已停用' : ''}</span> : null}
               </div>
               <div className="visual-reference-content">
                 <div className="visual-reference-title">
@@ -177,8 +199,8 @@ export function VisualReferenceLibrary({
                   {isStyle ? <span>不参与身份锁定</span> : null}
                 </div>
                 <div className="visual-reference-actions">
-                  {!reference.isPrimary && reference.mediaType !== 'video' ? (
-                    <Button variant="ghost" icon={<ShieldCheck size={14} />} onClick={() => onSetPrimary(reference)}>设为主脸</Button>
+                  {!reference.isPrimary && reference.mediaType !== 'video' && category === 'identity' ? (
+                    <Button variant="ghost" icon={<ShieldCheck size={14} />} onClick={() => onSetPrimary(reference)}>设为主身份参考</Button>
                   ) : null}
                   <Button variant="ghost" icon={<Pencil size={14} />} onClick={() => onEdit(reference)}>编辑</Button>
                   <Button
@@ -194,7 +216,7 @@ export function VisualReferenceLibrary({
           );
         })}
       </div>
-      {!filtered.length ? <div className="visual-reference-empty"><Sparkles size={22} /><strong>这个筛选下还没有素材</strong><span>先为{personaName || '当前角色'}导入一张主脸图，再补充参考视频和穿搭风格。</span></div> : null}
+      {!filtered.length ? <div className="visual-reference-empty"><Sparkles size={22} /><strong>这里还没有{filter === 'all' ? '参考素材' : `${categoryLabels[filter] || '这类'}素材`}</strong><span>先选择上传用途，再添加图片或视频。身份参考用于保持人物一致，其他素材用于丰富穿搭、场景和表达。</span></div> : null}
     </Panel>
   );
 }

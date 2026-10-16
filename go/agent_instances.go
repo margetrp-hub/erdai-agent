@@ -581,6 +581,9 @@ func scanAgentInstance(row agentInstanceScanner) (agentInstance, error) {
 	var enabled int
 	var overrides string
 	err := row.Scan(&item.ID, &item.DisplayName, &item.PersonaID, &item.PolicyTemplateID, &item.MemoryNamespace, &overrides, &enabled, &item.CreatedAt, &item.UpdatedAt)
+	if strings.TrimSpace(overrides) == "" {
+		overrides = "{}"
+	}
 	item.Overrides, item.Enabled = json.RawMessage(overrides), enabled == 1
 	return item, err
 }

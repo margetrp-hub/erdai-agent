@@ -36,6 +36,7 @@
 - An explicit configuration-layer contract for new operators: `public_config` and `public_policy` define Core-wide limits and defaults; `role_config` and `role_policy` define a character; `instance_config` and `instance_policy` isolate one account/channel. Read the live contract from `GET /api/v1/config/layers` or start with [`examples/README.md`](./examples/README.md).
 - A privacy-minimized channel contract with idempotent event intake, durable delivery leasing, acknowledgement, retry and cancellation. Transient text, display names and signed attachment URLs are validated but never persisted.
 - A Core-owned Agent loop for model calls, Grok search, image/video jobs, OPS, memory and allow-listed Streamable HTTP MCP tools. Progress and terminal messages are written to Outbox before the Go connector manager delivers them.
+- Private Bots provide owner/workspace isolation for persona, memory and platform sessions. Each Bot exposes the same durable run/task records used by Core, so failed work can be inspected and retried without introducing a second planner.
 - A scheduled Grok learning worker turns configured topics into source-linked, reviewable knowledge candidates. It never promotes candidates or edits Persona/rules without administrator review.
 - Configurable per-user daily image/video quotas with administrator overrides and auditable usage.
 - A configurable Core content boundary classifies explicit sexual requests, real-world harm, severe abuse and ordinary provocation before model execution. Each category can use model/persona handling, refusal, a short non-escalating counter or silent ignore; ignored messages do not enter conversation context.
@@ -81,6 +82,10 @@ POST /api/v1/provider-connections/:id/test
 POST /api/v1/provider-connections/:id/pricing-sync
 GET  /api/v1/model-health/:id/history
 GET  /api/v1/runs/:id
+GET  /api/v1/private-bots
+GET  /api/v1/private-bots/:id/tasks
+POST /api/v1/private-bots/:id/copy
+POST /api/v1/private-bots/:id/select
 GET  /api/v1/integrations
 GET/PUT /api/v1/integrations/:id
 GET  /api/v1/model-health
@@ -97,6 +102,13 @@ GET/PUT/DELETE /api/v1/appearance-libraries/:id/references/:referenceId
 GET/PUT        /api/v1/personas/:id/appearance-library
 GET/POST       /api/v1/personas/:id/worldbook
 GET/PUT/DELETE /api/v1/personas/:id/worldbook/:entryId
+GET/POST       /api/v1/private-bots
+GET/PUT/PATCH/DELETE /api/v1/private-bots/:id
+POST           /api/v1/private-bots/:id/copy
+POST           /api/v1/private-bots/:id/select
+GET/POST/PUT/DELETE /api/v1/private-bots/:id/acl
+GET/POST       /api/v1/private-bots/:id/activities
+POST           /api/v1/private-bots/:id/activities/:activityId/transition
 GET/POST       /api/v1/knowledge/documents
 GET/PUT/DELETE /api/v1/knowledge/documents/:id
 POST           /api/v1/knowledge/search-preview

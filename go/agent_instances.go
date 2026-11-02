@@ -1017,7 +1017,29 @@ func (s *coreConfigStore) resolveAgentInstance(transportInstance, transport, con
 	transportInstance, transport, conversation = strings.TrimSpace(transportInstance), strings.ToLower(strings.TrimSpace(transport)), strings.TrimSpace(conversation)
 	var value resolvedAgentInstance
 	var enabled int
-	err := s.db.QueryRow(`SELECT instance.id, instance.persona_id, instance.memory_namespace, instance.enabled
+	// A selected private Bot owns the conversation scope. Resolve it before the
+	// legacy connector route so two Bots can share a platform without leaking
+	// persona or memory state through the global active-persona setting.
+	err := s.db.QueryRow(`SELECT b.agent_instance_id, b.persona_id, b.memory_namespace, ai.enabled
+		FROM private_bot_sessions session
+		JOIN private_bots b ON b.id = session.bot_id AND b.status = 'active'
+		JOIN agent_instances ai ON ai.id = b.agent_instance_id
+		WHERE session.transport IN (?, '*') AND session.transport_instance IN (?, '*')
+		  AND session.conversation_ref IN (?, '*') AND session.active = 1
+		ORDER BY (session.transport = ?) DESC,
+			(session.transport_instance = ?) DESC,
+			(session.conversation_ref = ?) DESC,
+			session.updated_at DESC LIMIT 1`, transport, transportInstance, conversation,
+		transport, transportInstance, conversation).
+		Scan(&value.InstanceID, &value.PersonaID, &value.MemoryNamespace, &enabled)
+	if err == nil {
+		value.Matched, value.Enabled = true, enabled == 1
+		return value, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return value, err
+	}
+	err = s.db.QueryRow(`SELECT instance.id, instance.persona_id, instance.memory_namespace, instance.enabled
 		FROM agent_instance_routes route
 		JOIN agent_instances instance ON instance.id = route.instance_id
 		JOIN agent_instance_connectors connector ON connector.instance_id = instance.id AND connector.connector_id = ? AND connector.enabled = 1

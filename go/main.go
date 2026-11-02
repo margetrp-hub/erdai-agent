@@ -42,7 +42,7 @@ const (
 var webFiles embed.FS
 
 var allowedMethods = map[string]bool{
-	http.MethodGet: true, http.MethodPost: true, http.MethodPut: true, http.MethodDelete: true,
+	http.MethodGet: true, http.MethodPost: true, http.MethodPut: true, http.MethodPatch: true, http.MethodDelete: true,
 }
 
 type Gateway struct {
@@ -261,7 +261,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "route not found"})
 			return
 		}
-		if !allowedMethods[r.Method] {
+		methodAllowed := allowedMethods[r.Method]
+		// PATCH is intentionally scoped to the private-Bot resource. Keeping it
+		// out of the global method allowlist preserves the gateway's 405 behavior
+		// for unknown API routes.
+		if r.Method == http.MethodPatch {
+			methodAllowed = strings.HasPrefix(r.URL.Path, "/api/v1/private-bots/") || strings.HasPrefix(r.URL.Path, "/api/v1/bots/")
+		}
+		if !methodAllowed {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}

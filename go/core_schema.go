@@ -149,6 +149,80 @@ CREATE TABLE IF NOT EXISTS agent_instances (
   updated_at TEXT NOT NULL
 );
 
+-- Private Bot ownership and session state live beside the legacy instance
+-- tables.  The legacy tables remain the runtime compatibility surface; these
+-- tables add an owner/workspace boundary without changing old installations.
+CREATE TABLE IF NOT EXISTS private_bots (
+  id TEXT PRIMARY KEY,
+  owner_ref TEXT NOT NULL,
+  workspace_id TEXT NOT NULL DEFAULT 'default',
+  display_name TEXT NOT NULL,
+  persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE RESTRICT,
+  agent_instance_id TEXT NOT NULL UNIQUE REFERENCES agent_instances(id) ON DELETE CASCADE,
+  memory_namespace TEXT NOT NULL,
+  visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'shared', 'template')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'archived')),
+  source_bot_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(owner_ref, workspace_id, display_name)
+);
+
+CREATE INDEX IF NOT EXISTS private_bots_owner_idx
+  ON private_bots(owner_ref, workspace_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS private_bot_idempotency (
+  owner_ref TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  bot_id TEXT NOT NULL REFERENCES private_bots(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(owner_ref, workspace_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS private_bot_acl (
+  bot_id TEXT NOT NULL REFERENCES private_bots(id) ON DELETE CASCADE,
+  subject_ref TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(bot_id, subject_ref)
+);
+
+CREATE TABLE IF NOT EXISTS private_bot_sessions (
+  id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES private_bots(id) ON DELETE CASCADE,
+  owner_ref TEXT NOT NULL,
+  workspace_id TEXT NOT NULL DEFAULT 'default',
+  transport TEXT NOT NULL,
+  transport_instance TEXT NOT NULL DEFAULT '',
+  conversation_ref TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(owner_ref, workspace_id, transport, transport_instance, conversation_ref)
+);
+
+CREATE INDEX IF NOT EXISTS private_bot_sessions_scope_idx
+  ON private_bot_sessions(transport, transport_instance, conversation_ref, active, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS private_bot_activities (
+  id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES private_bots(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES private_bot_sessions(id) ON DELETE SET NULL,
+  state TEXT NOT NULL CHECK (state IN ('waiting', 'blocked', 'retrying', 'paused', 'failed', 'completed')),
+  kind TEXT NOT NULL DEFAULT 'message',
+  input_summary TEXT NOT NULL DEFAULT '',
+  error_code TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS private_bot_activities_bot_idx
+  ON private_bot_activities(bot_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS agent_instance_connectors (
   instance_id TEXT NOT NULL REFERENCES agent_instances(id) ON DELETE CASCADE,
   connector_id TEXT NOT NULL,

@@ -593,6 +593,25 @@ func (a *AgentRuntime) roleCommandReply(run runRecord, message string) (agentRep
 	if !ok {
 		return agentReply{}, false, nil
 	}
+	// A private Bot owns its persona selection. Keep the legacy global setting
+	// only for legacy traffic; otherwise /切换角色 would change every Bot that
+	// still reads runtime_config.active_persona_id.
+	privateBotID := strings.TrimSpace(run.AgentInstanceID)
+	var bot privateBot
+	privateBotFound := false
+	if privateBotID != "" && privateBotID != legacyAgentInstanceID {
+		err := a.configStore.db.QueryRow(`SELECT id, owner_ref, workspace_id, display_name, persona_id,
+			agent_instance_id, memory_namespace, visibility, status, source_bot_id, created_at, updated_at
+			FROM private_bots WHERE agent_instance_id = ?`, privateBotID).Scan(
+			&bot.ID, &bot.OwnerRef, &bot.WorkspaceID, &bot.DisplayName, &bot.PersonaID,
+			&bot.AgentInstanceID, &bot.MemoryNamespace, &bot.Visibility, &bot.Status,
+			&bot.SourceBotID, &bot.CreatedAt, &bot.UpdatedAt)
+		if err == nil {
+			privateBotFound = true
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return agentReply{}, true, err
+		}
+	}
 	config, err := a.configStore.runtimeConfig()
 	if err != nil {
 		return agentReply{}, true, err
@@ -600,7 +619,9 @@ func (a *AgentRuntime) roleCommandReply(run runRecord, message string) (agentRep
 	switch kind {
 	case "current":
 		id := "未设置"
-		if config.ActivePersonaID != nil {
+		if privateBotFound {
+			id = bot.PersonaID
+		} else if config.ActivePersonaID != nil {
 			id = *config.ActivePersonaID
 		}
 		return agentReply{Text: "当前角色：" + id}, true, nil
@@ -624,7 +645,13 @@ func (a *AgentRuntime) roleCommandReply(run runRecord, message string) (agentRep
 	}
 	if kind == "revert" {
 		var oldID string
-		if err := a.configStore.db.QueryRow("SELECT old_persona_id FROM persona_switch_history WHERE old_persona_id <> '' ORDER BY created_at DESC LIMIT 1").Scan(&oldID); err != nil {
+		historyQuery := "SELECT old_persona_id FROM persona_switch_history WHERE old_persona_id <> '' ORDER BY created_at DESC LIMIT 1"
+		historyArgs := []any{}
+		if privateBotFound {
+			historyQuery = "SELECT old_persona_id FROM persona_switch_history WHERE old_persona_id <> '' AND source = ? ORDER BY created_at DESC LIMIT 1"
+			historyArgs = append(historyArgs, "qq_command:agent_instance:"+privateBotID)
+		}
+		if err := a.configStore.db.QueryRow(historyQuery, historyArgs...).Scan(&oldID); err != nil {
 			return agentReply{Text: "没有可回退的角色切换。"}, true, nil
 		}
 		name = oldID
@@ -634,7 +661,9 @@ func (a *AgentRuntime) roleCommandReply(run runRecord, message string) (agentRep
 		return agentReply{Text: "没找到这个角色。"}, true, nil
 	}
 	oldID := ""
-	if config.ActivePersonaID != nil {
+	if privateBotFound {
+		oldID = bot.PersonaID
+	} else if config.ActivePersonaID != nil {
 		oldID = *config.ActivePersonaID
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -643,11 +672,20 @@ func (a *AgentRuntime) roleCommandReply(run runRecord, message string) (agentRep
 		return agentReply{}, true, err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("UPDATE runtime_config SET active_persona_id = ?, updated_at = ? WHERE id = 1", personaID, now); err != nil {
+	source := "qq_command"
+	if privateBotFound {
+		source = "qq_command:agent_instance:" + privateBotID
+		if _, err = tx.Exec("UPDATE agent_instances SET persona_id = ?, updated_at = ? WHERE id = ?", personaID, now, privateBotID); err != nil {
+			return agentReply{}, true, err
+		}
+		if _, err = tx.Exec("UPDATE private_bots SET persona_id = ?, updated_at = ? WHERE agent_instance_id = ?", personaID, now, privateBotID); err != nil {
+			return agentReply{}, true, err
+		}
+	} else if _, err = tx.Exec("UPDATE runtime_config SET active_persona_id = ?, updated_at = ? WHERE id = 1", personaID, now); err != nil {
 		return agentReply{}, true, err
 	}
 	id, _ := randomID("role_switch")
-	if _, err = tx.Exec("INSERT INTO persona_switch_history(id, old_persona_id, new_persona_id, actor_ref, source, reverted_from_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", id, oldID, personaID, run.SenderRef, "qq_command", "", now); err != nil {
+	if _, err = tx.Exec("INSERT INTO persona_switch_history(id, old_persona_id, new_persona_id, actor_ref, source, reverted_from_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", id, oldID, personaID, run.SenderRef, source, "", now); err != nil {
 		return agentReply{}, true, err
 	}
 	if err = tx.Commit(); err != nil {

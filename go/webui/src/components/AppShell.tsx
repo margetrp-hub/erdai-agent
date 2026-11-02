@@ -30,6 +30,7 @@ import { Button, StatusDot } from './ui';
 
 export type ViewId =
   | 'overview'
+  | 'bots'
   | 'operations'
   | 'points'
   | 'runtime'
@@ -91,6 +92,10 @@ const navGroups: NavGroup[] = [
       { id: 'worldbook', label: '背景设定', icon: LibraryBig, keywords: '世界书' },
       { id: 'samples', label: '说话风格', icon: Sparkles, keywords: '人格 内核 样本' },
     ],
+  },
+  {
+    id: 'private-bots', label: '私人 Bot', accent: 'cyan', icon: Bot,
+    items: [{ id: 'bots', label: '我的 Bot', icon: Bot, keywords: '私人 智能体 切换 复制 暂停 记忆' }],
   },
   {
     id: 'connections', label: '模型与连接', accent: 'cyan', icon: Cable,

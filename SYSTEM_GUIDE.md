@@ -581,6 +581,24 @@ POST   /api/v1/runtime/knowledge-candidates/:id/review
 GET/PUT/DELETE /api/v1/runtime/directives
 ```
 
+### 私人 Bot 与工作区隔离
+
+私人 Bot 是角色卡、运行实例和记忆命名空间的用户可见边界。复制只复制可配置的角色/策略引用；新 Bot 会创建独立运行实例、会话选择和记忆命名空间，不共享平台会话、附件或凭据。`ownerRef` 与 `workspaceId` 用于归属筛选，`private` 只对拥有者可见，`shared` 需要 ACL，`template` 可被其他工作区读取和复制但不能被非拥有者修改。
+
+```text
+GET/POST              /api/v1/private-bots
+GET/PUT/PATCH/DELETE  /api/v1/private-bots/:id
+POST                  /api/v1/private-bots/:id/copy
+POST                  /api/v1/private-bots/:id/select
+GET/POST/PUT/DELETE   /api/v1/private-bots/:id/acl
+GET                   /api/v1/private-bots/:id/sessions
+GET                   /api/v1/private-bots/:id/tasks
+GET/POST              /api/v1/private-bots/:id/activities
+POST                  /api/v1/private-bots/:id/activities/:activityId/transition
+```
+
+创建和复制支持 `idempotencyKey`；重复提交返回原 Bot，不重复建立运行实例。活动状态使用 `waiting → blocked/retrying/paused/failed/completed`，失败活动只能通过 `retrying` 恢复，终态不可逆；活动接口是人工处理覆盖层，用于异常接管与审计，运行时不会把它当作自动进度。真实任务状态以 `/:id/tasks` 从该 Bot 的 `agent_runs` 与 `agent_task_steps` 聚合的结果为准，返回步骤数、失败原因、详情地址和安全重试地址；它不另建一套 planner，也不会把未保存输入标成可重试。旧客户端可继续使用 `/api/v1/bots` 兼容别名和只读 `agent-instances` 回退。
+
 ### 平台、工具与 MCP
 
 ```text

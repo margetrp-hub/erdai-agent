@@ -186,6 +186,54 @@ export type AgentInstance = {
   updatedAt?: string;
 };
 
+/**
+ * A private bot is the user-facing boundary around an agent instance.  Keep
+ * the legacy instance fields optional so an older Core can still render the
+ * management UI while it is being upgraded.
+ */
+export type PrivateBot = {
+  id: string;
+  ownerRef?: string;
+  workspaceId?: string;
+  displayName?: string;
+  personaId?: string;
+  agentInstanceId?: string;
+  memoryNamespace?: string;
+  visibility?: 'private' | 'shared' | 'template' | string;
+  status?: 'active' | 'paused' | 'archived' | string;
+  sourceBotId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  enabled?: boolean;
+};
+
+export type PrivateBotWriteResult = { bot: PrivateBot; created?: boolean };
+
+export type PrivateBotSession = {
+  id: string;
+  botId: string;
+  ownerRef?: string;
+  workspaceId?: string;
+  transport?: string;
+  transportInstance?: string;
+  conversationRef?: string;
+  active?: boolean;
+};
+
+export type PrivateBotTask = {
+  runId: string;
+  state: string;
+  taskId?: string;
+  taskRevision?: number;
+  errorCode?: string;
+  stepCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+  retryable: boolean;
+  detailUrl: string;
+  retryUrl?: string;
+};
+
 export type PersonaVisualReference = {
   id: string;
   personaId?: string;
@@ -361,6 +409,68 @@ export async function loadDashboard(): Promise<DashboardData> {
     apiRequest<{ items?: AgentInstance[] }>('/api/v1/agent-instances'),
   ]);
   return { overview, observability, config, installation, personas, agentInstances };
+}
+
+/** Load the new private-bot collection, with a read-only legacy fallback. */
+export async function loadPrivateBots(): Promise<{ items: PrivateBot[]; total: number; legacy: boolean }> {
+  try {
+    const result = await apiCollection<PrivateBot>('/api/v1/private-bots');
+    return { ...result, legacy: false };
+  } catch (cause) {
+    if (!(cause instanceof ApiError) || cause.status !== 404) throw cause;
+    const result = await apiCollection<AgentInstance>('/api/v1/agent-instances');
+    return {
+      legacy: true,
+      total: result.total,
+      items: result.items.map((instance) => ({
+        id: instance.id,
+        displayName: instance.displayName,
+        personaId: instance.personaId,
+        agentInstanceId: instance.id,
+        memoryNamespace: instance.memoryNamespace,
+        status: instance.enabled === false ? 'paused' : 'active',
+        visibility: 'private',
+        updatedAt: instance.updatedAt,
+        enabled: instance.enabled,
+      })),
+    };
+  }
+}
+
+export function createPrivateBot(input: { id?: string; ownerRef?: string; workspaceId?: string; displayName: string; personaId?: string; sourceBotId?: string; idempotencyKey?: string }) {
+  return apiRequest<PrivateBotWriteResult>('/api/v1/private-bots', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function copyPrivateBot(id: string, input: { ownerRef?: string; workspaceId?: string; displayName?: string; idempotencyKey?: string } = {}) {
+  return apiRequest<PrivateBotWriteResult>(`/api/v1/private-bots/${encodeURIComponent(id)}/copy`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updatePrivateBotState(id: string, status: 'active' | 'paused' | 'archived') {
+  return apiRequest<PrivateBot>(`/api/v1/private-bots/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function selectPrivateBot(id: string, context: { ownerRef?: string; workspaceId?: string; transport?: string; transportInstance?: string; conversationRef?: string } = {}) {
+  return apiRequest<PrivateBotSession>(`/api/v1/private-bots/${encodeURIComponent(id)}/select`, {
+    method: 'POST',
+    body: JSON.stringify(context),
+  });
+}
+
+export function loadPrivateBotTasks(id: string, ownerRef = 'admin') {
+  return apiCollection<PrivateBotTask>(`/api/v1/private-bots/${encodeURIComponent(id)}/tasks?ownerRef=${encodeURIComponent(ownerRef)}`);
+}
+
+export function retryTask(id: string) {
+  return apiRequest<{ runId: string; state: string }>(`/api/v1/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' });
 }
 
 async function loadEntries(entries: Array<[string, string]>): Promise<ModuleData> {

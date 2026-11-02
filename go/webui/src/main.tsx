@@ -8,6 +8,7 @@ import { ModulePage } from './pages/ModulePage';
 import { OverviewPage } from './pages/OverviewPage';
 import { PointsPage } from './pages/PointsPage';
 import { CapabilitiesPage } from './pages/CapabilitiesPage';
+import { BotsPage } from './pages/BotsPage';
 import { ApiError, getSession, loadDashboard, login, logout, type DashboardData } from './lib/api';
 import { initializeUiTheme } from './theme';
 import './styles.css';
@@ -144,6 +145,8 @@ function App() {
     >
       {activeView === 'overview' ? (
         <OverviewPage data={data} activeInstanceId={activeInstanceId} onNavigate={navigate} />
+      ) : activeView === 'bots' ? (
+        <BotsPage activeInstanceId={activeInstanceId} onInstanceChange={setActiveInstanceId} onRefresh={refreshAll} />
       ) : activeView === 'points' ? (
         <PointsPage refreshKey={refreshNonce} />
       ) : activeView === 'capabilities' ? (

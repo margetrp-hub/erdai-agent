@@ -395,10 +395,12 @@ func (a *AgentRuntime) handleCoreConfig(w http.ResponseWriter, r *http.Request, 
 		path == "/api/v1/agent-instances" || strings.HasPrefix(path, "/api/v1/agent-instances/") ||
 		path == "/api/v1/agent-instance-routes" || strings.HasPrefix(path, "/api/v1/agent-instance-routes/") ||
 		path == "/api/v1/agent-instance-capabilities" || strings.HasPrefix(path, "/api/v1/agent-instance-capabilities/")
-	if !isPrepare && !isConfig && !isConfigLayers && !isPersona && !isPersonaRuntime && !isPersonaBinding && !isAgentInstance && !isAppearanceLibrary {
+	isPrivateBot := path == "/api/v1/private-bots" || strings.HasPrefix(path, "/api/v1/private-bots/") ||
+		path == "/api/v1/bots" || strings.HasPrefix(path, "/api/v1/bots/")
+	if !isPrepare && !isConfig && !isConfigLayers && !isPersona && !isPersonaRuntime && !isPersonaBinding && !isAgentInstance && !isAppearanceLibrary && !isPrivateBot {
 		return false
 	}
-	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 		adminOK := tokenMatches(r.Header.Get(adminTokenHeader), a.adminToken)
 		runtimeOK := isPrepare && a.authorized(r)
 		if !adminOK && !runtimeOK {
@@ -453,6 +455,8 @@ func (a *AgentRuntime) handleCoreConfig(w http.ResponseWriter, r *http.Request, 
 		} else {
 			err = a.configStore.handleAgentInstanceRequest(w, r, path)
 		}
+	case isPrivateBot:
+		err = a.configStore.handlePrivateBotRequestWithRuntime(a, w, r, path)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
 			"error": map[string]string{"code": "method_not_allowed", "message": "method not allowed"},

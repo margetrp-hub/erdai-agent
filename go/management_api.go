@@ -56,6 +56,7 @@ func isNativeManagementPath(path string) bool {
 		"/api/v1/config/layers",
 		"/api/v1/integrations", "/api/v1/model-endpoints", "/api/v1/model-health",
 		"/api/v1/agent-policy-templates", "/api/v1/agent-instances", "/api/v1/agent-instance-routes", "/api/v1/agent-instance-capabilities",
+		"/api/v1/private-bots", "/api/v1/bots",
 		"/api/v1/provider-connections", "/api/v1/runs", "/api/v1/usage/stats",
 		"/api/v1/provider-drivers",
 		"/api/v1/routing/control", "/api/v1/routing/lanes", "/api/v1/routing/simulate",
@@ -78,6 +79,7 @@ func isNativeManagementPath(path string) bool {
 		"/api/v1/integrations/", "/api/v1/model-endpoints/", "/api/v1/model-health/",
 		"/api/v1/credentials/",
 		"/api/v1/agent-policy-templates/", "/api/v1/agent-instances/", "/api/v1/agent-instance-routes/", "/api/v1/agent-instance-capabilities/",
+		"/api/v1/private-bots/", "/api/v1/bots/",
 		"/api/v1/provider-connections/", "/api/v1/runs/",
 		"/api/v1/tools/", "/api/v1/skills/", "/api/v1/platforms/",
 		"/api/v1/plugins/", "/api/v1/trusted-adapters/",
@@ -141,6 +143,9 @@ func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.Respo
 		path == "/api/v1/agent-instances" || strings.HasPrefix(path, "/api/v1/agent-instances/") ||
 		path == "/api/v1/agent-instance-routes" || strings.HasPrefix(path, "/api/v1/agent-instance-routes/"):
 		return s.handleAgentInstanceRequest(w, r, path)
+	case path == "/api/v1/private-bots" || strings.HasPrefix(path, "/api/v1/private-bots/") ||
+		path == "/api/v1/bots" || strings.HasPrefix(path, "/api/v1/bots/"):
+		return s.handlePrivateBotRequestWithRuntime(a, w, r, path)
 	case path == "/api/v1/agent-instance-capabilities" || strings.HasPrefix(path, "/api/v1/agent-instance-capabilities/"):
 		return s.handleAgentInstanceCapabilities(w, r, path)
 	case path == "/api/v1/provider-drivers":

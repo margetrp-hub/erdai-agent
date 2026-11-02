@@ -1539,6 +1539,23 @@ button:disabled {
   }
 }
 
+/* Private Bot workspace */
+.bots-stage { gap: 18px; }
+.bots-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.bots-intro h1 { margin: 4px 0 8px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.04em; }
+.bots-intro p { max-width: 680px; margin: 0; color: var(--text-muted); line-height: 1.65; }
+.bot-record { align-items: center; }
+.bot-record .module-record-main { min-width: 0; }
+.bot-record .module-record-main p { color: var(--text-muted); margin: 5px 0 8px; }
+.bot-form { display: grid; gap: 16px; min-width: min(420px, 78vw); }
+.bot-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.module-notice-error { color: var(--danger, #b42318); border-color: color-mix(in srgb, var(--danger, #b42318) 28%, transparent); }
+@media (max-width: 720px) {
+  .bots-intro { align-items: flex-start; flex-direction: column; }
+  .bot-record { align-items: flex-start; flex-wrap: wrap; }
+  .bot-record .module-row-actions { width: 100%; margin-left: 42px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

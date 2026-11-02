@@ -5,26 +5,31 @@ import { Button, Panel, PanelHeading, StatusDot } from '../components/ui';
 import { apiCollection, apiRequest, type JsonMap } from '../lib/api';
 import './capabilities.css';
 
-type Source = 'plugin' | 'skill' | 'tool';
-type Capability = { id: string; name: string; description: string; source: Source; sourceLabel: string; enabled: boolean; state: string; category: string; commands: string[]; dependencies: string[]; toggleable: boolean; configView: ViewId; integrationId: string; canCheck: boolean };
-const sourceNames: Record<Source, string> = { plugin: '能力包', skill: '技能', tool: '工具' };
-const endpoints: Record<Source, string> = { plugin: '/api/v1/plugins', skill: '/api/v1/skills', tool: '/api/v1/tools' };
+type Source = 'plugin' | 'skill' | 'tool' | 'manifest';
+type Capability = { id: string; resourceId?: string; version?: string; name: string; description: string; source: Source; sourceLabel: string; enabled: boolean; state: string; category: string; commands: string[]; dependencies: string[]; toggleable: boolean; configView: ViewId; integrationId: string; canCheck: boolean };
+const sourceNames: Record<Source, string> = { plugin: '能力包', skill: '技能', tool: '工具', manifest: '已登记能力' };
+const endpoints: Record<Source, string> = { plugin: '/api/v1/plugins', skill: '/api/v1/skills', tool: '/api/v1/tools', manifest: '/api/v1/capabilities/manifests' };
 const categoryNames: Record<string, string> = { conversation: '聊天互动', memory: '记忆关系', knowledge: '知识学习', media: '图片视频', research: '联网研究', governance: '权限管理', monitoring: '状态监测', growth: '积分活动', extension: '扩展能力' };
-const stateNames: Record<string, string> = { healthy: '检查通过', ready: '配置已就绪', needs_configuration: '还需配置', degraded: '最近有异常', unverified: '等待实际验证', unavailable: '检查失败', disabled: '已关闭', registered: '已登记', enabled: '已开启，尚未检查' };
+const stateNames: Record<string, string> = { healthy: '检查通过', ready: '配置已就绪', needs_configuration: '还需配置', degraded: '最近有异常', unverified: '等待实际验证', unavailable: '检查失败', disabled: '已关闭', registered: '已登记', enabled: '已开启，尚未检查', draft: '草稿', staged: '已登记，待激活', active: '已激活', paused: '已暂停', retired: '已退役' };
 const configViews = new Set<ViewId>(['system', 'roles', 'memories', 'worldbook', 'samples', 'knowledge', 'models', 'routing', 'integrations', 'plugins', 'tools', 'skills', 'security', 'runtime', 'devices', 'operations', 'points']);
 const asObject = (value: unknown): JsonMap => value && typeof value === 'object' && !Array.isArray(value) ? value as JsonMap : {};
 const strings = (value: unknown) => Array.isArray(value) ? value.map(String) : [];
-const needsAttention = (state: string) => ['needs_configuration', 'degraded', 'unavailable'].includes(state);
+const needsAttention = (state: string) => ['needs_configuration', 'degraded', 'unavailable', 'draft', 'staged'].includes(state);
 
 function normalize(item: JsonMap, source: Source): Capability {
   const manifest = asObject(item.manifest);
-  const view = String(item.configView || manifest.configView || (source === 'plugin' ? 'plugins' : source === 'skill' ? 'skills' : 'tools')) as ViewId;
+  const isManifest = source === 'manifest';
+  const resourceId = isManifest ? String(item.id || '') : undefined;
+  const version = isManifest ? String(item.version || '') : undefined;
+  const id = isManifest ? `${resourceId}@${version}` : String(item.id);
+  const view = String(item.configView || manifest.configView || (source === 'plugin' || source === 'manifest' ? 'plugins' : source === 'skill' ? 'skills' : 'tools')) as ViewId;
+  const enabled = isManifest ? item.state === 'active' : item.enabled === true;
   return {
-    id: String(item.id), name: String(item.name || item.id), description: String(item.description || (source === 'skill' ? '按当前条件加载的表达或工作技能。' : '暂无用途说明。')),
-    source, sourceLabel: source === 'plugin' ? item.source === 'external' ? '外部能力包' : '内置能力' : sourceNames[source], enabled: item.enabled === true,
-    state: String(item.state || (item.enabled ? 'enabled' : 'disabled')), category: String(manifest.category || (source === 'skill' ? 'conversation' : 'extension')),
+    id, resourceId, version, name: String(item.name || manifest.name || resourceId || item.id), description: String(item.description || manifest.description || (source === 'skill' ? '按当前条件加载的表达或工作技能。' : isManifest ? item.runtimeReason || '已登记能力包，等待受信任运行适配器。' : '暂无用途说明。')),
+    source, sourceLabel: isManifest ? `已登记能力 · ${version || '未标版本'}` : source === 'plugin' ? item.source === 'external' ? '外部能力包' : '内置能力' : sourceNames[source], enabled,
+    state: String(item.state || (enabled ? 'enabled' : 'disabled')), category: String(manifest.category || (source === 'skill' ? 'conversation' : 'extension')),
     commands: strings(manifest.commands || item.triggers), dependencies: strings(manifest.dependencies || item.requiredTools),
-    toggleable: source === 'plugin' ? item.toggleable === true : true, configView: configViews.has(view) ? view : 'plugins',
+    toggleable: isManifest ? item.state !== 'retired' : source === 'plugin' ? item.toggleable === true : true, configView: configViews.has(view) ? view : 'plugins',
     integrationId: String(String(manifest.configPath || '').match(/^\/api\/v1\/integrations\/([a-z0-9_]+)$/)?.[1] || item.integrationId || asObject(item.adapter).integrationId || ''), canCheck: source === 'plugin',
   };
 }
@@ -61,9 +66,9 @@ export function CapabilitiesPage({ onNavigate, refreshKey = 0 }: { onNavigate: (
     return () => controller.abort();
   }, [refreshKey, revision]);
   useEffect(() => setPage(1), [query, source, status, category]);
-  const stateOf = (item: Capability) => item.enabled ? String(checks[`${item.source}:${item.id}`]?.state || item.state) : 'disabled';
+  const stateOf = (item: Capability) => item.source === 'manifest' ? String(checks[`${item.source}:${item.id}`]?.state || item.state) : item.enabled ? String(checks[`${item.source}:${item.id}`]?.state || item.state) : 'disabled';
   const filtered = useMemo(() => items.filter((item) => {
-    const currentState = item.enabled ? String(checks[`${item.source}:${item.id}`]?.state || item.state) : 'disabled';
+    const currentState = stateOf(item);
     return (source === 'all' || item.source === source) && (category === 'all' || item.category === category)
       && (status === 'all' || status === 'enabled' && item.enabled || status === 'disabled' && !item.enabled || status === 'attention' && needsAttention(currentState))
       && (!query.trim() || `${item.name} ${item.description} ${item.commands.join(' ')} ${item.id} ${categoryNames[item.category] || ''}`.toLowerCase().includes(query.trim().toLowerCase()));
@@ -88,9 +93,15 @@ export function CapabilitiesPage({ onNavigate, refreshKey = 0 }: { onNavigate: (
     if (!begin(key)) return;
     setNotice('');
     try {
-      await apiRequest(`${endpoints[item.source]}/${encodeURIComponent(item.id)}`, { method: 'PUT', body: JSON.stringify({ enabled: !item.enabled }) });
+      const path = item.source === 'manifest'
+        ? `${endpoints.manifest}/${encodeURIComponent(item.resourceId || item.id)}?version=${encodeURIComponent(item.version || '')}`
+        : `${endpoints[item.source]}/${encodeURIComponent(item.id)}`;
+      const body = item.source === 'manifest' ? { state: item.enabled ? 'paused' : 'active' } : { enabled: !item.enabled };
+      await apiRequest(path, { method: 'PUT', body: JSON.stringify(body) });
       setChecks((previous) => { const next = { ...previous }; delete next[key]; return next; });
-      setNotice(`${item.name}已${item.enabled ? '关闭' : '开启'}。开启状态不代表实际调用已经成功。`);
+      setNotice(item.source === 'manifest'
+        ? `${item.name}已${item.enabled ? '暂停' : '激活'}。激活状态不代表实际调用已经成功。`
+        : `${item.name}已${item.enabled ? '关闭' : '开启'}。开启状态不代表实际调用已经成功。`);
       setRevision((value) => value + 1);
     } catch (cause) { setNotice(cause instanceof Error ? cause.message : '操作失败，请重试。'); }
     finally { end(key); }
@@ -109,7 +120,7 @@ export function CapabilitiesPage({ onNavigate, refreshKey = 0 }: { onNavigate: (
     <div className="capability-shortcuts"><Button icon={<Sparkles size={15} />} onClick={() => onNavigate('knowledge')}>知识与学习</Button><Button icon={<Sparkles size={15} />} onClick={() => onNavigate('skills')}>表达与工作技能</Button><Button icon={<Wrench size={15} />} onClick={() => onNavigate('tools')}>外部工具与服务</Button></div>
     <div className="capability-filters">
       <label className="capability-search"><Search size={16} /><input type="search" placeholder="搜索能力，例如：图片、联网、记忆" aria-label="搜索能力" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
-      <label><span>来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option><option value="plugin">内置与外部能力包</option><option value="skill">技能</option><option value="tool">工具</option></select></label>
+      <label><span>来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option><option value="plugin">内置与外部能力包</option><option value="manifest">已登记能力包</option><option value="skill">技能</option><option value="tool">工具</option></select></label>
       <label><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="enabled">已开启</option><option value="disabled">已关闭</option><option value="attention">需要处理</option></select></label>
       <label><span>用途</span><select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">全部用途</option>{[...new Set(items.map((item) => item.category))].map((value) => <option value={value} key={value}>{categoryNames[value] || value}</option>)}</select></label>
       <Button variant="ghost" icon={<RefreshCw size={15} />} aria-label="重新读取能力" disabled={loading} onClick={() => setRevision((value) => value + 1)} />

@@ -521,12 +521,13 @@ func (a *AgentRuntime) createDurableJob(ctx context.Context, input durableJobCre
 	input.RequiresApproval = input.RequiresApproval || durableJobNeedsApproval(goal)
 	if input.RequiresApproval {
 		status = durableJobWaitingApproval
-	}
-	if input.StartImmediately != nil && !*input.StartImmediately {
-		status = durableJobPlanned
-	}
-	if input.NextRunAt != "" && status == durableJobQueued {
-		status = durableJobPlanned
+	} else {
+		if input.StartImmediately != nil && !*input.StartImmediately {
+			status = durableJobPlanned
+		}
+		if input.NextRunAt != "" && status == durableJobQueued {
+			status = durableJobPlanned
+		}
 	}
 	id, err := newCoreUUID()
 	if err != nil {

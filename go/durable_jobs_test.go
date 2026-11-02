@@ -208,4 +208,11 @@ func TestDurableJobApprovalAndReconciler(t *testing.T) {
 	if autoGateValue["status"] != durableJobWaitingApproval || autoGateValue["requiresApproval"] != true {
 		t.Fatalf("high-risk goal was not gated: %#v", autoGateValue)
 	}
+	deferredGate := managementRequest(t, runtime, http.MethodPost, "/api/v1/jobs", map[string]any{
+		"goal": "清理服务器旧日志", "startImmediately": false,
+	}, "admin")
+	deferredGateValue := decodeManagementData(t, deferredGate)
+	if deferredGate.Code != http.StatusCreated || deferredGateValue["status"] != durableJobWaitingApproval || deferredGateValue["requiresApproval"] != true {
+		t.Fatalf("deferred high-risk goal was not gated: %#v", deferredGateValue)
+	}
 }

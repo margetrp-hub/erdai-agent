@@ -25,6 +25,7 @@ const (
 	directCommandCheckIn         = "check_in"
 	directCommandPointsRedeem    = "points_redeem"
 	directCommandLottery         = "lottery"
+	directCommandDurableJob      = "durable_job"
 )
 
 var errCoreDirectCommandDisabled = errors.New("core direct command is disabled for this agent instance")
@@ -53,12 +54,15 @@ type opsPolicy struct {
 }
 
 type coreDirectCommand struct {
-	Kind            string
-	Group           string
-	AffiliateCode   string
-	Groups          []opsGroup
-	Policy          opsPolicy
-	AffiliatePolicy affiliatePolicy
+	Kind             string
+	Group            string
+	AffiliateCode    string
+	Groups           []opsGroup
+	Policy           opsPolicy
+	AffiliatePolicy  affiliatePolicy
+	DurableJobAction string
+	DurableJobID     string
+	DurableJobGoal   string
 }
 
 func coreDirectCommandToolIDs(command coreDirectCommand) []string {
@@ -70,6 +74,8 @@ func coreDirectCommandToolIDs(command coreDirectCommand) []string {
 	case directCommandAffiliateBind, directCommandAffiliateLink, directCommandAffiliatePoints,
 		directCommandCheckIn, directCommandPointsRedeem, directCommandLottery:
 		return []string{"affiliate"}
+	case directCommandDurableJob:
+		return []string{"durable-jobs"}
 	default:
 		return nil
 	}
@@ -79,6 +85,12 @@ func (a *AgentRuntime) coreDirectCommandAllowed(personaID, instanceID string, co
 	toolIDs := coreDirectCommandToolIDs(command)
 	if len(toolIDs) == 0 {
 		return false, nil
+	}
+	// Durable jobs are a Core control-plane capability. Their execution still
+	// goes through the normal tool policy when the worker wakes the job; the
+	// command itself only creates or changes the user's own job record.
+	if command.Kind == directCommandDurableJob {
+		return true, nil
 	}
 	if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints ||
 		command.Kind == directCommandCheckIn || command.Kind == directCommandPointsRedeem || command.Kind == directCommandLottery {
@@ -168,6 +180,58 @@ func commandAlias(message string, aliases []string) bool {
 	return false
 }
 
+// parseDurableJobCommand keeps long-lived work explicit at the transport
+// boundary. Ordinary prose is deliberately not parsed here; it remains a
+// normal conversation and can later be promoted to a job by the model/router.
+// The slash forms are stable and easy to discover for QQ users:
+//
+//	/任务 <目标>                  create and start a job
+//	/长期任务 <目标>              create and start a job
+//	/暂停任务 <id>                pause
+//	/继续任务 <id>                resume
+//	/取消任务 <id>                cancel
+//	/重试任务 <id>                retry a failed/unknown job
+//	/批准任务 <id>                approve a high-risk job
+//	/任务改为 <id> <新目标>       replace the encrypted goal
+func parseDurableJobCommand(message string) (coreDirectCommand, bool) {
+	if !isSlashCommand(message) {
+		return coreDirectCommand{}, false
+	}
+	text := strings.TrimSpace(message)
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return coreDirectCommand{}, false
+	}
+	alias := strings.TrimPrefix(parts[0], "/")
+	alias = strings.TrimSpace(alias)
+	create := alias == "任务" || alias == "长期任务"
+	if create {
+		goal := strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
+		if goal == "" {
+			return coreDirectCommand{}, false
+		}
+		return coreDirectCommand{Kind: directCommandDurableJob, DurableJobAction: "create", DurableJobGoal: goal}, true
+	}
+	action := map[string]string{
+		"暂停任务": "pause", "继续任务": "resume", "取消任务": "cancel", "重试任务": "retry", "批准任务": "approve", "同意任务": "approve",
+	}[alias]
+	if action != "" && len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
+		return coreDirectCommand{Kind: directCommandDurableJob, DurableJobAction: action, DurableJobID: strings.TrimSpace(parts[1])}, true
+	}
+	if alias == "任务改为" || alias == "修改任务" {
+		if len(parts) < 3 || strings.TrimSpace(parts[1]) == "" {
+			return coreDirectCommand{}, false
+		}
+		goal := strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
+		goal = strings.TrimSpace(strings.TrimPrefix(goal, parts[1]))
+		if goal == "" {
+			return coreDirectCommand{}, false
+		}
+		return coreDirectCommand{Kind: directCommandDurableJob, DurableJobAction: "update", DurableJobID: strings.TrimSpace(parts[1]), DurableJobGoal: goal}, true
+	}
+	return coreDirectCommand{}, false
+}
+
 func canonicalStatusName(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
@@ -175,6 +239,9 @@ func canonicalStatusName(value string) string {
 func (a *AgentRuntime) resolveCoreDirectCommand(ctx context.Context, message string) (coreDirectCommand, bool) {
 	if !isSlashCommand(message) {
 		return coreDirectCommand{}, false
+	}
+	if command, ok := parseDurableJobCommand(message); ok {
+		return command, true
 	}
 	var affiliate affiliatePolicy
 	if err := a.integrationConfig(ctx, "affiliate_policy", &affiliate); err == nil && affiliate.Enabled {

@@ -14,6 +14,8 @@ func (a *AgentRuntime) handleNativeManagement(w http.ResponseWriter, r *http.Req
 	}
 	sensitiveRead := r.Method == http.MethodGet && (path == "/api/v1/affiliate/ownership" || strings.HasPrefix(path, "/api/v1/points/") ||
 		path == "/api/v1/tasks" || strings.HasPrefix(path, "/api/v1/tasks/") ||
+		path == "/api/v1/jobs" || strings.HasPrefix(path, "/api/v1/jobs/") ||
+		path == "/api/v1/durable-tasks" || strings.HasPrefix(path, "/api/v1/durable-tasks/") ||
 		path == "/api/v1/observability/visual-history" ||
 		strings.HasPrefix(path, "/api/v1/platforms/") && (strings.HasSuffix(path, "/login-qr") || strings.HasSuffix(path, "/telegram-user/auth/status")))
 	if sensitiveRead && !tokenMatches(r.Header.Get(adminTokenHeader), a.adminToken) {
@@ -62,12 +64,14 @@ func isNativeManagementPath(path string) bool {
 		"/api/v1/routing/control", "/api/v1/routing/lanes", "/api/v1/routing/simulate",
 		"/api/v1/tools", "/api/v1/skills", "/api/v1/platforms", "/api/v1/platforms/catalog", "/api/v1/platforms/runtime-status",
 		"/api/v1/plugins", "/api/v1/trusted-adapters",
-		"/api/v1/capabilities", "/api/v1/knowledge/bases", "/api/v1/knowledge/documents",
+		"/api/v1/capabilities", "/api/v1/capabilities/manifests", "/api/v1/knowledge/bases", "/api/v1/knowledge/documents",
 		"/api/v1/memories", "/api/v1/relationships",
 		"/api/v1/knowledge/search-preview", "/api/v1/runtime/directives",
 		"/api/v1/runtime/knowledge-candidates", "/api/v1/mcp/servers",
 		"/api/v1/devices", "/api/v1/realtime/pairing-codes", "/api/v1/realtime/sessions",
 		"/api/v1/tasks",
+		"/api/v1/jobs",
+		"/api/v1/durable-tasks",
 		"/api/v1/maintenance/media-gc",
 	} {
 		if path == exact {
@@ -83,12 +87,15 @@ func isNativeManagementPath(path string) bool {
 		"/api/v1/provider-connections/", "/api/v1/runs/",
 		"/api/v1/tools/", "/api/v1/skills/", "/api/v1/platforms/",
 		"/api/v1/plugins/", "/api/v1/trusted-adapters/",
+		"/api/v1/capabilities/manifests/",
 		"/api/v1/knowledge/bases/",
 		"/api/v1/knowledge/documents/", "/api/v1/runtime/directives/",
 		"/api/v1/memories/", "/api/v1/relationships/",
 		"/api/v1/runtime/knowledge-candidates/", "/api/v1/mcp/servers/",
 		"/api/v1/devices/", "/api/v1/realtime/",
 		"/api/v1/tasks/",
+		"/api/v1/jobs/",
+		"/api/v1/durable-tasks/",
 	} {
 		if strings.HasPrefix(path, prefix) {
 			return true
@@ -175,6 +182,8 @@ func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.Respo
 		return s.handleManagementSkills(w, r, path)
 	case path == "/api/v1/plugins" || strings.HasPrefix(path, "/api/v1/plugins/"):
 		return s.handleManagementPlugins(a, w, r, path)
+	case path == "/api/v1/capabilities/manifests" || strings.HasPrefix(path, "/api/v1/capabilities/manifests/"):
+		return s.handleCapabilityManifests(w, r, path)
 	case path == "/api/v1/trusted-adapters" || strings.HasPrefix(path, "/api/v1/trusted-adapters/"):
 		return s.handleManagementTrustedAdapters(w, r, path)
 	case path == "/api/v1/platforms/runtime-status":
@@ -230,6 +239,10 @@ func (s *coreConfigStore) dispatchNativeManagement(a *AgentRuntime, w http.Respo
 		return a.handleRealtimeManagement(w, r, path)
 	case path == "/api/v1/tasks" || strings.HasPrefix(path, "/api/v1/tasks/"):
 		return a.handleTaskGraphManagement(w, r, path)
+	case path == "/api/v1/jobs" || strings.HasPrefix(path, "/api/v1/jobs/"):
+		return a.handleDurableJobManagement(w, r, path)
+	case path == "/api/v1/durable-tasks" || strings.HasPrefix(path, "/api/v1/durable-tasks/"):
+		return a.handleDurableJobManagement(w, r, strings.Replace(path, "/api/v1/durable-tasks", "/api/v1/jobs", 1))
 	case path == "/api/v1/maintenance/media-gc":
 		return a.handleMediaGCManagement(w, r)
 	default:

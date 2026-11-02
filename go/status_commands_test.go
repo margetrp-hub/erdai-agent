@@ -22,6 +22,32 @@ func TestAffiliatePointsQueryAliasRoutesDirectly(t *testing.T) {
 	}
 }
 
+func TestDurableJobSlashCommandsStayExplicit(t *testing.T) {
+	cases := []struct {
+		message, action, id, goal string
+	}{
+		{message: "/任务 每天早上九点检查渠道", action: "create", goal: "每天早上九点检查渠道"},
+		{message: "/长期任务 发现异常就提醒我", action: "create", goal: "发现异常就提醒我"},
+		{message: "/暂停任务 job-123", action: "pause", id: "job-123"},
+		{message: "/继续任务 job-123", action: "resume", id: "job-123"},
+		{message: "/取消任务 job-123", action: "cancel", id: "job-123"},
+		{message: "/重试任务 job-123", action: "retry", id: "job-123"},
+		{message: "/批准任务 job-123", action: "approve", id: "job-123"},
+		{message: "/任务改为 job-123 每天十点检查渠道", action: "update", id: "job-123", goal: "每天十点检查渠道"},
+	}
+	for _, tt := range cases {
+		command, ok := parseDurableJobCommand(tt.message)
+		if !ok || command.Kind != directCommandDurableJob || command.DurableJobAction != tt.action || command.DurableJobID != tt.id || command.DurableJobGoal != tt.goal {
+			t.Fatalf("parse %q = %#v, %v", tt.message, command, ok)
+		}
+	}
+	for _, message := range []string{"帮我每天检查渠道", "任务完成了吗", "暂停一下这个话题"} {
+		if _, ok := parseDurableJobCommand(message); ok {
+			t.Fatalf("ordinary prose was treated as durable command: %q", message)
+		}
+	}
+}
+
 func TestRewardsCommandAliasesRouteDirectly(t *testing.T) {
 	runtime := newDormantRuntime(t)
 	defer runtime.Close()

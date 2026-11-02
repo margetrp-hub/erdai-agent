@@ -845,6 +845,9 @@ func migrateCoreConfig(db *sql.DB) error {
 	if _, err = tx.Exec(nativeCoreTables); err != nil {
 		return fmt.Errorf("create Core schema: %w", err)
 	}
+	if err = ensureCapabilityManifestSchema(tx); err != nil {
+		return fmt.Errorf("create capability manifest schema: %w", err)
+	}
 	if current > 0 && current < 57 {
 		if err = migratePersonaBindingsV57(tx); err != nil {
 			return err

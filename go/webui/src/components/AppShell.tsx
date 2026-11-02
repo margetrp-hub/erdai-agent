@@ -4,6 +4,7 @@ import {
   Blocks,
   Cable,
   ChevronDown,
+  Clock3,
   Cpu,
   Coins,
   Database,
@@ -69,6 +70,7 @@ const navGroups: NavGroup[] = [
     icon: LayoutDashboard,
     items: [
       { id: 'overview', label: '首页', icon: LayoutDashboard, keywords: '总览 状态 健康' },
+      { id: 'operations', section: 'tasks', label: '长期任务', icon: Clock3, keywords: '派活 调度 计划 持续 任务' },
       { id: 'operations', section: 'runs', label: '任务与记录', icon: ListChecks, keywords: '审计 日志 错误 失败' },
     ],
   },
@@ -162,7 +164,7 @@ export function AppShell({
 }) {
   const [search, setSearch] = useState('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const sectionDefaults: Partial<Record<ViewId, string>> = { system: 'runtime', roles: 'cards', models: 'connections' };
+  const sectionDefaults: Partial<Record<ViewId, string>> = { system: 'runtime', roles: 'cards', models: 'connections', operations: 'tasks' };
   const matchesActive = (item: NavGroup['items'][number]) => item.id === activeView && (!(activeView in sectionDefaults) || item.section === (activeSection || sectionDefaults[activeView]));
   const activeGroup = navGroups.find((group) => group.items.some(matchesActive)) || navGroups.find((group) => group.items.some((item) => item.id === activeView));
   const activeItem = activeGroup?.items.find(matchesActive) || activeGroup?.items.find((item) => item.id === activeView);

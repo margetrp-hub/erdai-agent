@@ -61,6 +61,10 @@ func openCoreConfigStore(path string) (*coreConfigStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate core configuration database: %w", err)
 	}
+	if err = ensureDurableJobsSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate durable jobs schema: %w", err)
+	}
 	return store, nil
 }
 

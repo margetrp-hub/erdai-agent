@@ -9,6 +9,7 @@ import { OverviewPage } from './pages/OverviewPage';
 import { PointsPage } from './pages/PointsPage';
 import { CapabilitiesPage } from './pages/CapabilitiesPage';
 import { BotsPage } from './pages/BotsPage';
+import { TaskInboxPage } from './pages/TaskInboxPage';
 import { ApiError, getSession, loadDashboard, login, logout, type DashboardData } from './lib/api';
 import { initializeUiTheme } from './theme';
 import './styles.css';
@@ -147,6 +148,8 @@ function App() {
         <OverviewPage data={data} activeInstanceId={activeInstanceId} onNavigate={navigate} />
       ) : activeView === 'bots' ? (
         <BotsPage activeInstanceId={activeInstanceId} onInstanceChange={setActiveInstanceId} onRefresh={refreshAll} />
+      ) : activeView === 'operations' && activeSection === 'tasks' ? (
+        <TaskInboxPage />
       ) : activeView === 'points' ? (
         <PointsPage refreshKey={refreshNonce} />
       ) : activeView === 'capabilities' ? (

@@ -82,6 +82,11 @@ POST /api/v1/provider-connections/:id/test
 POST /api/v1/provider-connections/:id/pricing-sync
 GET  /api/v1/model-health/:id/history
 GET  /api/v1/runs/:id
+GET/POST       /api/v1/jobs
+GET            /api/v1/jobs/:id
+GET            /api/v1/jobs/:id/events
+POST           /api/v1/jobs/:id/pause|resume|cancel|retry|approve
+GET/POST       /api/v1/capabilities/manifests
 GET  /api/v1/private-bots
 GET  /api/v1/private-bots/:id/tasks
 POST /api/v1/private-bots/:id/copy

@@ -373,6 +373,10 @@ MCP 调用有启用状态、工具白名单、成员/管理员权限、审批模
 
 普通聊天保持一次模型调用；只有工具、搜索、文档、图片和视频任务才进入更长的执行链。
 
+长期任务使用独立的 `durable_jobs` 控制面，和一次消息回合的 `agent_runs` 分开：SQLite WAL 保存目标、计划、租约、心跳、尝试次数、事件和加密结果。单 VPS 默认只启动一个低并发 worker，不需要 Redis、Kafka 或常驻 planner。状态包括 `planned`、`queued`、`leased`、`running`、`waiting_approval`、`retrying`、`succeeded`、`failed`、`dead_letter` 和 `unknown_manual`；租约过期的执行不会被盲目重跑，而是转为待核实。失败按退避重试，超过上限转人工；按分钟、小时、天、周的计划在成功后自动安排下一轮。后台“长期任务”页面可以创建、暂停、继续、取消、重试、批准并按需查看事件时间线。
+
+QQ 或其他已寻址连接器可使用明确命令：`/任务 <目标>`、`/长期任务 <目标>`、`/暂停任务 <id>`、`/继续任务 <id>`、`/取消任务 <id>`、`/重试任务 <id>`、`/批准任务 <id>`、`/任务改为 <id> <新目标>`。普通聊天不会因为出现“每天”“暂停”等词就自动创建长期任务；高风险目标默认进入审批。
+
 模型规划使用带版本的加密检查点，按同一 Run 的模型步骤序号恢复原 completion 和工具调用 ID，再由既有工具回执重建后续历史；成功规划不再次请求供应商或重复累计模型用量。保存失败会在执行工具和发送进度之前停止；空回复按失败处理，允许后续合法重试。已成功的模型或工具记录损坏时禁止当作缓存缺失重新执行。请求快照用于审计，后续尚未完成的模型步骤使用当前上下文，不是逐字回放旧请求。
 
 恢复校验当前任务修订、下发工具策略、作用域、关键规则、角色及外观绑定配置。时段、情绪与近期聊天变化不单独作废计划；关键配置不兼容、原模型端点已移除或旧版检查点没有版本信息时停止，须确认新的任务要求。同一运行实例内禁止并发重入同一 Run 的模型循环。此处不等于每步重新确认管理员身份，也不提供跨配置库、运行库与外部服务的原子授权。
@@ -535,6 +539,17 @@ GET    /api/v1/tasks
 GET    /api/v1/tasks/:id
 POST   /api/v1/tasks/:id/retry
 POST   /api/v1/tasks/:id/cancel
+GET/POST /api/v1/jobs
+GET    /api/v1/jobs/:id
+GET    /api/v1/jobs/:id/events
+POST   /api/v1/jobs/:id/pause
+POST   /api/v1/jobs/:id/resume
+POST   /api/v1/jobs/:id/cancel
+POST   /api/v1/jobs/:id/retry
+POST   /api/v1/jobs/:id/approve
+GET/POST /api/v1/capabilities/manifests
+GET/PUT/DELETE /api/v1/capabilities/manifests/:id
+GET/POST /api/v1/capabilities/manifests/:id/bindings
 POST   /api/v1/maintenance/media-gc
 ```
 

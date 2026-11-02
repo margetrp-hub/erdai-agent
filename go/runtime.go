@@ -107,6 +107,9 @@ type AgentRuntime struct {
 	taskRunCancels                map[string]context.CancelFunc
 	taskOperationMu               sync.Mutex
 	taskOperations                map[string]bool
+	// durableJobRun is injectable for deterministic control-plane tests. In
+	// production it remains nil and the worker reuses the normal generate loop.
+	durableJobRun func(context.Context, runRecord, string) (agentReply, error)
 }
 
 type transportAttachment struct {
@@ -547,6 +550,10 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = ensureDurableJobsSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate durable jobs schema: %w", err)
+	}
 	if err = ensureRuntimeColumn(db, "agent_runs", "is_admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		db.Close()
 		return nil, err
@@ -778,6 +785,7 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 	runtime.startMediaGCWorker(ctx)
 	runtime.startOPSStatusWorker(ctx)
 	runtime.startMemoryPruneWorker(ctx)
+	runtime.startDurableJobReconciler(ctx)
 	runtime.signalWorker()
 	return runtime, nil
 }
@@ -2238,6 +2246,9 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 		}
 		if !allowed {
 			return agentReply{}, errCoreDirectCommandDisabled
+		}
+		if command.Kind == directCommandDurableJob {
+			return a.handleDurableJobDirectCommand(ctx, run, command)
 		}
 		if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints ||
 			command.Kind == directCommandCheckIn || command.Kind == directCommandPointsRedeem || command.Kind == directCommandLottery {

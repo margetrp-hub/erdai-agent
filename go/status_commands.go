@@ -20,6 +20,7 @@ const (
 	directCommandOPSGroup        = "ops_group"
 	directCommandRadar           = "radar"
 	directCommandAffiliateBind   = "affiliate_bind"
+	directCommandAccountBind     = "account_bind"
 	directCommandAffiliateLink   = "affiliate_link"
 	directCommandAffiliatePoints = "affiliate_points"
 	directCommandCheckIn         = "check_in"
@@ -71,7 +72,7 @@ func coreDirectCommandToolIDs(command coreDirectCommand) []string {
 		return []string{"ops-status", "query_ops_status", "ops_status"}
 	case directCommandRadar:
 		return []string{"ops-status", "radar", "query_radar", "ops_status"}
-	case directCommandAffiliateBind, directCommandAffiliateLink, directCommandAffiliatePoints,
+	case directCommandAccountBind, directCommandAffiliateBind, directCommandAffiliateLink, directCommandAffiliatePoints,
 		directCommandCheckIn, directCommandPointsRedeem, directCommandLottery:
 		return []string{"affiliate"}
 	case directCommandDurableJob:
@@ -82,6 +83,9 @@ func coreDirectCommandToolIDs(command coreDirectCommand) []string {
 }
 
 func (a *AgentRuntime) coreDirectCommandAllowed(personaID, instanceID string, command coreDirectCommand) (bool, error) {
+	if command.Kind == directCommandAccountBind {
+		return a.centralPoints != nil, nil
+	}
 	toolIDs := coreDirectCommandToolIDs(command)
 	if len(toolIDs) == 0 {
 		return false, nil
@@ -237,6 +241,14 @@ func canonicalStatusName(value string) string {
 }
 
 func (a *AgentRuntime) resolveCoreDirectCommand(ctx context.Context, message string) (coreDirectCommand, bool) {
+	parts := strings.Fields(message)
+	if len(parts) > 0 && parts[0] == "/绑定账号" {
+		code := ""
+		if len(parts) == 2 {
+			code = parts[1]
+		}
+		return coreDirectCommand{Kind: directCommandAccountBind, AffiliateCode: code}, true
+	}
 	if !isSlashCommand(message) {
 		return coreDirectCommand{}, false
 	}

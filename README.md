@@ -4,6 +4,15 @@
 
 完整的中文系统说明、配置入口、API、运行链路、测试口径和未完成边界见 [`SYSTEM_GUIDE.md`](./SYSTEM_GUIDE.md)。
 
+### 统一积分与本站账号关联
+
+v0.15.29 支持由 Sub2API 保存唯一积分账本。迁移后配置
+`ERDAI_CENTRAL_POINTS_URL` 与独立的 `ERDAI_CENTRAL_POINTS_TOKEN`；原 SQLite
+积分表保留迁移证据并拒绝写入。网络失败或结果未知时不回退到旧账本。
+网站个人中心生成10分钟一次性绑定码，用户本人 QQ 私聊发送 `/绑定账号 CODE`。
+邀请码仅用于邀请统计，不能作为关联账号的身份证明。关联查看和解绑由网站个人中心负责。
+二呆积分管理页继续展示统一流水和订单，保留未确认订单的核对、提交与退回入口。
+
 ## Architecture
 
 - One Stable release bundle owns the complete production application: the `erdai-agent` Core image plus pinned local embedding and private monitor-browser images.

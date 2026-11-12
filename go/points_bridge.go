@@ -33,6 +33,15 @@ func (a *AgentRuntime) handlePointsReadBridge(w http.ResponseWriter, r *http.Req
 		return true
 	}
 	var id string
+	if a.centralPoints != nil {
+		account, _, err := a.centralPoints.account(r.Context(), identity, "read", 20, 0)
+		if err != nil {
+			writeCoreAPIError(w, err)
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"accountId": account.AccountID, "balance": account.Balance}})
+		}
+		return true
+	}
 	var balance int64
 	err := a.db.QueryRowContext(r.Context(), `SELECT actor.account_id,
 		(SELECT COALESCE(SUM(l.points), 0) FROM agent_points_ledger l JOIN agent_points_identities i USING (transport, transport_instance, sender_ref) WHERE i.account_id = actor.account_id)

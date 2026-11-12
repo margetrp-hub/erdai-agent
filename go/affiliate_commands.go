@@ -119,7 +119,7 @@ func (a *AgentRuntime) boundAffiliateCode(ctx context.Context, run runRecord) (s
 	err := a.db.QueryRowContext(ctx, `SELECT affiliate_code FROM agent_affiliate_bindings
 		WHERE transport = ? AND transport_instance = ? AND sender_ref = ?`,
 		strings.ToLower(strings.TrimSpace(run.Transport)), strings.TrimSpace(run.TransportInstance), strings.TrimSpace(run.SenderRef)).Scan(&code)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) && a.centralPoints == nil {
 		transport, instance, sender := pointsScope(run)
 		err = a.db.QueryRowContext(ctx, `SELECT o.affiliate_code FROM agent_affiliate_owners o
 			JOIN agent_points_identities owner USING (transport, transport_instance, sender_ref)
@@ -143,6 +143,10 @@ func pointsScope(run runRecord) (string, string, string) {
 }
 
 func (a *AgentRuntime) pointsLedgerBalance(ctx context.Context, run runRecord) (int64, error) {
+	if a.centralPoints != nil {
+		account, _, err := a.centralPoints.account(ctx, pointIdentity(run), "register", 20, 0)
+		return account.Balance, err
+	}
 	_, err := a.pointsIdentityAccount(ctx, run)
 	if err != nil {
 		return 0, err
@@ -175,6 +179,13 @@ func shanghaiDate(now time.Time) string {
 }
 
 func (a *AgentRuntime) recordDailyCheckIn(ctx context.Context, run runRecord, policy affiliatePolicy) (bool, int64, error) {
+	if a.centralPoints != nil {
+		if _, _, err := a.centralPoints.account(ctx, pointIdentity(run), "register", 20, 0); err != nil {
+			return false, 0, err
+		}
+		account, awarded, err := a.centralPoints.account(ctx, pointIdentity(run), "checkin", 20, 0)
+		return awarded, account.Balance, err
+	}
 	transport, instance, sender := pointsScope(run)
 	points := checkInPoints(policy)
 	date := shanghaiDate(time.Now().UTC())
@@ -216,6 +227,43 @@ func (a *AgentRuntime) recordDailyCheckIn(ctx context.Context, run runRecord, po
 }
 
 func (a *AgentRuntime) pointsAccount(ctx context.Context, run runRecord, policy affiliatePolicy) (pointsAccount, error) {
+	if a.centralPoints != nil {
+		account, _, err := a.centralPoints.account(ctx, pointIdentity(run), "register", 20, 0)
+		if err != nil {
+			return pointsAccount{}, err
+		}
+		result := pointsAccount{TotalPoints: account.Balance, LocalPoints: account.Balance}
+		code, codeErr := a.boundAffiliateCode(ctx, run)
+		if codeErr != nil && !errors.Is(codeErr, sql.ErrNoRows) {
+			return result, codeErr
+		}
+		if codeErr == nil {
+			verified, syncErr := a.affiliateOwnerVerified(ctx, run, code)
+			if syncErr == nil && !verified {
+				syncErr = errAffiliateOwnershipRequired
+			}
+			if syncErr == nil {
+				var summary affiliateSummary
+				summary, syncErr = a.fetchAffiliateSummary(ctx, code, policy)
+				if syncErr == nil {
+					syncErr = a.creditInvitePoints(ctx, run, summary, policy)
+					if syncErr == nil {
+						result.Summary = &summary
+					}
+				}
+			}
+			result.SyncErr = syncErr
+			if syncErr == nil {
+				account, _, err = a.centralPoints.account(ctx, pointIdentity(run), "read", 20, 0)
+				if err != nil {
+					return result, err
+				}
+				result.TotalPoints = account.Balance
+				result.LocalPoints = account.Balance
+			}
+		}
+		return result, nil
+	}
 	account := pointsAccount{}
 	_, err := a.pointsIdentityAccount(ctx, run)
 	if err != nil {
@@ -267,6 +315,16 @@ func (a *AgentRuntime) creditInvitePoints(ctx context.Context, run runRecord, su
 	}
 	if !verified {
 		return errAffiliateOwnershipRequired
+	}
+	if a.centralPoints != nil {
+		input, err := a.centralPoints.identityInput(pointIdentity(run), "invite", 20, 0)
+		if err != nil {
+			return err
+		}
+		input["invite_code"] = code
+		input["invite_count"] = summary.PaidInviteeCount
+		input["invite_rate"] = pointsPerInvitee(policy)
+		return a.centralPoints.call(ctx, input, nil)
 	}
 	rate := pointsPerInvitee(policy)
 	if summary.PaidInviteeCount < 0 || summary.PaidInviteeCount > math.MaxInt64/rate {
@@ -326,6 +384,9 @@ func affiliateRegisterLink(baseURL, code string) (string, error) {
 }
 
 func (a *AgentRuntime) handleAffiliateCommand(ctx context.Context, run runRecord, command coreDirectCommand) (agentReply, error) {
+	if a.centralPoints != nil && (command.Kind == directCommandAffiliatePoints || command.Kind == directCommandCheckIn || command.Kind == directCommandPointsRedeem) {
+		return a.centralPointsCommand(ctx, run, command)
+	}
 	if !qqAffiliateTransport(run.Transport) || strings.TrimSpace(run.SenderRef) == "" {
 		return agentReply{Text: "积分与活动目前只支持 QQ 用户。"}, nil
 	}

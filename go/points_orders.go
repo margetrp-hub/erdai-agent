@@ -32,6 +32,11 @@ func scanPointsOrder(row interface{ Scan(...any) error }) (pointsOrder, error) {
 }
 
 func (a *AgentRuntime) reservePointsOrder(ctx context.Context, input pointsOrder) (pointsOrder, error) {
+	if a.centralPoints != nil {
+		var out pointsOrder
+		err := a.centralPoints.call(ctx, map[string]any{"action": "reserve", "order": centralPointsOrderInput(input)}, &out)
+		return out, err
+	}
 	input.Source = strings.TrimSpace(input.Source)
 	input.ExternalRef = strings.TrimSpace(input.ExternalRef)
 	input.Note = strings.TrimSpace(input.Note)
@@ -97,6 +102,11 @@ func (a *AgentRuntime) reservePointsOrder(ctx context.Context, input pointsOrder
 }
 
 func (a *AgentRuntime) resolvePointsOrder(ctx context.Context, id, status, note string) (pointsOrder, error) {
+	if a.centralPoints != nil {
+		var out pointsOrder
+		err := a.centralPoints.call(ctx, map[string]any{"action": "resolve", "order": map[string]string{"id": id}, "status": status, "note": note}, &out)
+		return out, err
+	}
 	if (status != "committed" && status != "refunded") || strings.TrimSpace(note) == "" || len(note) > 1000 {
 		return pointsOrder{}, coreInvalid("交易状态及处理凭据为必填项")
 	}

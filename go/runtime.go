@@ -42,6 +42,8 @@ type RuntimeConfig struct {
 	AdminToken                    string
 	PointsReadToken               string
 	PointsSiteClients             string
+	CentralPointsURL              string
+	CentralPointsToken            string
 	RuntimeToken                  string
 	ModelAPIKey                   string
 	GrokAPIKey                    string
@@ -67,6 +69,7 @@ type AgentRuntime struct {
 	adminToken                    string
 	pointsReadToken               string
 	pointsSiteClients             []pointsSiteClient
+	centralPoints                 *centralPointsClient
 	runtimeToken                  string
 	modelAPIKey                   string
 	grokAPIKey                    string
@@ -242,6 +245,10 @@ type providerPolicyConfig struct {
 }
 
 func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
+	centralPoints, centralErr := newCentralPointsClient(config.CentralPointsURL, config.CentralPointsToken)
+	if centralErr != nil {
+		return nil, centralErr
+	}
 	siteClients, err := parsePointsSiteClients(config)
 	if err != nil {
 		return nil, err
@@ -716,6 +723,7 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 		adminToken:             strings.TrimSpace(config.AdminToken),
 		pointsReadToken:        strings.TrimSpace(config.PointsReadToken),
 		pointsSiteClients:      siteClients,
+		centralPoints:          centralPoints,
 		runtimeToken:           strings.TrimSpace(config.RuntimeToken),
 		modelAPIKey:            strings.TrimSpace(config.ModelAPIKey),
 		grokAPIKey:             strings.TrimSpace(config.GrokAPIKey),
@@ -762,8 +770,11 @@ func NewAgentRuntime(config RuntimeConfig) (*AgentRuntime, error) {
 			err = mergeLegacyRuntimeDatabase(ctx, db, config.DatabasePath, config.LegacyRuntimeDatabasePath)
 		}
 	}
-	if err == nil {
+	if err == nil && centralPoints == nil {
 		err = initPointsAccounts(ctx, db)
+	}
+	if err == nil {
+		err = verifyPointsStorageOwner(ctx, db, centralPoints != nil)
 	}
 	if err == nil {
 		err = recoverInterruptedRuntime(ctx, db)
@@ -2249,6 +2260,9 @@ func (a *AgentRuntime) generate(ctx context.Context, run runRecord, message stri
 		}
 		if command.Kind == directCommandDurableJob {
 			return a.handleDurableJobDirectCommand(ctx, run, command)
+		}
+		if command.Kind == directCommandAccountBind {
+			return a.centralPointsCommand(ctx, run, command)
 		}
 		if command.Kind == directCommandAffiliateBind || command.Kind == directCommandAffiliateLink || command.Kind == directCommandAffiliatePoints ||
 			command.Kind == directCommandCheckIn || command.Kind == directCommandPointsRedeem || command.Kind == directCommandLottery {

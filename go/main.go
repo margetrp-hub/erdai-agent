@@ -82,6 +82,8 @@ func main() {
 		AdminToken:                adminToken,
 		PointsReadToken:           strings.TrimSpace(os.Getenv("ERDAI_POINTS_READ_TOKEN")),
 		PointsSiteClients:         strings.TrimSpace(os.Getenv("ERDAI_POINTS_SITE_CLIENTS")),
+		CentralPointsURL:          strings.TrimSpace(os.Getenv("ERDAI_CENTRAL_POINTS_URL")),
+		CentralPointsToken:        strings.TrimSpace(os.Getenv("ERDAI_CENTRAL_POINTS_TOKEN")),
 		RuntimeToken:              os.Getenv("ERDAI_RUNTIME_TOKEN"),
 		ModelAPIKey:               os.Getenv("ERDAI_MODEL_API_KEY"),
 		GrokAPIKey:                os.Getenv("ERDAI_GROK_API_KEY"),

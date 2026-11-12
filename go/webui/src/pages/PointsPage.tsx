@@ -57,6 +57,14 @@ export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [ledgerOffset, setLedgerOffset] = useState(0);
   const [action, setAction] = useState<Action | null>(null);
   const detailRef = useRef<HTMLElement>(null);
+  const [pointsConfig, setPointsConfig] = useState<{ owner: string; bindingUrl?: string } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    apiRequest<{ owner: string; bindingUrl?: string }>('/api/v1/points/config', { signal: controller.signal })
+      .then((value) => { if (!controller.signal.aborted) setPointsConfig(value); })
+      .catch(() => { /* Never expose manual merge when the ledger owner is unknown. */ });
+    return () => controller.abort();
+  }, [refreshKey, revision]);
 
   useEffect(() => {
     if (selectedAccount) detailRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -108,7 +116,7 @@ export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     <div className="module-tabs" role="tablist" aria-label="积分管理">
       {([['accounts', '用户积分'], ['ownership', '邀请确认'], ['orders', '兑换与抽奖记录']] as const).map(([id, label]) => <button type="button" role="tab" aria-selected={tab === id} className="module-tab" data-state={tab === id ? 'active' : 'inactive'} onClick={() => changeTab(id)} key={id}>{label}</button>)}
     </div>
-    <p className="points-tab-help">{tab === 'accounts' ? '搜索用户，查看余额和每一笔积分变动。打开明细后可以关联同一用户的站点账号。' : tab === 'ownership' ? '用户绑定邀请码后，在这里确认账号是否属于本人。默认显示等待确认的记录。' : '“待确认”表示积分已预留。核实实际发放结果后，再完成订单或退回积分。'}</p>
+    <p className="points-tab-help">{tab === 'accounts' ? '搜索用户，查看余额和每一笔积分变动。' : tab === 'ownership' ? '用户绑定邀请码后，在这里确认账号是否属于本人。默认显示等待确认的记录。' : '“待确认”表示积分已预留。核实实际发放结果后，再完成订单或退回积分。'}</p>
     <form className="points-filters" onSubmit={(event) => { event.preventDefault(); setSearch(query.trim()); setOffset(0); }}>
       {tab !== 'accounts' ? <label><span>状态</span><select aria-label="状态筛选" value={status} onChange={(event) => { setStatus(event.target.value); setOffset(0); }}>
         <option value="">全部</option>{(tab === 'ownership' ? ['pending', 'verified', 'conflict'] : ['reserved', 'committed', 'refunded']).map((value) => <option value={value} key={value}>{labels[value]}</option>)}
@@ -144,8 +152,8 @@ export function PointsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <div className="points-detail-heading"><h2>积分明细</h2><Button variant="ghost" onClick={() => setSelectedAccount('')}>收起</Button></div>
       {detailError ? <p className="points-error" role="alert">{detailError}</p> : detailLoading ? <div className="module-empty" role="status">正在读取账户</div> : detail ? <>
         <div className="points-account-summary"><div><span>可用积分</span><strong>{formatPoints(detail.balance)}</strong></div><code>{detail.id}</code>
-          <Button icon={<Link2 size={15} />} onClick={() => setAction({ kind: 'link', item: detail })}>关联站点身份</Button>
-          <Button icon={<Link2 size={15} />} onClick={() => setAction({ kind: 'merge', item: detail })}>合并同一用户账户</Button></div>
+          {pointsConfig?.owner === 'local' ? <><Button icon={<Link2 size={15} />} onClick={() => setAction({ kind: 'link', item: detail })}>关联站点身份</Button>
+          <Button icon={<Link2 size={15} />} onClick={() => setAction({ kind: 'merge', item: detail })}>合并同一用户账户</Button></> : <span className="points-muted">由用户在 OH LAO 个人中心生成绑定码，私聊二呆完成关联。</span>}</div>
         <div className="points-identities">{detail.identities.map((item) => <span key={`${item.transport}/${item.transportInstance}/${item.senderRef}`}>{item.senderRef}<small>{item.transport} / {item.transportInstance}</small></span>)}</div>
         <PointsTable columns={['时间', '类型', '变动', '说明', '来源身份']} empty={!detail.entries.length}>
           {detail.entries.map((item) => <tr key={item.id}><td>{formatDate(item.createdAt)}</td><td>{labels[item.type] || item.type}</td><td className={`points-number ${item.points > 0 ? 'points-credit' : 'points-debit'}`}>{item.points > 0 ? '+' : ''}{formatPoints(item.points)}</td>

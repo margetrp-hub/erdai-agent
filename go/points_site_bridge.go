@@ -33,7 +33,7 @@ func parsePointsSiteClients(config RuntimeConfig) ([]pointsSiteClient, error) {
 		origin, err := url.Parse(client.TransportInstance)
 		if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" ||
 			(client.Transport != "sub2api" && client.Transport != "newapi") || len(client.Token) < 32 || len(client.Token) > 256 ||
-			strings.TrimSpace(client.Token) != client.Token || client.Token == config.AdminToken || client.Token == config.RuntimeToken || client.Token == config.PointsReadToken ||
+			strings.TrimSpace(client.Token) != client.Token || client.Token == config.AdminToken || client.Token == config.RuntimeToken || client.Token == config.PointsReadToken || client.Token == config.CentralPointsToken ||
 			tokens[client.Token] || instances[client.Transport+":"+client.TransportInstance] {
 			return nil, invalid
 		}
@@ -175,6 +175,22 @@ func (a *AgentRuntime) handlePointsSiteBridge(w http.ResponseWriter, r *http.Req
 		return
 	}
 	identity := pointsIdentity{client.Transport, client.TransportInstance, sender}
+	if a.centralPoints != nil {
+		action := "read"
+		if r.Method == http.MethodPost {
+			action = "register"
+			if path == "checkin" {
+				action = "checkin"
+			}
+		}
+		account, awarded, err := a.centralPoints.account(r.Context(), identity, action, limit, offset)
+		if err != nil {
+			writeCoreAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": account, "awarded": awarded})
+		return
+	}
 	var policy affiliatePolicy
 	if err = a.integrationConfig(r.Context(), "affiliate_policy", &policy); err != nil {
 		writeCoreAPIError(w, err)

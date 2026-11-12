@@ -2,12 +2,12 @@
 
 ```yaml
 current_release: erdai-agent:stable
-runtime_version: 0.15.28
+runtime_version: 0.15.29
 schema_version: 85
 source_repository: https://github.com/margetrp-hub/erdai-agent
-source_tag: v0.15.28
+source_tag: v0.15.29
 deployment: docker-compose
-acceptance_level: full Go tests, go vet, critical regression race checks, deployment rollback tests, restricted media worker tests, WebUI build and isolated container health/authentication/database smoke test
+acceptance_level: central points regression, Go vet, WebUI build and isolated runtime checks; deployment evidence is recorded separately
 stable_updates: GitHub Releases only
 ```
 

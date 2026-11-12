@@ -14,6 +14,11 @@ var errAffiliateOwnershipRequired = errors.New("affiliate ownership verification
 
 func (a *AgentRuntime) affiliateOwnerVerified(ctx context.Context, run runRecord, code string) (bool, error) {
 	transport, instance, sender := pointsScope(run)
+	if a.centralPoints != nil {
+		var found bool
+		err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agent_affiliate_owners o JOIN agent_affiliate_bindings b ON b.affiliate_code=o.affiliate_code COLLATE NOCASE AND b.transport=o.transport AND b.transport_instance=o.transport_instance AND b.sender_ref=o.sender_ref WHERE o.affiliate_code=? AND o.transport=? AND o.transport_instance=? AND o.sender_ref=?)`, code, transport, instance, sender).Scan(&found)
+		return found, err
+	}
 	var found int
 	err := a.db.QueryRowContext(ctx, `SELECT 1 FROM agent_affiliate_owners o
 		JOIN agent_affiliate_bindings b ON b.affiliate_code = o.affiliate_code COLLATE NOCASE
@@ -56,6 +61,14 @@ func (a *AgentRuntime) handleAffiliateOwnership(w http.ResponseWriter, r *http.R
 			LEFT JOIN agent_points_identities owner ON owner.transport = o.transport AND owner.transport_instance = o.transport_instance AND owner.sender_ref = o.sender_ref
 			) WHERE 1 = 1`
 		args := []any{}
+		if a.centralPoints != nil {
+			// The retired SQLite identity map is not an authority after cutover.
+			// Ownership remains an attestation for this exact QQ identity.
+			query = `SELECT * FROM (SELECT b.transport,b.transport_instance,b.sender_ref,b.affiliate_code,
+			 CASE WHEN o.sender_ref IS NULL THEN 'pending' WHEN o.transport=b.transport AND o.transport_instance=b.transport_instance AND o.sender_ref=b.sender_ref THEN 'verified' ELSE 'conflict' END AS status,
+			 b.bound_at,'' AS account_id,COALESCE(o.verified_at,''),COALESCE(o.evidence,'')
+			 FROM agent_affiliate_bindings b LEFT JOIN agent_affiliate_owners o ON o.affiliate_code=b.affiliate_code COLLATE NOCASE) WHERE 1=1`
+		}
 		for _, filter := range []struct{ parameter, column string }{
 			{"status", "status"}, {"affiliateCode", "affiliate_code COLLATE NOCASE"},
 			{"transport", "transport"}, {"transportInstance", "transport_instance"}, {"senderRef", "sender_ref"},

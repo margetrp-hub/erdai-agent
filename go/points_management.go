@@ -28,7 +28,14 @@ func writePointsPage[T any](w http.ResponseWriter, items []T, limit, offset int)
 }
 
 func (a *AgentRuntime) handlePointsManagement(w http.ResponseWriter, r *http.Request, path string) error {
+	if a.centralPoints != nil {
+		return a.centralPointsManagement(w, r, path)
+	}
 	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/points/"), "/")
+	if r.Method == http.MethodGet && path == "/api/v1/points/config" {
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"owner": "local"}})
+		return nil
+	}
 	if r.Method == http.MethodGet {
 		limit, offset, err := pointsPage(r)
 		if err != nil {

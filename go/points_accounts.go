@@ -13,6 +13,12 @@ import (
 )
 
 const pointsAccountTables = `
+CREATE TABLE IF NOT EXISTS agent_points_storage_owner (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner TEXT NOT NULL CHECK (owner = 'sub2api'),
+  migration_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_points_accounts (
   id TEXT PRIMARY KEY,
   merged_into TEXT NOT NULL DEFAULT '',
@@ -106,6 +112,9 @@ func ensurePointsIdentity(tx coreSchemaTx, identity pointsIdentity) (string, err
 }
 
 func (a *AgentRuntime) linkPointsIdentity(ctx context.Context, accountID string, identity pointsIdentity, evidence string) (string, error) {
+	if a.centralPoints != nil {
+		return "", &coreAPIError{status: 409, code: "points_binding_moved", message: "请由用户在 OH LAO 个人中心生成绑定码，并私聊二呆完成关联。"}
+	}
 	identity = pointIdentity(identity.run())
 	if (!qqAffiliateTransport(identity.Transport) && identity.Transport != "sub2api" && identity.Transport != "newapi") ||
 		identity.TransportInstance == "" || len(identity.TransportInstance) > 200 || identity.SenderRef == "" || len(identity.SenderRef) > 128 ||
@@ -154,6 +163,13 @@ func migratePointsAccounts(tx coreSchemaTx) error {
 	if _, err := tx.Exec(pointsAccountTables); err != nil {
 		return err
 	}
+	var retired bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agent_points_storage_owner WHERE id=1 AND owner='sub2api')`).Scan(&retired); err != nil {
+		return err
+	}
+	if retired {
+		return nil
+	}
 	rows, err := tx.Query(`SELECT transport, transport_instance, sender_ref FROM agent_points_ledger
 		UNION SELECT transport, transport_instance, sender_ref FROM agent_affiliate_bindings
 		UNION SELECT transport, transport_instance, sender_ref FROM agent_affiliate_owners`)
@@ -198,7 +214,22 @@ func initPointsAccounts(ctx context.Context, db *sql.DB) error {
 	return tx.Commit()
 }
 
+func verifyPointsStorageOwner(ctx context.Context, db *sql.DB, central bool) error {
+	var retired bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agent_points_storage_owner WHERE id=1 AND owner='sub2api')`).Scan(&retired); err != nil {
+		return err
+	}
+	if retired && !central {
+		return errors.New("points ledger moved to Sub2API; central points credentials are required")
+	}
+	return nil
+}
+
 func (a *AgentRuntime) pointsIdentityAccount(ctx context.Context, run runRecord) (string, error) {
+	if a.centralPoints != nil {
+		account, _, err := a.centralPoints.account(ctx, pointIdentity(run), "register", 20, 0)
+		return account.AccountID, err
+	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -241,6 +272,9 @@ func pointsConflict(code, message string) error {
 }
 
 func (a *AgentRuntime) mergePointsAccounts(ctx context.Context, source, target, evidence string) (string, error) {
+	if a.centralPoints != nil {
+		return "", &coreAPIError{status: 409, code: "points_binding_moved", message: "请由用户在 OH LAO 个人中心生成绑定码，并私聊二呆完成关联。"}
+	}
 	if strings.TrimSpace(evidence) == "" || len(evidence) > 1000 || source == "" || target == "" || source == target {
 		return "", coreInvalid("两个不同账户及身份核验说明为必填项")
 	}
